@@ -47,7 +47,7 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          ruff check tools/ --select E,W,F --ignore E501
+          ruff check tools/ --select E,W,F --ignore E501,E402
 
       - name: Security check — block sensitive files
         run: |

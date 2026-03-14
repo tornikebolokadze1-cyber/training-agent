@@ -15,7 +15,6 @@ import asyncio
 import logging
 import time
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from apscheduler.executors.asyncio import AsyncIOExecutor
@@ -342,7 +341,6 @@ async def pre_meeting_job(group_number: int) -> None:
         )
         return
 
-    group = GROUPS[group_number]
     logger.info(
         "[pre] Group %d, Lecture #%d — creating Zoom meeting...",
         group_number,
