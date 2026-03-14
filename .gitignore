@@ -4,6 +4,7 @@
 credentials.json
 token.json
 token_gmail.json
+attendees.json
 *.pem
 *.key
 

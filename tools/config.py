@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,6 +16,18 @@ load_dotenv(env_path)
 def _env(key: str, default: str = "") -> str:
     """Get environment variable or default."""
     return os.getenv(key, default)
+
+
+def _load_attendees() -> dict[str, list[str]]:
+    """Load attendee emails from external JSON file (not tracked in git)."""
+    attendees_path = Path(__file__).parent.parent / "attendees.json"
+    if attendees_path.exists():
+        with open(attendees_path) as f:
+            return json.load(f)
+    return {"1": [], "2": []}
+
+
+_ATTENDEES = _load_attendees()
 
 
 # ---------------------------------------------------------------------------
@@ -33,25 +46,7 @@ GROUPS = {
         "meeting_days": [1, 4],  # Tuesday=1, Friday=4 (Monday=0)
         "start_date": date(2026, 3, 13),  # First lecture: Friday March 13
         "manychat_flow_id": _env("MANYCHAT_GROUP1_FLOW_ID"),
-        "attendee_emails": [
-            "Avloxashvili.imeda@gmail.com",
-            "kgabiani@gmail.com",
-            "Kharaishvilirevazz@gmail.com",
-            "tsirekidzeeko@gmail.com",
-            "Kesotchigladze@gmail.com",
-            "Maka.buadze@gmail.com",
-            "n.beglarashvili@gmail.com",
-            "redmarker.ge@gmail.com",
-            "kate.khukhia@gmail.com",
-            "likalejava@yahoo.com",
-            "lagogotishvili19@gmail.com",
-            "eto.Purtskhvanidze@gmail.com",
-            "Natia.kiknadze@hbc.ge",
-            "ninagabelaia041@gmail.com",
-            "giorgi.iakobashvili.98@gmail.com",
-            "jabanapapa@gmail.com",
-            "n.vanidze84@gmail.com",
-        ],
+        "attendee_emails": _ATTENDEES.get("1", []),
     },
     2: {
         "name": "მარტის ჯგუფი #2",
@@ -61,28 +56,7 @@ GROUPS = {
         "meeting_days": [0, 3],  # Monday=0, Thursday=3
         "start_date": date(2026, 3, 12),  # First lecture: Thursday March 12
         "manychat_flow_id": _env("MANYCHAT_GROUP2_FLOW_ID"),
-        "attendee_emails": [
-            "Tsirekidzetinatini@gmail.com",
-            "Gugaxarshiladze@gmail.com",
-            "Tariel.spanderashvili@gmail.com",
-            "davit.zazadze@fmg.ge",
-            "laliashvilimishk@gmail.com",
-            "Maia4realestate@yahoo.com",
-            "toko.motsonelidze@gmail.com",
-            "guri.gotsiridze@gmail.com",
-            "M.lekveishvili@gmail.com",
-            "beka.chkhubadze@gmail.com",
-            "nelikharbedia9@gmail.com",
-            "Parunashvili.tamo@gmail.com",
-            "maochalabashvili@gmail.com",
-            "misterlukano@gmail.com",
-            "Anitakalandia0@gmail.com",
-            "G.bostoganashvili7@gmail.com",
-            "gqamashidze51@gmail.com",
-            "Natatoshatirishvili@gmail.com",
-            "G.khomasuridze88@gmail.com",
-            "nika_maisuradze@hotmail.com",
-        ],
+        "attendee_emails": _ATTENDEES.get("2", []),
     },
 }
 
