@@ -12,7 +12,6 @@ Usage:
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
 from tools.config import GROUPS, get_lecture_folder_name
