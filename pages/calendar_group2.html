@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI კურსი — ჯგუფი #2</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: #06060f;
+  color: #e2e8f0;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%; left: -50%;
+  width: 200%; height: 200%;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(6,182,212,0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(34,211,238,0.05) 0%, transparent 50%);
+  animation: bgFloat 20s ease-in-out infinite;
+  z-index: -1;
+}
+@keyframes bgFloat {
+  0%,100% { transform: translate(0,0); }
+  50% { transform: translate(2%,-1%); }
+}
+
+.container { max-width: 480px; margin: 0 auto; padding: 24px 16px 40px; }
+
+.header { text-align: center; margin-bottom: 28px; }
+
+.badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #0891b2, #22d3ee);
+  color: white; font-size: 10px; font-weight: 700;
+  letter-spacing: 2px; padding: 5px 14px;
+  border-radius: 20px; text-transform: uppercase; margin-bottom: 14px;
+}
+
+.group-name {
+  font-size: 30px; font-weight: 900;
+  background: linear-gradient(135deg, #a5f3fc, #22d3ee, #06b6d4);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  line-height: 1.2; margin-bottom: 6px;
+}
+
+.schedule-info { font-size: 13px; color: #22d3ee; font-weight: 500; }
+.schedule-info .time {
+  display: inline-block;
+  background: rgba(6,182,212,0.15); border: 1px solid rgba(6,182,212,0.3);
+  padding: 2px 10px; border-radius: 12px; margin-left: 4px;
+}
+
+.progress-section {
+  display: flex; align-items: center; gap: 12px;
+  margin: 16px 0 24px; padding: 10px 14px;
+  background: rgba(6,182,212,0.06); border: 1px solid rgba(6,182,212,0.12);
+  border-radius: 12px;
+}
+.progress-bar-bg { flex:1; height:5px; background:rgba(6,182,212,0.15); border-radius:3px; overflow:hidden; }
+.progress-bar-fill { height:100%; width:0%; background:linear-gradient(90deg,#22c55e,#4ade80); border-radius:3px; transition: width 0.5s ease; }
+.progress-text { font-size:12px; font-weight:600; color:#22d3ee; white-space:nowrap; }
+
+.month-section { margin-bottom: 24px; }
+
+.month-header {
+  font-size: 18px; font-weight: 800; margin-bottom: 10px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.month-name { color: #e2e8f0; }
+.year { color: #475569; font-weight: 400; font-size: 13px; }
+
+.cal-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 3px; }
+
+.day-header {
+  text-align: center; font-size: 10px; font-weight: 600;
+  color: #475569; padding: 6px 0; letter-spacing: 0.5px;
+}
+
+.day-cell {
+  aspect-ratio: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  border-radius: 10px; position: relative;
+  transition: all 0.2s ease;
+}
+
+.day-cell.empty { background: transparent; }
+.day-cell.normal { background: rgba(30,30,50,0.3); }
+.day-cell.normal .day-num { font-size: 12px; color: #334155; font-weight: 500; }
+
+/* Lecture (upcoming) */
+.day-cell.lecture {
+  background: linear-gradient(135deg, rgba(6,182,212,0.18), rgba(34,211,238,0.1));
+  border: 1.5px solid rgba(6,182,212,0.45);
+}
+.day-cell.lecture .day-num {
+  font-size: 9px; color: #64748b; position: absolute; top: 3px; right: 5px; font-weight: 500;
+}
+.day-cell.lecture .lec-num {
+  font-size: 15px; font-weight: 800; color: #22d3ee; line-height: 1;
+}
+
+/* Completed */
+.day-cell.completed {
+  background: linear-gradient(135deg, rgba(34,197,94,0.15), rgba(74,222,128,0.08));
+  border-color: rgba(34,197,94,0.5);
+}
+.day-cell.completed .lec-num { color: #4ade80; }
+.day-cell.completed .check { font-size: 8px; color: #22c55e; display: inline; }
+
+/* Next */
+.day-cell.next {
+  background: linear-gradient(135deg, rgba(6,182,212,0.3), rgba(34,211,238,0.2));
+  border: 2px solid #06b6d4;
+  box-shadow: 0 0 20px rgba(6,182,212,0.35), 0 0 40px rgba(6,182,212,0.1);
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+.day-cell.next .lec-num { color: #a5f3fc; font-size: 16px; }
+.day-cell.next .next-label { display: inline; }
+.next-label {
+  font-size: 6.5px; font-weight: 700; color: #22d3ee;
+  letter-spacing: 0.3px; margin-top: 1px; display: none;
+}
+@keyframes pulseGlow {
+  0%,100% { box-shadow: 0 0 20px rgba(6,182,212,0.35), 0 0 40px rgba(6,182,212,0.1); }
+  50% { box-shadow: 0 0 30px rgba(6,182,212,0.55), 0 0 60px rgba(6,182,212,0.2); }
+}
+
+/* Final */
+.day-cell.final {
+  background: linear-gradient(135deg, rgba(250,204,21,0.15), rgba(234,179,8,0.08));
+  border-color: rgba(250,204,21,0.5);
+}
+.day-cell.final .lec-num { color: #facc15; }
+.day-cell.final .final-label { font-size: 6.5px; font-weight: 700; color: #eab308; }
+
+/* Hide check and next-label by default */
+.check { display: none; }
+
+.legend {
+  display: flex; justify-content: center; gap: 16px;
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid rgba(6,182,212,0.1);
+}
+.legend-item { display:flex; align-items:center; gap:5px; font-size:10px; color:#64748b; }
+.legend-dot { width:8px; height:8px; border-radius:2px; }
+.legend-dot.done { background:#22c55e; }
+.legend-dot.nxt { background:#06b6d4; box-shadow:0 0 4px rgba(6,182,212,0.5); }
+.legend-dot.plan { background:rgba(6,182,212,0.3); border:1px solid rgba(6,182,212,0.5); }
+.legend-dot.fin { background:#facc15; }
+
+.footer { text-align:center; margin-top:16px; font-size:10px; color:#1e1e3a; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="badge">AI Pulse Georgia</div>
+    <div class="group-name">მარტის ჯგუფი #2</div>
+    <div class="schedule-info">ორშაბათი & ხუთშაბათი <span class="time">20:00 – 22:00</span></div>
+  </div>
+
+  <div class="progress-section">
+    <span class="progress-text" id="progress-count">0 / 15</span>
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <span class="progress-text" style="color:#4ade80;">ჩატარდა</span>
+  </div>
+
+  <!-- მარტი 2026 — Mar 1=Sun -->
+  <div class="month-section">
+    <div class="month-header"><span class="month-name">მარტი</span><span class="year">2026</span></div>
+    <div class="cal-grid">
+      <div class="day-header">ორშ</div><div class="day-header">სამ</div><div class="day-header">ოთხ</div><div class="day-header">ხუთ</div><div class="day-header">პარ</div><div class="day-header">შაბ</div><div class="day-header">კვი</div>
+      <!-- W1 --><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell normal"><span class="day-num">1</span></div>
+      <!-- W2: 2-8 --><div class="day-cell normal"><span class="day-num">2</span></div><div class="day-cell normal"><span class="day-num">3</span></div><div class="day-cell normal"><span class="day-num">4</span></div><div class="day-cell normal"><span class="day-num">5</span></div><div class="day-cell normal"><span class="day-num">6</span></div><div class="day-cell normal"><span class="day-num">7</span></div><div class="day-cell normal"><span class="day-num">8</span></div>
+      <!-- W3: 9-15 --><div class="day-cell normal"><span class="day-num">9</span></div><div class="day-cell normal"><span class="day-num">10</span></div><div class="day-cell normal"><span class="day-num">11</span></div>
+      <!-- 12=Thu L#1 -->
+      <div class="day-cell lecture" data-date="2026-03-12" data-lecture="1"><span class="day-num">12</span><span class="lec-num">#1</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">13</span></div><div class="day-cell normal"><span class="day-num">14</span></div><div class="day-cell normal"><span class="day-num">15</span></div>
+      <!-- W4: 16-22 -->
+      <!-- 16=Mon L#2 -->
+      <div class="day-cell lecture" data-date="2026-03-16" data-lecture="2"><span class="day-num">16</span><span class="lec-num">#2</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">17</span></div><div class="day-cell normal"><span class="day-num">18</span></div>
+      <!-- 19=Thu L#3 -->
+      <div class="day-cell lecture" data-date="2026-03-19" data-lecture="3"><span class="day-num">19</span><span class="lec-num">#3</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">20</span></div><div class="day-cell normal"><span class="day-num">21</span></div><div class="day-cell normal"><span class="day-num">22</span></div>
+      <!-- W5: 23-29 -->
+      <!-- 23=Mon L#4 -->
+      <div class="day-cell lecture" data-date="2026-03-23" data-lecture="4"><span class="day-num">23</span><span class="lec-num">#4</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">24</span></div><div class="day-cell normal"><span class="day-num">25</span></div>
+      <!-- 26=Thu L#5 -->
+      <div class="day-cell lecture" data-date="2026-03-26" data-lecture="5"><span class="day-num">26</span><span class="lec-num">#5</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">27</span></div><div class="day-cell normal"><span class="day-num">28</span></div><div class="day-cell normal"><span class="day-num">29</span></div>
+      <!-- W6: 30-31 -->
+      <!-- 30=Mon L#6 -->
+      <div class="day-cell lecture" data-date="2026-03-30" data-lecture="6"><span class="day-num">30</span><span class="lec-num">#6</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">31</span></div>
+      <div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div>
+    </div>
+  </div>
+
+  <!-- აპრილი 2026 — Apr 1=Wed -->
+  <div class="month-section">
+    <div class="month-header"><span class="month-name">აპრილი</span><span class="year">2026</span></div>
+    <div class="cal-grid">
+      <div class="day-header">ორშ</div><div class="day-header">სამ</div><div class="day-header">ოთხ</div><div class="day-header">ხუთ</div><div class="day-header">პარ</div><div class="day-header">შაბ</div><div class="day-header">კვი</div>
+      <!-- W1 --><div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell normal"><span class="day-num">1</span></div>
+      <!-- 2=Thu L#7 -->
+      <div class="day-cell lecture" data-date="2026-04-02" data-lecture="7"><span class="day-num">2</span><span class="lec-num">#7</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">3</span></div><div class="day-cell normal"><span class="day-num">4</span></div><div class="day-cell normal"><span class="day-num">5</span></div>
+      <!-- W2 -->
+      <!-- 6=Mon L#8 -->
+      <div class="day-cell lecture" data-date="2026-04-06" data-lecture="8"><span class="day-num">6</span><span class="lec-num">#8</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">7</span></div><div class="day-cell normal"><span class="day-num">8</span></div>
+      <!-- 9=Thu L#9 -->
+      <div class="day-cell lecture" data-date="2026-04-09" data-lecture="9"><span class="day-num">9</span><span class="lec-num">#9</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">10</span></div><div class="day-cell normal"><span class="day-num">11</span></div><div class="day-cell normal"><span class="day-num">12</span></div>
+      <!-- W3 -->
+      <!-- 13=Mon L#10 -->
+      <div class="day-cell lecture" data-date="2026-04-13" data-lecture="10"><span class="day-num">13</span><span class="lec-num">#10</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">14</span></div><div class="day-cell normal"><span class="day-num">15</span></div>
+      <!-- 16=Thu L#11 -->
+      <div class="day-cell lecture" data-date="2026-04-16" data-lecture="11"><span class="day-num">16</span><span class="lec-num">#11</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">17</span></div><div class="day-cell normal"><span class="day-num">18</span></div><div class="day-cell normal"><span class="day-num">19</span></div>
+      <!-- W4 -->
+      <!-- 20=Mon L#12 -->
+      <div class="day-cell lecture" data-date="2026-04-20" data-lecture="12"><span class="day-num">20</span><span class="lec-num">#12</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">21</span></div><div class="day-cell normal"><span class="day-num">22</span></div>
+      <!-- 23=Thu L#13 -->
+      <div class="day-cell lecture" data-date="2026-04-23" data-lecture="13"><span class="day-num">23</span><span class="lec-num">#13</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">24</span></div><div class="day-cell normal"><span class="day-num">25</span></div><div class="day-cell normal"><span class="day-num">26</span></div>
+      <!-- W5 -->
+      <!-- 27=Mon L#14 -->
+      <div class="day-cell lecture" data-date="2026-04-27" data-lecture="14"><span class="day-num">27</span><span class="lec-num">#14</span><span class="check">✓</span><span class="next-label">შემდეგი</span></div>
+      <div class="day-cell normal"><span class="day-num">28</span></div><div class="day-cell normal"><span class="day-num">29</span></div>
+      <!-- 30=Thu L#15 FINAL -->
+      <div class="day-cell lecture" data-date="2026-04-30" data-lecture="15" data-final="true"><span class="day-num">30</span><span class="lec-num">#15</span><span class="check">✓</span><span class="next-label">შემდეგი</span><span class="final-label">ფინალი ★</span></div>
+      <div class="day-cell empty"></div><div class="day-cell empty"></div><div class="day-cell empty"></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot done"></div>ჩატარდა</div>
+    <div class="legend-item"><div class="legend-dot nxt"></div>შემდეგი</div>
+    <div class="legend-item"><div class="legend-dot plan"></div>დაგეგმილი</div>
+    <div class="legend-item"><div class="legend-dot fin"></div>ფინალი</div>
+  </div>
+  <div class="footer">AI Pulse Georgia • 2026</div>
+</div>
+
+<script>
+(function() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const cells = document.querySelectorAll('.day-cell[data-date]');
+  let completed = 0;
+  let nextFound = false;
+
+  cells.forEach(cell => {
+    const dateStr = cell.dataset.date;
+    const lecDate = new Date(dateStr + 'T22:00:00'); // lecture ends at 22:00
+    const isFinal = cell.dataset.final === 'true';
+
+    if (lecDate < today) {
+      // Lecture date has passed — mark completed
+      cell.classList.add('completed');
+      completed++;
+    } else if (!nextFound) {
+      // First future lecture — mark as next
+      cell.classList.add('next');
+      nextFound = true;
+      if (isFinal) cell.classList.add('final');
+    } else if (isFinal) {
+      cell.classList.add('final');
+    }
+  });
+
+  // Update progress bar
+  const pct = (completed / 15) * 100;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-count').textContent = completed + ' / 15';
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+# Credentials & secrets — NEVER commit these
+.env
+.env.*
+credentials.json
+token.json
+token_gmail.json
+*.pem
+*.key
+
+# Temporary files
+.tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Firebase
+firebase-debug.log
+
+# Playwright MCP logs
+.playwright-mcp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
