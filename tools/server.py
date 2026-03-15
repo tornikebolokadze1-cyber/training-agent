@@ -218,13 +218,24 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
 
 async def _download_recording(url: str, access_token: str, dest: Path) -> None:
-    """Download a Zoom recording with streaming for large files."""
+    """Download a Zoom recording with streaming for large files.
+
+    Validates the final URL after redirects to prevent SSRF via open redirects.
+    """
     dest = Path(dest)
     headers = {"Authorization": f"Bearer {access_token}"}
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
         async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
             response.raise_for_status()
+
+            # SSRF guard: validate final URL after redirects
+            final_host = response.url.host or ""
+            if not final_host.endswith("zoom.us") and not final_host.endswith("zoomgov.com"):
+                raise ValueError(
+                    f"Download redirected to untrusted host: {final_host}"
+                )
+
             with open(dest, "wb") as f:
                 async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                     f.write(chunk)
