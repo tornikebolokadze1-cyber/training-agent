@@ -78,7 +78,13 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
         try:
             with httpx.Client(timeout=30) as client:
                 response = client.post(url, json=payload)
-
+        except Exception as e:
+            # Network-level error (timeout, connection refused, etc.) — retryable
+            logger.warning(
+                "%s attempt %d failed: %s",
+                purpose, attempt, e,
+            )
+        else:
             if response.status_code == 200:
                 data = response.json()
                 logger.info("%s sent successfully: %s", purpose, data.get("idMessage", "ok"))
@@ -95,12 +101,6 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
             logger.warning(
                 "%s attempt %d failed: HTTP %d — %s",
                 purpose, attempt, response.status_code, error_text,
-            )
-
-        except Exception as e:
-            logger.warning(
-                "%s attempt %d failed: %s",
-                purpose, attempt, e,
             )
 
         if attempt < MAX_RETRIES:

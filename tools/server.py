@@ -253,7 +253,7 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 response.raise_for_status()
                 logger.info("Callback sent to n8n: status=%s", payload.status)
                 return
-        except Exception as e:
+        except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException) as e:
             if attempt < 3:
                 delay = 5 * attempt
                 logger.warning(
@@ -263,6 +263,9 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 await asyncio.sleep(delay)
             else:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
+        except Exception as e:
+            logger.error("Callback failed with non-retryable error: %s", e)
+            return
 
 
 # ---------------------------------------------------------------------------
