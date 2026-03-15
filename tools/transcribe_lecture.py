@@ -1,6 +1,7 @@
 """Transcribe a lecture video and deliver results.
 
-Full pipeline: transcribe → analyze → upload to Drive → notify WhatsApp → index Pinecone.
+Full pipeline: transcribe → analyze → upload analysis docs to Drive → notify WhatsApp → index Pinecone.
+Note: The recording video itself is uploaded by the caller (server.py or scheduler.py), not here.
 
 Usage:
     python -m tools.transcribe_lecture <group_number> <lecture_number> <video_path>

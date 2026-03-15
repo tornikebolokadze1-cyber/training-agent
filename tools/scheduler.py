@@ -390,7 +390,7 @@ async def pre_meeting_job(group_number: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def post_meeting_job(group_number: int, meeting_id: str) -> None:
+async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: str) -> None:
     """Kick off the post-meeting recording pipeline in a background thread.
 
     APScheduler calls this coroutine from the AsyncIOExecutor. We immediately
@@ -399,10 +399,9 @@ async def post_meeting_job(group_number: int, meeting_id: str) -> None:
 
     Args:
         group_number: 1 or 2.
+        lecture_number: Lecture ordinal (passed from schedule time, not re-derived).
         meeting_id: Zoom meeting ID returned when the meeting was created.
     """
-    today = date.today()
-    lecture_number = get_lecture_number(group_number, for_date=today)
 
     logger.info(
         "[post] Dispatching post-meeting pipeline — Group %d, Lecture #%d, "
@@ -481,7 +480,7 @@ def _schedule_post_meeting(
         post_meeting_job,
         trigger="date",
         run_date=fire_time,
-        args=[group_number, meeting_id],
+        args=[group_number, lecture_number, meeting_id],
         id=job_id,
         replace_existing=True,
         misfire_grace_time=30 * 60,  # tolerate up to 30 min late fire
