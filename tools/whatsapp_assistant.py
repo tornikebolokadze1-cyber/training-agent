@@ -415,8 +415,8 @@ class WhatsAppAssistant:
                 try:
                     from tools.whatsapp_sender import alert_operator
                     alert_operator(f"Claude API error for direct mention from {message.sender_name}: {exc}")
-                except Exception:
-                    pass
+                except Exception as alert_err:
+                    logger.error("alert_operator also failed: %s", alert_err)
             return None
         except Exception as exc:
             logger.error("Unexpected error in _decide_and_reason: %s", exc)
@@ -424,8 +424,8 @@ class WhatsAppAssistant:
                 try:
                     from tools.whatsapp_sender import alert_operator
                     alert_operator(f"Assistant reasoning error for direct mention: {exc}")
-                except Exception:
-                    pass
+                except Exception as alert_err:
+                    logger.error("alert_operator also failed: %s", alert_err)
             return None
 
     def _write_response(

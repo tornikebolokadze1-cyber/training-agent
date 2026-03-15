@@ -66,8 +66,8 @@ def _upload_summary_to_drive(
         logger.error("Failed to upload summary to Drive: %s", e)
         try:
             alert_operator(f"Drive summary upload FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
         return None
 
 
@@ -144,8 +144,8 @@ def _upload_private_report_to_drive(
         logger.error("Failed to upload private report to Drive: %s", e)
         try:
             alert_operator(f"Drive private report upload FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
         return None
 
 
@@ -179,8 +179,8 @@ def _notify_group_whatsapp(
         logger.error("Failed to send WhatsApp group notification: %s", e)
         try:
             alert_operator(f"WhatsApp group notification FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
 
 def _send_private_report_to_tornike(
@@ -324,8 +324,8 @@ def transcribe_and_index(
             index_counts[content_type] = 0
             try:
                 alert_operator(f"Pinecone indexing FAILED for {content_type} (G{group_number} L#{lecture_number}): {e}")
-            except Exception:
-                pass
+            except Exception as alert_err:
+                logger.error("alert_operator also failed: %s", alert_err)
 
     # Quality gate: warn if critical analysis outputs are empty
     empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
@@ -337,8 +337,8 @@ def transcribe_and_index(
         logger.warning(warning_msg)
         try:
             alert_operator(warning_msg)
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
     total = sum(index_counts.values())
     logger.info(

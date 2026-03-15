@@ -407,8 +407,8 @@ def restrict_to_owner(file_or_folder_id: str) -> None:
                     alert_operator(
                         f"Drive permission removal FAILED for {file_or_folder_id}: {e}"
                     )
-                except Exception:
-                    pass
+                except Exception as alert_err:
+                    logger.error("alert_operator also failed: %s", alert_err)
 
 
 def ensure_private_folder(service, name: str, parent_id: str) -> str:

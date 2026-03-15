@@ -52,6 +52,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check tools/ --select E,W,F --ignore E501,E402
 
+      - name: Type check with mypy
+        run: mypy tools/ --ignore-missing-imports --no-error-summary --warn-return-any --disallow-untyped-defs || true
+
       - name: Security check — block sensitive files
         run: |
           FORBIDDEN=".env credentials.json token.json token_gmail.json attendees.json"

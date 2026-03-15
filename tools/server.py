@@ -22,22 +22,19 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from zoneinfo import ZoneInfo
-
 from tools.config import (
     GROUPS,
     IS_RAILWAY,
     N8N_CALLBACK_URL,
     SERVER_HOST,
     SERVER_PORT,
+    TBILISI_TZ,
     TMP_DIR,
     WEBHOOK_SECRET,
     ZOOM_WEBHOOK_SECRET_TOKEN,
     get_lecture_folder_name,
     get_lecture_number,
 )
-
-_TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 from tools.gdrive_manager import (
     ensure_folder,
     get_drive_service,
@@ -84,8 +81,8 @@ def _evict_stale_tasks() -> list[str]:
                 f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
                 f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
             )
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.warning("alert_operator failed during stale task eviction: %s", alert_err)
     return stale
 
 
@@ -385,14 +382,14 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
                 try:
                     alert_operator(f"n8n callback failed after 3 retries: {e}")
-                except Exception:
-                    pass
+                except Exception as alert_err:
+                    logger.error("alert_operator also failed: %s", alert_err)
         except Exception as e:
             logger.error("Callback failed with non-retryable error: %s", e)
             try:
                 alert_operator(f"n8n callback failed (non-retryable): {e}")
-            except Exception:
-                pass
+            except Exception as alert_err:
+                logger.error("alert_operator also failed: %s", alert_err)
             return
 
 
@@ -514,49 +511,27 @@ async def _handle_assistant_message(message: "IncomingMessage") -> None:
         logger.error("Assistant error: %s", e, exc_info=True)
         try:
             alert_operator(f"WhatsApp assistant crashed: {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
 
-@app.post("/zoom-webhook")
-@limiter.limit("10/minute")
-async def zoom_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """Receive Zoom webhook events directly (replaces n8n middleman).
+def _handle_zoom_crc(body: dict) -> dict:
+    """Handle Zoom endpoint.url_validation (CRC challenge-response)."""
+    plain_token = body.get("payload", {}).get("plainToken", "")
+    if not plain_token or len(plain_token) > 256:
+        raise HTTPException(status_code=400, detail="Invalid plainToken")
+    if not ZOOM_WEBHOOK_SECRET_TOKEN:
+        raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
+    encrypted_token = hmac.new(
+        ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
+        plain_token.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return {"plainToken": plain_token, "encryptedToken": encrypted_token}
 
-    Handles two event types:
-      - endpoint.url_validation: CRC challenge-response for Zoom verification.
-      - recording.completed: Extracts recording URL, determines group/lecture,
-        and kicks off the processing pipeline.
 
-    Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC-SHA256.
-    This endpoint does NOT use verify_webhook_secret() because Zoom cannot attach
-    a custom Authorization header — instead, Zoom's own HMAC signature (in the
-    request body) provides equivalent authentication.  See CLAUDE.md note about
-    WEBHOOK_SECRET; this is an intentional exception for Zoom-originated webhooks.
-    """
-    raw_body = await request.body()
-    body = await request.json()
-    event = body.get("event", "")
-
-    # --- CRC validation (Zoom verifies webhook ownership) ---
-    # CRC events don't carry HMAC signatures, so skip verification for them.
-    if event == "endpoint.url_validation":
-        plain_token = body.get("payload", {}).get("plainToken", "")
-        if not plain_token or len(plain_token) > 256:
-            raise HTTPException(status_code=400, detail="Invalid plainToken")
-        if not ZOOM_WEBHOOK_SECRET_TOKEN:
-            raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
-        encrypted_token = hmac.new(
-            ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
-            plain_token.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
-
-    # --- HMAC-SHA256 signature verification ---
+def _verify_zoom_signature(raw_body: bytes, request: Request) -> None:
+    """Verify Zoom HMAC-SHA256 signature and reject stale timestamps."""
     if not ZOOM_WEBHOOK_SECRET_TOKEN:
         raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
 
@@ -565,10 +540,9 @@ async def zoom_webhook(
     if not timestamp or not signature:
         raise HTTPException(status_code=401, detail="Missing Zoom signature headers")
 
-    # Reject stale requests to prevent replay attacks (Zoom best practice)
     try:
         ts_age = abs(time.time() - int(timestamp))
-        if ts_age > 300:  # 5 min tolerance for clock skew
+        if ts_age > 300:
             logger.warning("Zoom webhook timestamp too old: %s seconds", ts_age)
             raise HTTPException(status_code=401, detail="Zoom webhook timestamp expired")
     except ValueError:
@@ -585,16 +559,17 @@ async def zoom_webhook(
         logger.warning("Zoom webhook signature mismatch — rejecting request")
         raise HTTPException(status_code=401, detail="Invalid Zoom webhook signature")
 
-    # --- recording.completed ---
-    if event != "recording.completed":
-        return {"status": "ignored", "event": event}
 
+def _extract_recording_context(body: dict) -> dict | None:
+    """Extract group, lecture, and recording info from recording.completed event.
+
+    Returns None if the event should be ignored (no MP4, unknown group).
+    """
     payload = body.get("payload", {})
     obj = payload.get("object", {})
     topic = obj.get("topic", "")
     recordings = obj.get("recording_files", [])
 
-    # Find the best MP4 recording
     video = next(
         (r for r in recordings
          if r.get("file_type") == "MP4"
@@ -606,9 +581,8 @@ async def zoom_webhook(
     )
     if not video:
         logger.warning("Zoom webhook: no MP4 recording found in event")
-        return {"status": "ignored", "reason": "no MP4 recording"}
+        return None
 
-    # Determine group from meeting topic (Georgian: ჯგუფი #1 / ჯგუფი #2)
     group_number = 0
     if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:
         group_number = 1
@@ -617,45 +591,76 @@ async def zoom_webhook(
 
     if group_number == 0:
         logger.warning("Zoom webhook: could not determine group from topic: %s", topic)
-        return {"status": "ignored", "reason": f"unknown group in topic: {topic}"}
+        return None
 
-    # Calculate lecture number from meeting date
     start_time = obj.get("start_time", "")
     try:
         meeting_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
     except (ValueError, AttributeError):
-        meeting_date = datetime.now(_TBILISI_TZ).date()
+        meeting_date = datetime.now(TBILISI_TZ).date()
 
     lecture_number = get_lecture_number(group_number, for_date=meeting_date)
     if lecture_number == 0:
-        lecture_number = 1  # fallback for test meetings
+        lecture_number = 1
 
-    download_url = video.get("download_url", "")
-    access_token = body.get("download_token", "")
-    drive_folder_id = GROUPS[group_number].get("drive_folder_id", "")
+    return {
+        "group_number": group_number,
+        "lecture_number": lecture_number,
+        "download_url": video.get("download_url", ""),
+        "access_token": body.get("download_token", ""),
+        "drive_folder_id": GROUPS[group_number].get("drive_folder_id", ""),
+        "topic": topic,
+    }
+
+
+@app.post("/zoom-webhook")
+@limiter.limit("10/minute")
+async def zoom_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Receive Zoom webhook events (CRC validation + recording.completed).
+
+    Authentication: Zoom HMAC-SHA256 signature (not WEBHOOK_SECRET).
+    See CLAUDE.md for why this is an intentional exception.
+    """
+    raw_body = await request.body()
+    body = await request.json()
+    event = body.get("event", "")
+
+    if event == "endpoint.url_validation":
+        return _handle_zoom_crc(body)
+
+    _verify_zoom_signature(raw_body, request)
+
+    if event != "recording.completed":
+        return {"status": "ignored", "event": event}
+
+    ctx = _extract_recording_context(body)
+    if ctx is None:
+        return {"status": "ignored", "reason": "no valid recording or unknown group"}
 
     logger.info(
         "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
-        group_number, lecture_number, topic,
+        ctx["group_number"], ctx["lecture_number"], ctx["topic"],
     )
 
-    # Dedup and process (reuse existing logic)
     _evict_stale_tasks()
-    key = _task_key(group_number, lecture_number)
+    key = _task_key(ctx["group_number"], ctx["lecture_number"])
     if key in _processing_tasks:
         return {"status": "duplicate", "message": f"{key} already processing"}
     _processing_tasks[key] = datetime.now()
 
     proc_payload = ProcessRecordingRequest(
-        download_url=download_url,
-        access_token=access_token,
-        group_number=group_number,
-        lecture_number=lecture_number,
-        drive_folder_id=drive_folder_id,
+        download_url=ctx["download_url"],
+        access_token=ctx["access_token"],
+        group_number=ctx["group_number"],
+        lecture_number=ctx["lecture_number"],
+        drive_folder_id=ctx["drive_folder_id"],
     )
     background_tasks.add_task(process_recording_task, proc_payload)
 
-    return {"status": "accepted", "group": group_number, "lecture": lecture_number}
+    return {"status": "accepted", "group": ctx["group_number"], "lecture": ctx["lecture_number"]}
 
 
 @app.post("/process-recording")

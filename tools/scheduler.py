@@ -21,10 +21,10 @@ from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from zoneinfo import ZoneInfo
 
 from tools.config import (
     GROUPS,
+    TBILISI_TZ,
     TMP_DIR,
     TOTAL_LECTURES,
     get_lecture_folder_name,
@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 LECTURE_START_HOUR = 20       # 20:00 GMT+4
 REMINDER_OFFSET_MINUTES = 60  # fire at T-60 (19:00)
 REMINDER_HOUR = LECTURE_START_HOUR - (REMINDER_OFFSET_MINUTES // 60)  # 19
@@ -52,7 +51,7 @@ RECORDING_POLL_INTERVAL = 5 * 60        # 5 minutes between polls
 RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 
 # ---------------------------------------------------------------------------
-# Lazy imports — zoom_manager and email_sender may not exist yet.
+# Lazy imports — zoom_manager may not be configured yet.
 # All calls to these modules go through the helper below so the scheduler
 # file is importable regardless.
 # ---------------------------------------------------------------------------

@@ -308,47 +308,12 @@ def start() -> None:
 def _configure_logging() -> None:
     """Set up structured logging for the entire application.
 
-    Logs to both stdout (for real-time monitoring) and a rotating file
-    (for post-incident debugging). File logs rotate at 10 MB, keeping
-    the last 5 files (~50 MB max disk usage).
-
-    Format:
-        2026-03-14 20:00:00 INFO     [tools.orchestrator] message
+    Delegates to tools.logging_config which provides:
+      - Local: human-readable format + rotating file handler
+      - Railway: JSON lines on stdout for structured log ingestion
     """
-    log_fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
-    date_fmt = "%Y-%m-%d %H:%M:%S"
-    formatter = logging.Formatter(log_fmt, datefmt=date_fmt)
-
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-
-    # Console handler — stdout
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(formatter)
-    root.addHandler(console)
-
-    # File handler — rotating, 10 MB per file, 5 backups.
-    # Skip on Railway: the filesystem is ephemeral and Railway captures
-    # stdout/stderr automatically in its log viewer.
-    import os
-    if not os.getenv("RAILWAY_ENVIRONMENT"):
-        log_dir = PROJECT_ROOT / "logs"
-        log_dir.mkdir(exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_dir / "training_agent.log",
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
-        root.addHandler(file_handler)
-
-    # Suppress overly chatty third-party loggers
-    logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    from tools.logging_config import configure_logging
+    configure_logging(project_root=PROJECT_ROOT)
 
 
 # ---------------------------------------------------------------------------

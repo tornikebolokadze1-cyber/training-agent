@@ -736,8 +736,8 @@ def analyze_lecture(
         try:
             from tools.whatsapp_sender import alert_operator
             alert_operator(f"Summary generation FAILED: {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
     # Step 3: Gap analysis — Claude reasons, Gemini writes Georgian
     try:
@@ -748,8 +748,8 @@ def analyze_lecture(
         try:
             from tools.whatsapp_sender import alert_operator
             alert_operator(f"Gap analysis generation FAILED: {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
     # Step 4: Deep analysis — Claude reasons, Gemini writes Georgian
     try:
@@ -760,8 +760,8 @@ def analyze_lecture(
         try:
             from tools.whatsapp_sender import alert_operator
             alert_operator(f"Deep analysis generation FAILED: {e}")
-        except Exception:
-            pass
+        except Exception as alert_err:
+            logger.error("alert_operator also failed: %s", alert_err)
 
     return results
 

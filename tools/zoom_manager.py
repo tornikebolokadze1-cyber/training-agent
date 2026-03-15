@@ -19,6 +19,7 @@ import httpx
 
 from tools.config import (
     GROUPS,
+    TBILISI_TZ,
     TMP_DIR,
     ZOOM_ACCOUNT_ID,
     ZOOM_CLIENT_ID,
@@ -33,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 ZOOM_OAUTH_URL = "https://zoom.us/oauth/token"
 ZOOM_API_BASE = "https://api.zoom.us/v2"
-TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 MEETING_DURATION_MINUTES = 120
 
 # Retry configuration
