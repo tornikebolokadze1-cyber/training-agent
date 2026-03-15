@@ -116,9 +116,12 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
                     "[recording] Non-transient auth error for meeting %s: %s — aborting",
                     meeting_id, exc,
                 )
-                alert_operator(
-                    f"Zoom auth error polling recording for meeting {meeting_id}: {exc}"
-                )
+                try:
+                    alert_operator(
+                        f"Zoom auth error polling recording for meeting {meeting_id}: {exc}"
+                    )
+                except Exception:
+                    logger.error("[recording] alert_operator also failed for meeting %s", meeting_id)
                 return None
 
             logger.warning(
@@ -161,11 +164,14 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         meeting_id,
         RECORDING_POLL_TIMEOUT // 60,
     )
-    alert_operator(
-        f"Recording NOT FOUND after {RECORDING_POLL_TIMEOUT // 60} min "
-        f"for meeting {meeting_id}.\n"
-        f"Check Zoom dashboard — manual processing may be needed."
-    )
+    try:
+        alert_operator(
+            f"Recording NOT FOUND after {RECORDING_POLL_TIMEOUT // 60} min "
+            f"for meeting {meeting_id}.\n"
+            f"Check Zoom dashboard — manual processing may be needed."
+        )
+    except Exception:
+        logger.error("[recording] alert_operator also failed for meeting %s", meeting_id)
     return None
 
 
@@ -375,10 +381,13 @@ async def pre_meeting_job(group_number: int) -> None:
         )
     except Exception as exc:
         logger.error("[pre] WhatsApp reminder failed: %s", exc)
-        alert_operator(
-            f"WhatsApp reminder FAILED for Group {group_number}, "
-            f"Lecture #{lecture_number}.\nError: {exc}"
-        )
+        try:
+            alert_operator(
+                f"WhatsApp reminder FAILED for Group {group_number}, "
+                f"Lecture #{lecture_number}.\nError: {exc}"
+            )
+        except Exception:
+            logger.error("[pre] alert_operator also failed for Group %d", group_number)
 
     # ---- Schedule post-meeting job ------------------------------------------
     # Fire at 22:00 today (lecture end time) so that post-meeting processing

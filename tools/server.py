@@ -20,6 +20,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from zoneinfo import ZoneInfo
+
 from tools.config import (
     GROUPS,
     IS_RAILWAY,
@@ -32,6 +34,8 @@ from tools.config import (
     get_lecture_folder_name,
     get_lecture_number,
 )
+
+_TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 from tools.gdrive_manager import (
     ensure_folder,
     get_drive_service,
@@ -507,7 +511,11 @@ async def zoom_webhook(
       - recording.completed: Extracts recording URL, determines group/lecture,
         and kicks off the processing pipeline.
 
-    Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC.
+    Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC-SHA256.
+    This endpoint does NOT use verify_webhook_secret() because Zoom cannot attach
+    a custom Authorization header — instead, Zoom's own HMAC signature (in the
+    request body) provides equivalent authentication.  See CLAUDE.md note about
+    WEBHOOK_SECRET; this is an intentional exception for Zoom-originated webhooks.
     """
     raw_body = await request.body()
     body = await request.json()
@@ -585,7 +593,7 @@ async def zoom_webhook(
     try:
         meeting_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
     except (ValueError, AttributeError):
-        meeting_date = datetime.now().date()
+        meeting_date = datetime.now(_TBILISI_TZ).date()
 
     lecture_number = get_lecture_number(group_number, for_date=meeting_date)
     if lecture_number == 0:

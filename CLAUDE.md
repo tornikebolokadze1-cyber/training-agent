@@ -55,7 +55,7 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 - Gemini prompts are in Georgian — don't translate them
 - Gap + deep analysis reports go to private Drive folder (კურსი #N ანალიზი) + link via private WhatsApp
 - Lecture summaries go to Google Drive in the correct ლექცია folder (shared with group)
-- Python server must validate WEBHOOK_SECRET on all incoming requests
+- Python server must validate WEBHOOK_SECRET on all incoming requests (exception: `/zoom-webhook` uses Zoom's own HMAC-SHA256 signature instead, since Zoom cannot attach custom Authorization headers)
 
 ## API Integrations
 - **Zoom**: Server-to-Server OAuth (meeting:write, recording:read)
