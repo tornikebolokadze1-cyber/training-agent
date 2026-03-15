@@ -19,7 +19,7 @@ from tools.config import GROUPS, TMP_DIR, get_lecture_folder_name
 from tools.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
 from tools.gemini_analyzer import analyze_lecture
 from tools.knowledge_indexer import index_lecture_content
-from tools.whatsapp_sender import send_group_upload_notification, send_private_report
+from tools.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ def _upload_summary_to_drive(
         return doc_id
     except Exception as e:
         logger.error("Failed to upload summary to Drive: %s", e)
+        try:
+            alert_operator(f"Drive summary upload FAILED (G{group_number} L#{lecture_number}): {e}")
+        except Exception:
+            pass
         return None
 
 
@@ -138,6 +142,10 @@ def _upload_private_report_to_drive(
 
     except Exception as e:
         logger.error("Failed to upload private report to Drive: %s", e)
+        try:
+            alert_operator(f"Drive private report upload FAILED (G{group_number} L#{lecture_number}): {e}")
+        except Exception:
+            pass
         return None
 
 
@@ -169,6 +177,10 @@ def _notify_group_whatsapp(
         logger.info("WhatsApp group notification sent for Group %d, Lecture #%d", group_number, lecture_number)
     except Exception as e:
         logger.error("Failed to send WhatsApp group notification: %s", e)
+        try:
+            alert_operator(f"WhatsApp group notification FAILED (G{group_number} L#{lecture_number}): {e}")
+        except Exception:
+            pass
 
 
 def _send_private_report_to_tornike(
@@ -198,6 +210,9 @@ def _send_private_report_to_tornike(
         logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
     except Exception as e:
         logger.error("Failed to send private report link: %s", e)
+        # Don't alert_operator here — this IS the private channel to Tornike
+        # Just log at CRITICAL level so it appears in rotating log
+        logger.critical("CRITICAL: Private report delivery failed for G%d L#%d: %s", group_number, lecture_number, e)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +251,7 @@ def transcribe_and_index(
     existing_transcript = None
     if transcript_path.exists():
         candidate = transcript_path.read_text(encoding="utf-8")
-        if len(candidate.strip()) >= 500:
+        if len(candidate.strip()) >= 2000:
             existing_transcript = candidate
             logger.info(
                 "Found existing transcript (%d chars) — skipping transcription",
@@ -307,6 +322,23 @@ def transcribe_and_index(
         except Exception as e:
             logger.error("Failed to index %s into Pinecone: %s", content_type, e)
             index_counts[content_type] = 0
+            try:
+                alert_operator(f"Pinecone indexing FAILED for {content_type} (G{group_number} L#{lecture_number}): {e}")
+            except Exception:
+                pass
+
+    # Quality gate: warn if critical analysis outputs are empty
+    empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
+    if empty_analyses:
+        warning_msg = (
+            f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
+            f"{', '.join(empty_analyses)}"
+        )
+        logger.warning(warning_msg)
+        try:
+            alert_operator(warning_msg)
+        except Exception:
+            pass
 
     total = sum(index_counts.values())
     logger.info(

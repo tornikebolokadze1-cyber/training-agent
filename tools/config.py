@@ -49,6 +49,9 @@ def _decode_b64_env(key: str) -> str | None:
         return None
 
 
+_credential_file_cache: dict[str, Path] = {}
+
+
 def _materialize_credential_file(
     b64_env_key: str,
     fallback_path: Path,
@@ -58,7 +61,7 @@ def _materialize_credential_file(
 
     On Railway (no persistent filesystem), the base64 env var is decoded and
     written to a secure temp file.  Locally, the file at ``fallback_path`` is
-    used directly.
+    used directly.  Results are cached so repeated calls reuse the same file.
 
     Returns:
         Path to the credential file (either the original or a temp file).
@@ -66,11 +69,14 @@ def _materialize_credential_file(
     Raises:
         FileNotFoundError: If neither the env var nor the local file is available.
     """
+    # Check cache first
+    if b64_env_key in _credential_file_cache:
+        cached = _credential_file_cache[b64_env_key]
+        if cached.exists():
+            return cached
+
     decoded = _decode_b64_env(b64_env_key)
     if decoded:
-        # Write to a temp file with restricted permissions.
-        # Using NamedTemporaryFile with delete=False so the file persists
-        # for the lifetime of the process.
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".json",
@@ -80,8 +86,10 @@ def _materialize_credential_file(
         tmp.write(decoded)
         tmp.close()
         os.chmod(tmp.name, file_permissions)
-        logger.info("Materialized %s from env var to %s", b64_env_key, tmp.name)
-        return Path(tmp.name)
+        result = Path(tmp.name)
+        _credential_file_cache[b64_env_key] = result
+        logger.info("Materialized %s from env var to %s", b64_env_key, result)
+        return result
 
     if fallback_path.exists():
         return fallback_path
@@ -129,7 +137,6 @@ GROUPS = {
         "zoom_meeting_id": _env("ZOOM_GROUP1_MEETING_ID"),
         "meeting_days": [1, 4],  # Tuesday=1, Friday=4 (Monday=0)
         "start_date": date(2026, 3, 13),  # First lecture: Friday March 13
-        "manychat_flow_id": _env("MANYCHAT_GROUP1_FLOW_ID"),
         "attendee_emails": _ATTENDEES.get("1", []),
     },
     2: {
@@ -140,7 +147,6 @@ GROUPS = {
         "zoom_meeting_id": _env("ZOOM_GROUP2_MEETING_ID"),
         "meeting_days": [0, 3],  # Monday=0, Thursday=3
         "start_date": date(2026, 3, 12),  # First lecture: Thursday March 12
-        "manychat_flow_id": _env("MANYCHAT_GROUP2_FLOW_ID"),
         "attendee_emails": _ATTENDEES.get("2", []),
     },
 }
@@ -158,6 +164,7 @@ LECTURE_FOLDER_IDS: dict[int, dict[int, str]] = {1: {}, 2: {}}
 ZOOM_ACCOUNT_ID = _env("ZOOM_ACCOUNT_ID")
 ZOOM_CLIENT_ID = _env("ZOOM_CLIENT_ID")
 ZOOM_CLIENT_SECRET = _env("ZOOM_CLIENT_SECRET")
+ZOOM_WEBHOOK_SECRET_TOKEN = _env("ZOOM_WEBHOOK_SECRET_TOKEN", "")
 
 # Google OAuth credentials file — resolved from base64 env var or local file.
 # This is evaluated lazily via a function to avoid crashing at import time
@@ -188,9 +195,6 @@ GOOGLE_CREDENTIALS_PATH = _env("GOOGLE_CREDENTIALS_PATH", "./credentials.json")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_API_KEY_PAID = _env("GEMINI_API_KEY_PAID")
 
-MANYCHAT_API_KEY = _env("MANYCHAT_API_KEY")
-MANYCHAT_TORNIKE_SUBSCRIBER_ID = _env("MANYCHAT_TORNIKE_SUBSCRIBER_ID")
-
 # Green API (WhatsApp) — replaces ManyChat
 GREEN_API_INSTANCE_ID = _env("GREEN_API_INSTANCE_ID")
 GREEN_API_TOKEN = _env("GREEN_API_TOKEN")
@@ -214,6 +218,53 @@ try:
 except (ValueError, TypeError):
     SERVER_PORT = 5001
 SERVER_PUBLIC_URL = _env("SERVER_PUBLIC_URL")  # e.g. "https://abc123.ngrok.io"
+
+# ---------------------------------------------------------------------------
+# Startup validation — fail fast on missing critical config
+# ---------------------------------------------------------------------------
+
+
+def validate_critical_config() -> list[str]:
+    """Check that critical environment variables are set.
+
+    Returns a list of warning messages for missing non-critical vars.
+    Raises RuntimeError if any critical var is missing.
+    """
+    warnings: list[str] = []
+
+    # Critical for production — server won't work without these
+    critical_missing = []
+    if not WEBHOOK_SECRET:
+        critical_missing.append("WEBHOOK_SECRET")
+
+    # Important but not fatal — specific features won't work
+    if not GEMINI_API_KEY and not GEMINI_API_KEY_PAID:
+        warnings.append("No Gemini API key configured (GEMINI_API_KEY or GEMINI_API_KEY_PAID)")
+    if not ANTHROPIC_API_KEY:
+        warnings.append("ANTHROPIC_API_KEY not set — Claude reasoning disabled")
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        warnings.append("Green API not configured — WhatsApp notifications disabled")
+    if not WHATSAPP_TORNIKE_PHONE:
+        warnings.append("WHATSAPP_TORNIKE_PHONE not set — operator alerts disabled")
+
+    # Log warnings
+    for w in warnings:
+        logger.warning("Config: %s", w)
+
+    # Critical failures only in Railway (production)
+    if IS_RAILWAY and critical_missing:
+        raise RuntimeError(
+            f"Critical env vars missing in production: {', '.join(critical_missing)}"
+        )
+    elif critical_missing:
+        for var in critical_missing:
+            logger.warning("Config: %s not set (OK for local dev)", var)
+
+    return warnings
+
+
+# Run validation at import time
+_config_warnings = validate_critical_config()
 
 # ---------------------------------------------------------------------------
 # Paths

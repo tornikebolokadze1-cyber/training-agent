@@ -14,14 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz
+from zoneinfo import ZoneInfo
 
 from tools.config import (
     GROUPS,
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-TBILISI_TZ = pytz.timezone("Asia/Tbilisi")
+TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 LECTURE_START_HOUR = 20       # 20:00 GMT+4
 REMINDER_OFFSET_MINUTES = 60  # fire at T-60 (19:00)
 REMINDER_HOUR = LECTURE_START_HOUR - (REMINDER_OFFSET_MINUTES // 60)  # 19
@@ -108,11 +108,22 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         try:
             recordings = zm.get_meeting_recordings(meeting_id)
         except Exception as exc:
+            # Distinguish transient (network) vs non-transient (auth) errors
+            error_str = str(exc).lower()
+            is_auth_error = any(kw in error_str for kw in ("401", "403", "unauthorized", "forbidden"))
+            if is_auth_error:
+                logger.error(
+                    "[recording] Non-transient auth error for meeting %s: %s — aborting",
+                    meeting_id, exc,
+                )
+                alert_operator(
+                    f"Zoom auth error polling recording for meeting {meeting_id}: {exc}"
+                )
+                return None
+
             logger.warning(
-                "[recording] Poll error for meeting %s: %s — retrying in %d min",
-                meeting_id,
-                exc,
-                RECORDING_POLL_INTERVAL // 60,
+                "[recording] Transient error for meeting %s: %s — retrying in %d min",
+                meeting_id, exc, RECORDING_POLL_INTERVAL // 60,
             )
             time.sleep(RECORDING_POLL_INTERVAL)
             elapsed += RECORDING_POLL_INTERVAL
@@ -364,6 +375,10 @@ async def pre_meeting_job(group_number: int) -> None:
         )
     except Exception as exc:
         logger.error("[pre] WhatsApp reminder failed: %s", exc)
+        alert_operator(
+            f"WhatsApp reminder FAILED for Group {group_number}, "
+            f"Lecture #{lecture_number}.\nError: {exc}"
+        )
 
     # ---- Schedule post-meeting job ------------------------------------------
     # Fire at 22:00 today (lecture end time) so that post-meeting processing

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,16 +14,23 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from tools.config import (
+    GROUPS,
     IS_RAILWAY,
     N8N_CALLBACK_URL,
     SERVER_HOST,
     SERVER_PORT,
     TMP_DIR,
     WEBHOOK_SECRET,
+    ZOOM_WEBHOOK_SECRET_TOKEN,
     get_lecture_folder_name,
+    get_lecture_number,
 )
 from tools.gdrive_manager import (
     ensure_folder,
@@ -63,6 +72,14 @@ def _evict_stale_tasks() -> list[str]:
     for key in stale:
         _processing_tasks.pop(key, None)
         logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
+    if stale:
+        try:
+            alert_operator(
+                f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
+                f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
+            )
+        except Exception:
+            pass
     return stale
 
 
@@ -97,10 +114,33 @@ if _server_public_url:
     if _parsed.hostname:
         _allowed_hosts.append(_parsed.hostname)
 
+# On Railway, the internal health checker and proxy use IP-based Host headers
+# that can't be enumerated. Railway's own proxy already validates external
+# hosts, so we use wildcard to avoid rejecting legitimate internal traffic.
+if IS_RAILWAY:
+    _allowed_hosts = ["*"]
+
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=_allowed_hosts,
 )
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Correlation ID middleware — must be defined before routes
+@app.middleware("http")
+async def add_correlation_id(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4())[:8])
+    request.state.correlation_id = correlation_id
+    logger.info("[%s] %s %s", correlation_id, request.method, request.url.path)
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
+
 
 assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_available else None
 
@@ -319,8 +359,16 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 await asyncio.sleep(delay)
             else:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
+                try:
+                    alert_operator(f"n8n callback failed after 3 retries: {e}")
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("Callback failed with non-retryable error: %s", e)
+            try:
+                alert_operator(f"n8n callback failed (non-retryable): {e}")
+            except Exception:
+                pass
             return
 
 
@@ -329,7 +377,8 @@ async def _send_callback(payload: CallbackPayload) -> None:
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
-async def health_check():
+@limiter.limit("60/minute")
+async def health_check(request: Request):
     """Health check endpoint with basic dependency verification."""
     checks: dict[str, str] = {}
 
@@ -350,16 +399,21 @@ async def health_check():
     checks["tasks_in_progress"] = str(len(_processing_tasks))
 
     overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
+    status_code = 200 if overall == "healthy" else 503
 
-    return {
-        "status": overall,
-        "service": "training-agent",
-        "timestamp": datetime.now().isoformat(),
-        "checks": checks,
-    }
+    return JSONResponse(
+        content={
+            "status": overall,
+            "service": "training-agent",
+            "timestamp": datetime.now().isoformat(),
+            "checks": checks,
+        },
+        status_code=status_code,
+    )
 
 
 @app.post("/whatsapp-incoming")
+@limiter.limit("30/minute")
 async def whatsapp_incoming(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -434,9 +488,139 @@ async def _handle_assistant_message(message: "IncomingMessage") -> None:
             )
     except Exception as e:
         logger.error("Assistant error: %s", e, exc_info=True)
+        try:
+            alert_operator(f"WhatsApp assistant crashed: {e}")
+        except Exception:
+            pass
+
+
+@app.post("/zoom-webhook")
+@limiter.limit("10/minute")
+async def zoom_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Receive Zoom webhook events directly (replaces n8n middleman).
+
+    Handles two event types:
+      - endpoint.url_validation: CRC challenge-response for Zoom verification.
+      - recording.completed: Extracts recording URL, determines group/lecture,
+        and kicks off the processing pipeline.
+
+    Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC.
+    """
+    raw_body = await request.body()
+    body = await request.json()
+    event = body.get("event", "")
+
+    # --- CRC validation (Zoom verifies webhook ownership) ---
+    # CRC events don't carry HMAC signatures, so skip verification for them.
+    if event == "endpoint.url_validation":
+        plain_token = body.get("payload", {}).get("plainToken", "")
+        if not ZOOM_WEBHOOK_SECRET_TOKEN:
+            raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
+        encrypted_token = hmac.new(
+            ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
+            plain_token.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
+
+    # --- HMAC-SHA256 signature verification ---
+    if not ZOOM_WEBHOOK_SECRET_TOKEN:
+        raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
+
+    timestamp = request.headers.get("x-zm-request-timestamp", "")
+    signature = request.headers.get("x-zm-signature", "")
+    if not timestamp or not signature:
+        raise HTTPException(status_code=401, detail="Missing Zoom signature headers")
+
+    message = f"v0:{timestamp}:{raw_body.decode()}"
+    expected_sig = "v0=" + hmac.new(
+        ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
+        message.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_sig):
+        logger.warning("Zoom webhook signature mismatch — rejecting request")
+        raise HTTPException(status_code=401, detail="Invalid Zoom webhook signature")
+
+    # --- recording.completed ---
+    if event != "recording.completed":
+        return {"status": "ignored", "event": event}
+
+    payload = body.get("payload", {})
+    obj = payload.get("object", {})
+    topic = obj.get("topic", "")
+    recordings = obj.get("recording_files", [])
+
+    # Find the best MP4 recording
+    video = next(
+        (r for r in recordings
+         if r.get("file_type") == "MP4"
+         and r.get("recording_type") == "shared_screen_with_speaker_view"),
+        None,
+    ) or next(
+        (r for r in recordings if r.get("file_type") == "MP4"),
+        None,
+    )
+    if not video:
+        logger.warning("Zoom webhook: no MP4 recording found in event")
+        return {"status": "ignored", "reason": "no MP4 recording"}
+
+    # Determine group from meeting topic (Georgian: ჯგუფი #1 / ჯგუფი #2)
+    group_number = 0
+    if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:
+        group_number = 1
+    elif "\u10ef\u10d2\u10e3\u10e4\u10d8 #2" in topic:
+        group_number = 2
+
+    if group_number == 0:
+        logger.warning("Zoom webhook: could not determine group from topic: %s", topic)
+        return {"status": "ignored", "reason": f"unknown group in topic: {topic}"}
+
+    # Calculate lecture number from meeting date
+    start_time = obj.get("start_time", "")
+    try:
+        meeting_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        meeting_date = datetime.now().date()
+
+    lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+    if lecture_number == 0:
+        lecture_number = 1  # fallback for test meetings
+
+    download_url = video.get("download_url", "")
+    access_token = body.get("download_token", "")
+    drive_folder_id = GROUPS[group_number].get("drive_folder_id", "")
+
+    logger.info(
+        "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
+        group_number, lecture_number, topic,
+    )
+
+    # Dedup and process (reuse existing logic)
+    _evict_stale_tasks()
+    key = _task_key(group_number, lecture_number)
+    if key in _processing_tasks:
+        return {"status": "duplicate", "message": f"{key} already processing"}
+    _processing_tasks[key] = datetime.now()
+
+    proc_payload = ProcessRecordingRequest(
+        download_url=download_url,
+        access_token=access_token,
+        group_number=group_number,
+        lecture_number=lecture_number,
+        drive_folder_id=drive_folder_id,
+    )
+    background_tasks.add_task(process_recording_task, proc_payload)
+
+    return {"status": "accepted", "group": group_number, "lecture": lecture_number}
 
 
 @app.post("/process-recording")
+@limiter.limit("5/minute")
 async def process_recording(
     request: Request,
     payload: ProcessRecordingRequest,

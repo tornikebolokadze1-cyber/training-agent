@@ -17,8 +17,6 @@ Run with:
 
 from __future__ import annotations
 
-import sys
-import types
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,145 +24,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Ensure the project root is importable regardless of working directory.
-# ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-
-# ---------------------------------------------------------------------------
-# Stub heavy optional dependencies so imports never hit real API clients.
+# Module stubs are set up in tools/tests/conftest.py (shared across all
+# test files).  Only project-level imports needed here.
 # ---------------------------------------------------------------------------
 
-def _stub_module(name: str) -> types.ModuleType:
-    """Register a lightweight stub module under *name* in sys.modules."""
-    mod = types.ModuleType(name)
-    sys.modules.setdefault(name, mod)
-    return mod
-
-
-# google namespace — must cover every sub-package imported by project code so
-# that the namespace package itself is never the real installed "google" pkg
-# (which would cause "not a package" errors when we try to add sub-modules).
-_google = _stub_module("google")
-
-# google.genai
-_google_genai = _stub_module("google.genai")
-_google_genai_types = _stub_module("google.genai.types")
-_google_genai_types.GenerateContentConfig = object
-_google.genai = _google_genai
-
-# google.oauth2 (used by gdrive_manager via google-auth)
-_google_oauth2 = _stub_module("google.oauth2")
-_google_oauth2_creds = _stub_module("google.oauth2.credentials")
-_google_oauth2_creds.Credentials = MagicMock
-_google_oauth2_svc = _stub_module("google.oauth2.service_account")
-_google_oauth2_svc.Credentials = MagicMock
-_google.oauth2 = _google_oauth2
-
-# google.auth.transport.requests (used by gdrive_manager)
-_google_auth = _stub_module("google.auth")
-_google_auth_transport = _stub_module("google.auth.transport")
-_google_auth_transport_requests = _stub_module("google.auth.transport.requests")
-_google_auth_transport_requests.Request = MagicMock
-_google.auth = _google_auth
-
-# google_auth_oauthlib (optional OAuth2 flow used in gdrive_manager)
-_stub_module("google_auth_oauthlib")
-_google_auth_oauthlib_flow = _stub_module("google_auth_oauthlib.flow")
-_google_auth_oauthlib_flow.InstalledAppFlow = MagicMock
-
-# googleapiclient (Google Drive API client)
-# Register sub-modules BEFORE the top-level so the namespace is not
-# claimed by a plain ModuleType that would block further attribute lookup.
-_googleapiclient_discovery = _stub_module("googleapiclient.discovery")
-_googleapiclient_discovery.build = MagicMock
-
-_googleapiclient_errors = _stub_module("googleapiclient.errors")
-_googleapiclient_errors.HttpError = type("HttpError", (Exception,), {})
-
-_googleapiclient_http = _stub_module("googleapiclient.http")
-_googleapiclient_http.MediaFileUpload = MagicMock
-_googleapiclient_http.MediaIoBaseDownload = MagicMock
-_googleapiclient_http.MediaIoBaseUpload = MagicMock
-
-_googleapiclient = _stub_module("googleapiclient")
-_googleapiclient.discovery = _googleapiclient_discovery
-_googleapiclient.errors = _googleapiclient_errors
-_googleapiclient.http = _googleapiclient_http
-
-# pinecone
-_pinecone = _stub_module("pinecone")
-_pinecone.Pinecone = MagicMock
-_pinecone.ServerlessSpec = MagicMock
-
-# anthropic
-_anthropic = _stub_module("anthropic")
-_anthropic.Anthropic = MagicMock
-_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
-
-# httpx — used by server / whatsapp_sender
-_httpx = _stub_module("httpx")
-_httpx.Client = MagicMock
-_httpx.AsyncClient = MagicMock
-_httpx.Timeout = MagicMock
-
-# fastapi family
-_fastapi = _stub_module("fastapi")
-_fastapi.FastAPI = MagicMock
-_fastapi.Header = MagicMock(return_value=None)
-_fastapi.HTTPException = type("HTTPException", (Exception,), {"__init__": lambda self, status_code=0, detail="": None})
-_fastapi.Request = MagicMock
-_fastapi.BackgroundTasks = MagicMock
-_fastapi_responses = _stub_module("fastapi.responses")
-
-# pydantic
-_pydantic = _stub_module("pydantic")
-
-
-class _BaseModel:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-    def model_dump(self):
-        return self.__dict__
-
-
-_pydantic.BaseModel = _BaseModel
-
-# dotenv — loaded during config import
-_dotenv = _stub_module("dotenv")
-_dotenv.load_dotenv = lambda *a, **kw: None
-
-# tools.whatsapp_assistant — server.py imports this inside a try/except and
-# then immediately calls WhatsAppAssistant() if the import succeeds.
-# The real constructor validates ANTHROPIC_API_KEY which is not set in CI.
-# Provide a no-op stub so the import succeeds but construction does nothing.
-_wa_assistant_mod = _stub_module("tools.whatsapp_assistant")
-
-
-class _NoOpAssistant:
-    async def handle_message(self, *a, **kw):
-        return None
-
-
-class _IncomingMessage:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-
-_wa_assistant_mod.WhatsAppAssistant = _NoOpAssistant
-_wa_assistant_mod.IncomingMessage = _IncomingMessage
-
-
-# ---------------------------------------------------------------------------
-# Now it is safe to import project modules.
-# ---------------------------------------------------------------------------
-
-from tools.config import (  # noqa: E402
+from tools.config import (
     GROUPS,
     TOTAL_LECTURES,
     get_group_for_weekday,
