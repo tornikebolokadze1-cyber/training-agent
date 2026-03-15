@@ -97,6 +97,12 @@ if _server_public_url:
     if _parsed.hostname:
         _allowed_hosts.append(_parsed.hostname)
 
+# On Railway, the internal health checker and proxy use IP-based Host headers
+# that can't be enumerated. Railway's own proxy already validates external
+# hosts, so we use wildcard to avoid rejecting legitimate internal traffic.
+if IS_RAILWAY:
+    _allowed_hosts = ["*"]
+
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=_allowed_hosts,
