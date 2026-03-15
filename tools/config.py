@@ -105,7 +105,7 @@ def _load_attendees() -> dict[str, list[str]]:
     # Fall back to local file
     attendees_path = Path(__file__).parent.parent / "attendees.json"
     if attendees_path.exists():
-        with open(attendees_path) as f:
+        with open(attendees_path, encoding="utf-8") as f:
             return json.load(f)
     return {"1": [], "2": []}
 
@@ -208,7 +208,7 @@ PINECONE_INDEX_NAME = "training-course"
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
-SERVER_HOST = _env("SERVER_HOST", "127.0.0.1")
+SERVER_HOST = _env("SERVER_HOST", "0.0.0.0" if IS_RAILWAY else "127.0.0.1")
 try:
     SERVER_PORT = int(_env("SERVER_PORT", _env("PORT", "5001")))
 except (ValueError, TypeError):

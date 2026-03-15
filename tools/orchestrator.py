@@ -21,11 +21,13 @@ from typing import Any
 import uvicorn
 
 from tools.config import (
+    ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GOOGLE_CREDENTIALS_PATH,
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     N8N_CALLBACK_URL,
+    PINECONE_API_KEY,
     PROJECT_ROOT,
     SERVER_HOST,
     SERVER_PORT,
@@ -51,6 +53,8 @@ _CREDENTIALS: list[tuple[str, str, bool]] = [
     ("GREEN_API_INSTANCE_ID", GREEN_API_INSTANCE_ID, True),
     ("GREEN_API_TOKEN", GREEN_API_TOKEN, True),
     ("WEBHOOK_SECRET", WEBHOOK_SECRET, True),
+    ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY, True),
+    ("PINECONE_API_KEY", PINECONE_API_KEY, True),
     ("N8N_CALLBACK_URL", N8N_CALLBACK_URL, False),  # optional but warn
     ("GOOGLE_CREDENTIALS_PATH", GOOGLE_CREDENTIALS_PATH, False),
 ]

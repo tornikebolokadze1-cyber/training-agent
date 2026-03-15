@@ -186,7 +186,8 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         parsed = urlparse(payload.download_url)
         if parsed.scheme != "https":
             raise ValueError(f"Only HTTPS download URLs allowed, got: {parsed.scheme}")
-        if not parsed.hostname or not parsed.hostname.endswith("zoom.us"):
+        hostname = (parsed.hostname or "").lower()
+        if hostname != "zoom.us" and not hostname.endswith(".zoom.us"):
             raise ValueError(f"Download URL must be from zoom.us, got: {parsed.hostname}")
 
         # Step 1: Download the Zoom recording
@@ -272,8 +273,10 @@ async def _download_recording(url: str, access_token: str, dest: Path) -> None:
             response.raise_for_status()
 
             # SSRF guard: validate final URL after redirects
-            final_host = response.url.host or ""
-            if not final_host.endswith("zoom.us") and not final_host.endswith("zoomgov.com"):
+            final_host = (response.url.host or "").lower()
+            is_zoom = final_host == "zoom.us" or final_host.endswith(".zoom.us")
+            is_zoomgov = final_host == "zoomgov.com" or final_host.endswith(".zoomgov.com")
+            if not is_zoom and not is_zoomgov:
                 raise ValueError(
                     f"Download redirected to untrusted host: {final_host}"
                 )
