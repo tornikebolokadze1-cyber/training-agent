@@ -34,7 +34,7 @@ from tools.config import (
     ZOOM_CLIENT_ID,
     ZOOM_CLIENT_SECRET,
 )
-from tools.server import app
+from tools.server import app, verify_webhook_secret
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +91,15 @@ def validate_credentials() -> None:
 # /status endpoint — mounted on the imported FastAPI app
 # ---------------------------------------------------------------------------
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 _status_router = APIRouter()
 
 
 @_status_router.get("/status", tags=["Orchestrator"])
-async def status_endpoint() -> JSONResponse:
+async def status_endpoint(authorization: str | None = Header(None)) -> JSONResponse:
+    verify_webhook_secret(authorization)
     """Return a unified health dashboard.
 
     Fields:
@@ -172,10 +173,40 @@ app.include_router(_status_router)
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    """Record startup time on app.state so /status can compute uptime."""
+    """Record startup time and clean up stale temp files from prior runs."""
     app.state.started_at = datetime.now(timezone.utc)
     app.state.last_execution_results = []
+
+    # Clean up stale .tmp/ files from crashed/restarted pipelines
+    _cleanup_stale_tmp_files()
+
     logger.info("FastAPI application started.")
+
+
+def _cleanup_stale_tmp_files() -> None:
+    """Remove .mp4 files older than 6 hours from .tmp/ on startup.
+
+    Prevents disk accumulation when Railway restarts mid-pipeline.
+    """
+    from tools.config import TMP_DIR
+    import time
+
+    stale_hours = 6
+    cutoff = time.time() - stale_hours * 3600
+    cleaned = 0
+
+    for pattern in ("*.mp4", "*.chunk*.mp4"):
+        for f in TMP_DIR.glob(pattern):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    cleaned += 1
+                    logger.info("Cleaned stale temp file: %s", f.name)
+            except OSError as e:
+                logger.warning("Failed to clean %s: %s", f.name, e)
+
+    if cleaned:
+        logger.info("Startup cleanup: removed %d stale temp file(s)", cleaned)
 
 
 # ---------------------------------------------------------------------------
@@ -292,17 +323,21 @@ def _configure_logging() -> None:
     console.setFormatter(formatter)
     root.addHandler(console)
 
-    # File handler — rotating, 10 MB per file, 5 backups
-    log_dir = PROJECT_ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "training_agent.log",
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    # File handler — rotating, 10 MB per file, 5 backups.
+    # Skip on Railway: the filesystem is ephemeral and Railway captures
+    # stdout/stderr automatically in its log viewer.
+    import os
+    if not os.getenv("RAILWAY_ENVIRONMENT"):
+        log_dir = PROJECT_ROOT / "logs"
+        log_dir.mkdir(exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_dir / "training_agent.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
     # Suppress overly chatty third-party loggers
     logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)

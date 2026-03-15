@@ -19,7 +19,13 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from tools.config import GOOGLE_CREDENTIALS_PATH, GROUPS, PROJECT_ROOT
+from tools.config import (
+    GROUPS,
+    IS_RAILWAY,
+    PROJECT_ROOT,
+    _materialize_credential_file,
+    get_google_credentials_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +34,6 @@ GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 # Separate token file for Gmail (Drive uses token.json with Drive scopes)
 TOKEN_PATH = PROJECT_ROOT / "token_gmail.json"
-CREDENTIALS_PATH = Path(GOOGLE_CREDENTIALS_PATH)
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -40,8 +45,21 @@ RETRY_BACKOFF_BASE = 2  # seconds; delay = base ** attempt
 # ---------------------------------------------------------------------------
 
 
+def _get_gmail_token_path() -> Path:
+    """Resolve the Gmail token file path.
+
+    On Railway, decodes GOOGLE_GMAIL_TOKEN_JSON_B64 to a temp file.
+    Locally, uses TOKEN_PATH (project_root/token_gmail.json).
+    """
+    return _materialize_credential_file("GOOGLE_GMAIL_TOKEN_JSON_B64", TOKEN_PATH)
+
+
 def _load_credentials() -> Credentials:
     """Load OAuth2 credentials, refreshing or re-authorising as needed.
+
+    On Railway, credentials are loaded from base64 env vars and refreshed
+    in memory only. The refresh_token is long-lived and does not need to
+    be persisted back.
 
     Returns:
         Valid :class:`google.oauth2.credentials.Credentials` instance.
@@ -50,22 +68,20 @@ def _load_credentials() -> Credentials:
         FileNotFoundError: If credentials.json is missing.
         RuntimeError: If the OAuth2 flow cannot be completed.
     """
-    if not CREDENTIALS_PATH.exists():
-        raise FileNotFoundError(
-            f"credentials.json not found at {CREDENTIALS_PATH}. "
-            "Download it from Google Cloud Console → APIs & Services → Credentials."
-        )
+    credentials_path = get_google_credentials_path()
 
     creds: Credentials | None = None
 
     # Attempt to load an existing token
-    if TOKEN_PATH.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), GMAIL_SCOPES)
-            logger.debug("Loaded existing token from %s", TOKEN_PATH)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not load token.json (%s) — will re-authorise.", exc)
-            creds = None
+    try:
+        token_path = _get_gmail_token_path()
+        creds = Credentials.from_authorized_user_file(str(token_path), GMAIL_SCOPES)
+        logger.debug("Loaded existing Gmail token from %s", token_path)
+    except FileNotFoundError:
+        logger.info("No Gmail token file found — will need to authorise.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load Gmail token (%s) — will re-authorise.", exc)
+        creds = None
 
     # Refresh or re-authorise
     if creds and creds.valid:
@@ -78,17 +94,36 @@ def _load_credentials() -> Credentials:
         except TransportError as exc:
             logger.error("Failed to refresh credentials: %s", exc)
             raise RuntimeError("Gmail credentials refresh failed.") from exc
-    else:
-        logger.info("Running OAuth2 authorisation flow.")
-        flow = InstalledAppFlow.from_client_secrets_file(
-            str(CREDENTIALS_PATH), GMAIL_SCOPES
+
+        # Only persist to disk in local development
+        if not IS_RAILWAY:
+            TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            TOKEN_PATH.chmod(0o600)
+            logger.info("Saved refreshed Gmail token to %s", TOKEN_PATH)
+        else:
+            logger.info("Gmail credentials refreshed in memory (Railway mode)")
+
+        return creds
+
+    # Full re-authorisation needed
+    if IS_RAILWAY:
+        raise RuntimeError(
+            "Gmail OAuth refresh_token is invalid or missing. "
+            "Re-authorize locally: python -c 'from tools.email_sender import _load_credentials; _load_credentials()', "
+            "then update GOOGLE_GMAIL_TOKEN_JSON_B64 in Railway with: "
+            "base64 -i token_gmail.json | tr -d '\\n'"
         )
-        creds = flow.run_local_server(port=0)
+
+    logger.info("Running OAuth2 authorisation flow for Gmail.")
+    flow = InstalledAppFlow.from_client_secrets_file(
+        str(credentials_path), GMAIL_SCOPES
+    )
+    creds = flow.run_local_server(port=0)
 
     # Persist token for future runs (restricted permissions)
     TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
     TOKEN_PATH.chmod(0o600)
-    logger.info("Saved refreshed token to %s", TOKEN_PATH)
+    logger.info("Saved Gmail token to %s", TOKEN_PATH)
 
     return creds
 

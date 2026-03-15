@@ -13,11 +13,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 from tools.config import (
-    GOOGLE_CREDENTIALS_PATH,
     GROUPS,
+    IS_RAILWAY,
     LECTURE_FOLDER_IDS,
     PROJECT_ROOT,
     TOTAL_LECTURES,
+    _decode_b64_env,
+    _materialize_credential_file,
+    get_google_credentials_path,
     get_lecture_folder_name,
 )
 
@@ -32,17 +35,52 @@ TOKEN_PATH = PROJECT_ROOT / "token.json"
 CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB chunks for resumable upload
 
 
-def _get_credentials() -> Credentials:
-    """Load or refresh Google OAuth2 credentials."""
-    creds = None
+def _get_token_path() -> Path:
+    """Resolve the Drive token.json file path.
 
-    if TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+    On Railway, decodes GOOGLE_TOKEN_JSON_B64 to a temp file.
+    Locally, uses TOKEN_PATH (project_root/token.json).
+    """
+    return _materialize_credential_file("GOOGLE_TOKEN_JSON_B64", TOKEN_PATH)
+
+
+def _get_credentials() -> Credentials:
+    """Load or refresh Google OAuth2 credentials.
+
+    On Railway (no browser, no persistent filesystem):
+    - Loads credentials from GOOGLE_TOKEN_JSON_B64 env var
+    - Refreshes access_token in memory using the refresh_token
+    - Does NOT write back to disk (the refresh_token is long-lived)
+    - If the refresh_token itself is revoked, raises RuntimeError
+      so the operator can re-authorize locally and update the env var
+    """
+    creds = None
+    token_path = _get_token_path()
+
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            # On Railway, only log that we refreshed — do not write to disk
+            # because the filesystem is ephemeral. The refresh_token in the
+            # env var remains valid.
+            if IS_RAILWAY:
+                logger.info(
+                    "Google Drive credentials refreshed in memory (Railway mode)"
+                )
+            else:
+                TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+                TOKEN_PATH.chmod(0o600)
         else:
+            if IS_RAILWAY:
+                raise RuntimeError(
+                    "Google OAuth refresh_token is invalid or missing. "
+                    "Re-authorize locally: python -m tools.gdrive_manager, "
+                    "then update GOOGLE_TOKEN_JSON_B64 in Railway with: "
+                    "base64 -i token.json | tr -d '\\n'"
+                )
             import os
             if not os.environ.get("DISPLAY") and not os.environ.get("BROWSER"):
                 raise RuntimeError(
@@ -50,24 +88,35 @@ def _get_credentials() -> Credentials:
                     "Run the application locally with a browser to re-authorize: "
                     "python -m tools.gdrive_manager"
                 )
+            credentials_path = get_google_credentials_path()
             flow = InstalledAppFlow.from_client_secrets_file(
-                GOOGLE_CREDENTIALS_PATH, SCOPES
+                str(credentials_path), SCOPES
             )
             creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-        TOKEN_PATH.chmod(0o600)
+            TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            TOKEN_PATH.chmod(0o600)
 
     return creds
 
 
+_drive_service_cache = None
+_docs_service_cache = None
+
+
 def get_drive_service():
-    """Build and return the Google Drive API service."""
-    return build("drive", "v3", credentials=_get_credentials())
+    """Build and return the Google Drive API service (cached)."""
+    global _drive_service_cache
+    if _drive_service_cache is None:
+        _drive_service_cache = build("drive", "v3", credentials=_get_credentials())
+    return _drive_service_cache
 
 
 def get_docs_service():
-    """Build and return the Google Docs API service."""
-    return build("docs", "v1", credentials=_get_credentials())
+    """Build and return the Google Docs API service (cached)."""
+    global _docs_service_cache
+    if _docs_service_cache is None:
+        _docs_service_cache = build("docs", "v1", credentials=_get_credentials())
+    return _docs_service_cache
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +228,26 @@ def upload_file(
     request = service.files().create(body=metadata, media_body=media, fields="id")
 
     response = None
+    max_retries = 5
     while response is None:
-        status, response = request.next_chunk()
-        if status:
-            progress = int(status.progress() * 100)
-            logger.info("Upload progress: %d%%", progress)
+        try:
+            status, response = request.next_chunk()
+            if status:
+                progress = int(status.progress() * 100)
+                logger.info("Upload progress: %d%%", progress)
+        except Exception as e:
+            # Retry transient errors with exponential backoff
+            max_retries -= 1
+            if max_retries <= 0:
+                logger.error("Upload failed after retries: %s", e)
+                raise
+            import time
+            delay = 2 ** (5 - max_retries)
+            logger.warning(
+                "Upload chunk failed (%d retries left): %s — retrying in %ds",
+                max_retries, e, delay,
+            )
+            time.sleep(delay)
 
     file_id = response["id"]
     logger.info("Uploaded '%s' to Drive (ID: %s)", file_path.name, file_id)

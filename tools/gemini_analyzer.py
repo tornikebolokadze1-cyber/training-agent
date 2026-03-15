@@ -52,8 +52,11 @@ def _is_quota_error(error: Exception) -> bool:
     return any(indicator in error_str for indicator in quota_indicators)
 
 
+_client_cache: dict[str, genai.Client] = {}  # keyed by API key
+
+
 def _get_client(use_free: bool = False) -> genai.Client:
-    """Create and return a Gemini API client.
+    """Return a cached Gemini API client (avoids creating 9+ clients per pipeline run).
 
     Primary: paid key (billing-enabled, higher limits).
     Fallback: free key (if paid key fails or is not configured).
@@ -61,17 +64,28 @@ def _get_client(use_free: bool = False) -> genai.Client:
     if use_free:
         if not GEMINI_API_KEY:
             raise RuntimeError("Free Gemini API key not configured — set GEMINI_API_KEY in .env")
-        logger.info("Using FREE Gemini API key (fallback)")
-        return genai.Client(api_key=GEMINI_API_KEY)
+        key = GEMINI_API_KEY
+        if key not in _client_cache:
+            logger.info("Using FREE Gemini API key (fallback)")
+            _client_cache[key] = genai.Client(api_key=key)
+        return _client_cache[key]
+
     if not GEMINI_API_KEY_PAID:
         if not GEMINI_API_KEY:
             raise RuntimeError(
                 "No Gemini API key configured — set GEMINI_API_KEY or "
                 "GEMINI_API_KEY_PAID in .env"
             )
-        logger.warning("Paid key not configured — falling back to free key")
-        return genai.Client(api_key=GEMINI_API_KEY)
-    return genai.Client(api_key=GEMINI_API_KEY_PAID)
+        key = GEMINI_API_KEY
+        if key not in _client_cache:
+            logger.warning("Paid key not configured — falling back to free key")
+            _client_cache[key] = genai.Client(api_key=key)
+        return _client_cache[key]
+
+    key = GEMINI_API_KEY_PAID
+    if key not in _client_cache:
+        _client_cache[key] = genai.Client(api_key=key)
+    return _client_cache[key]
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +295,13 @@ def _generate_with_retry(
                 ),
             )
 
-            text = response.text
+            # response.text raises ValueError if blocked by safety filters
+            try:
+                text = response.text
+            except (ValueError, AttributeError) as resp_err:
+                raise ValueError(
+                    f"Gemini response blocked or empty for {purpose}: {resp_err}"
+                ) from resp_err
             if not text:
                 raise ValueError(f"Empty response for {purpose}")
 

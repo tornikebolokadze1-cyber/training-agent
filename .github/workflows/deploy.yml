@@ -1,0 +1,55 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-railway
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --detach
+
+      - name: Wait for deployment health
+        env:
+          DEPLOY_URL: ${{ secrets.RAILWAY_PUBLIC_URL }}
+        run: |
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "RAILWAY_PUBLIC_URL secret not set — skipping health verification"
+            exit 0
+          fi
+
+          echo "Waiting for deployment to become healthy..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf "$DEPLOY_URL/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Deployment is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i/30: status=$STATUS — waiting 10s..."
+            sleep 10
+          done
+
+          echo "Deployment did not become healthy within 5 minutes"
+          exit 1

@@ -1,16 +1,32 @@
-"""Shared configuration for the Training Agent system."""
+"""Shared configuration for the Training Agent system.
+
+Supports two deployment modes:
+  - Local: reads .env file + JSON credential files from disk
+  - Railway/Cloud: reads all config from environment variables,
+    with JSON files provided as base64-encoded env vars
+"""
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import os
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
+logger = logging.getLogger(__name__)
+
+# Load .env file if present (local development); in Railway, env vars
+# are injected directly and this is a no-op.
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path)
+
+# Detect deployment environment
+RAILWAY_ENVIRONMENT = os.getenv("RAILWAY_ENVIRONMENT", "")
+IS_RAILWAY = bool(RAILWAY_ENVIRONMENT)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -18,8 +34,75 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
+def _decode_b64_env(key: str) -> str | None:
+    """Decode a base64-encoded environment variable to a UTF-8 string.
+
+    Returns None if the env var is not set or empty.
+    """
+    raw = os.getenv(key, "")
+    if not raw:
+        return None
+    try:
+        return base64.b64decode(raw).decode("utf-8")
+    except Exception as exc:
+        logger.error("Failed to decode base64 env var %s: %s", key, exc)
+        return None
+
+
+def _materialize_credential_file(
+    b64_env_key: str,
+    fallback_path: Path,
+    file_permissions: int = 0o600,
+) -> Path:
+    """Resolve a credential file from either a base64 env var or a local path.
+
+    On Railway (no persistent filesystem), the base64 env var is decoded and
+    written to a secure temp file.  Locally, the file at ``fallback_path`` is
+    used directly.
+
+    Returns:
+        Path to the credential file (either the original or a temp file).
+
+    Raises:
+        FileNotFoundError: If neither the env var nor the local file is available.
+    """
+    decoded = _decode_b64_env(b64_env_key)
+    if decoded:
+        # Write to a temp file with restricted permissions.
+        # Using NamedTemporaryFile with delete=False so the file persists
+        # for the lifetime of the process.
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            prefix=f"{b64_env_key.lower()}_",
+            delete=False,
+        )
+        tmp.write(decoded)
+        tmp.close()
+        os.chmod(tmp.name, file_permissions)
+        logger.info("Materialized %s from env var to %s", b64_env_key, tmp.name)
+        return Path(tmp.name)
+
+    if fallback_path.exists():
+        return fallback_path
+
+    raise FileNotFoundError(
+        f"Credential file not found: set {b64_env_key} env var (base64) "
+        f"or place the file at {fallback_path}"
+    )
+
+
 def _load_attendees() -> dict[str, list[str]]:
-    """Load attendee emails from external JSON file (not tracked in git)."""
+    """Load attendee emails from base64 env var or local JSON file."""
+    # Try base64 env var first (Railway)
+    decoded = _decode_b64_env("ATTENDEES_JSON_B64")
+    if decoded:
+        try:
+            return json.loads(decoded)
+        except json.JSONDecodeError as exc:
+            logger.error("Invalid ATTENDEES_JSON_B64: %s", exc)
+
+    # Fall back to local file
     attendees_path = Path(__file__).parent.parent / "attendees.json"
     if attendees_path.exists():
         with open(attendees_path) as f:
@@ -76,6 +159,31 @@ ZOOM_ACCOUNT_ID = _env("ZOOM_ACCOUNT_ID")
 ZOOM_CLIENT_ID = _env("ZOOM_CLIENT_ID")
 ZOOM_CLIENT_SECRET = _env("ZOOM_CLIENT_SECRET")
 
+# Google OAuth credentials file — resolved from base64 env var or local file.
+# This is evaluated lazily via a function to avoid crashing at import time
+# if credentials are not yet needed.
+_google_credentials_path: Path | None = None
+
+
+def get_google_credentials_path() -> Path:
+    """Return the path to the Google OAuth credentials.json file.
+
+    On Railway, decodes GOOGLE_CREDENTIALS_JSON_B64 to a temp file.
+    Locally, uses the file at GOOGLE_CREDENTIALS_PATH (default ./credentials.json).
+    """
+    global _google_credentials_path
+    if _google_credentials_path is not None and _google_credentials_path.exists():
+        return _google_credentials_path
+
+    local_path = Path(_env("GOOGLE_CREDENTIALS_PATH", "./credentials.json"))
+    _google_credentials_path = _materialize_credential_file(
+        "GOOGLE_CREDENTIALS_JSON_B64", local_path
+    )
+    return _google_credentials_path
+
+
+# Keep backward-compatible string for modules that import this directly,
+# but prefer get_google_credentials_path() in new code.
 GOOGLE_CREDENTIALS_PATH = _env("GOOGLE_CREDENTIALS_PATH", "./credentials.json")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_API_KEY_PAID = _env("GEMINI_API_KEY_PAID")
@@ -101,7 +209,10 @@ WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
 SERVER_HOST = _env("SERVER_HOST", "127.0.0.1")
-SERVER_PORT = int(_env("SERVER_PORT", "5001"))
+try:
+    SERVER_PORT = int(_env("SERVER_PORT", _env("PORT", "5001")))
+except (ValueError, TypeError):
+    SERVER_PORT = 5001
 SERVER_PUBLIC_URL = _env("SERVER_PUBLIC_URL")  # e.g. "https://abc123.ngrok.io"
 
 # ---------------------------------------------------------------------------

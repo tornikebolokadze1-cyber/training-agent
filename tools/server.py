@@ -15,6 +15,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
 from tools.config import (
+    IS_RAILWAY,
     N8N_CALLBACK_URL,
     SERVER_HOST,
     SERVER_PORT,
@@ -42,23 +43,63 @@ logger = logging.getLogger(__name__)
 # In-flight task tracking (deduplication + observability)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
+STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
 
 
 def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
 
 
+def _evict_stale_tasks() -> list[str]:
+    """Remove tasks that have been running longer than STALE_TASK_HOURS.
+
+    Returns list of evicted task keys (for logging).
+    """
+    now = datetime.now()
+    stale = [
+        key for key, started in _processing_tasks.items()
+        if (now - started).total_seconds() > STALE_TASK_HOURS * 3600
+    ]
+    for key in stale:
+        _processing_tasks.pop(key, None)
+        logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
+    return stale
+
+
+# Disable OpenAPI docs in production (Railway) to reduce attack surface
+_docs_url = None if IS_RAILWAY else "/docs"
+_redoc_url = None if IS_RAILWAY else "/redoc"
+
 app = FastAPI(
     title="Training Agent",
     description="Webhook server for Zoom recording processing and AI analysis",
     version="1.0.0",
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=None if IS_RAILWAY else "/openapi.json",
 )
 
-# Reject requests with Host headers from unknown origins
+# Reject requests with Host headers from unknown origins.
+# On Railway, the public hostname is dynamic (*.up.railway.app), so we
+# must allow it.  RAILWAY_PUBLIC_DOMAIN is auto-set by Railway when a
+# public domain is configured.
+import os as _os
+
+_allowed_hosts = ["localhost", "127.0.0.1", f"localhost:{SERVER_PORT}",
+                  f"127.0.0.1:{SERVER_PORT}"]
+_railway_domain = _os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+if _railway_domain:
+    _allowed_hosts.append(_railway_domain)
+_server_public_url = _os.getenv("SERVER_PUBLIC_URL", "")
+if _server_public_url:
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(_server_public_url)
+    if _parsed.hostname:
+        _allowed_hosts.append(_parsed.hostname)
+
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["localhost", "127.0.0.1", f"localhost:{SERVER_PORT}",
-                   f"127.0.0.1:{SERVER_PORT}"],
+    allowed_hosts=_allowed_hosts,
 )
 
 assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_available else None
@@ -221,11 +262,12 @@ async def _download_recording(url: str, access_token: str, dest: Path) -> None:
     """Download a Zoom recording with streaming for large files.
 
     Validates the final URL after redirects to prevent SSRF via open redirects.
+    Timeout of 1800s (30 min) accounts for Railway's variable network speed.
     """
     dest = Path(dest)
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1800, connect=30)) as client:
         async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
             response.raise_for_status()
 
@@ -411,6 +453,9 @@ async def process_recording(
     if not (1 <= payload.lecture_number <= 15):
         raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {payload.lecture_number}")
 
+    # Evict stale tasks before checking (prevents permanent blocking from hung pipelines)
+    _evict_stale_tasks()
+
     # Deduplication: reject if this group+lecture is already being processed.
     # Best-effort: the check-and-set is NOT locked, but since all async endpoint
     # code runs on a single event loop thread (no awaits between check and set),
@@ -455,4 +500,6 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
-    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)
+    # Railway injects PORT env var; fall back to configured SERVER_PORT
+    port = int(_os.getenv("PORT", str(SERVER_PORT)))
+    uvicorn.run(app, host=SERVER_HOST, port=port)

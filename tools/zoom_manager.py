@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ RETRY_BACKOFF_BASE = 2.0  # seconds
 
 # In-memory token cache: {"access_token": str, "expires_at": float}
 _token_cache: dict[str, Any] = {}
+_token_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -88,11 +90,12 @@ def get_access_token() -> str:
         )
 
     # Return cached token if still valid (with 60-second safety margin)
-    if _token_cache.get("access_token") and time.time() < _token_cache.get(
-        "expires_at", 0.0
-    ) - 60:
-        logger.debug("Using cached Zoom access token.")
-        return _token_cache["access_token"]  # type: ignore[return-value]
+    with _token_lock:
+        if _token_cache.get("access_token") and time.time() < _token_cache.get(
+            "expires_at", 0.0
+        ) - 60:
+            logger.debug("Using cached Zoom access token.")
+            return _token_cache["access_token"]  # type: ignore[return-value]
 
     credentials = base64.b64encode(
         f"{ZOOM_CLIENT_ID}:{ZOOM_CLIENT_SECRET}".encode()
@@ -117,8 +120,9 @@ def get_access_token() -> str:
                 access_token: str = payload["access_token"]
                 expires_in: int = payload.get("expires_in", 3600)
 
-                _token_cache["access_token"] = access_token
-                _token_cache["expires_at"] = time.time() + expires_in
+                with _token_lock:
+                    _token_cache["access_token"] = access_token
+                    _token_cache["expires_at"] = time.time() + expires_in
 
                 logger.info("Zoom access token acquired (expires in %ds).", expires_in)
                 return access_token
@@ -203,7 +207,8 @@ def _zoom_request(
             # 401 means the cached token was invalidated — clear cache and retry
             if response.status_code == 401:
                 logger.warning("Received 401; clearing token cache and retrying.")
-                _token_cache.clear()
+                with _token_lock:
+                    _token_cache.clear()
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_BACKOFF_BASE**attempt)
                     continue

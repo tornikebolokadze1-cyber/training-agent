@@ -85,13 +85,25 @@ python -m tools.gdrive_manager
 python -m tools.orchestrator       # or: ./start.sh
 
 # Run tests
+pip install -r requirements-dev.txt
 pytest tools/tests/test_core.py -v
 ```
 
+## Deployment (Railway)
+- **Platform**: Railway PaaS with Docker (multi-stage build)
+- **Entry point**: `python -m tools.orchestrator` (Dockerfile CMD)
+- **Config files**: `Dockerfile`, `railway.toml`, `.dockerignore`
+- **Credentials on Railway**: base64-encode JSON files into env vars (`GOOGLE_CREDENTIALS_JSON_B64`, etc.)
+- **Deploy**: `git push` to `main` triggers GitHub Actions → Railway CLI deploy
+- **Manual deploy**: `railway up` from project root
+- See `.env.example` for all required environment variables
+
 ## Operations
-- **Server port**: 5001 (macOS ControlCenter uses 5000)
+- **Server port**: 5001 locally (Railway injects `$PORT`)
 - **Health check**: `curl http://localhost:5001/health`
 - **Full status**: `curl http://localhost:5001/status`
-- **launchd service**: `com.aipulsegeorgia.training-agent` (auto-restarts on crash)
-- **Logs**: `logs/training_agent.log` (rotating, 10 MB × 5 backups)
-- **Operator alerts**: `alert_operator()` in `whatsapp_sender.py` — last-resort WhatsApp notification on pipeline failures
+- **Local service**: `com.aipulsegeorgia.training-agent` (launchd, auto-restarts)
+- **Logs**: `logs/training_agent.log` locally (rotating, 10 MB × 5); Railway captures stdout
+- **OpenAPI docs**: `/docs` available locally only (disabled on Railway)
+- **Stale task recovery**: tasks running >4 hours are auto-evicted from deduplication tracker
+- **Operator alerts**: `alert_operator()` in `whatsapp_sender.py` — last-resort WhatsApp notification

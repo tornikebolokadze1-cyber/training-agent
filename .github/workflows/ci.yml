@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
           cache: "pip"
@@ -51,7 +51,7 @@ jobs:
 
       - name: Security check — block sensitive files
         run: |
-          FORBIDDEN=".env credentials.json token.json token_gmail.json"
+          FORBIDDEN=".env credentials.json token.json token_gmail.json attendees.json"
           FOUND=0
           for file in $FORBIDDEN; do
             if git ls-files --error-unmatch "$file" 2>/dev/null; then
@@ -73,22 +73,39 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
 
       - name: Run tests
         run: |
-          if [ -d "tests" ] && find tests/ -name "*.py" | grep -q .; then
-            pip install pytest
-            python -m pytest tests/ -v
+          if [ -d "tools/tests" ] && find tools/tests/ -name "*.py" | grep -q .; then
+            python -m pytest tools/tests/ -v --tb=short
           else
-            echo "No tests directory found — skipping. Add tests/ to enable this step."
+            echo "No tools/tests directory found — skipping."
           fi
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: lint-and-check
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Build Docker image
+        run: docker build -t training-agent:ci .
+
+      - name: Verify health check command
+        run: |
+          docker run --rm training-agent:ci python -c "import tools.server; print('Import OK')"

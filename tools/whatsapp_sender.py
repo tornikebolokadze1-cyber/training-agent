@@ -256,7 +256,7 @@ def alert_operator(message: str) -> None:
             send_message_to_chat(chat_id, prefix + message)
             logger.info("Operator alert sent via WhatsApp")
             return
-    except Exception as exc:
+    except BaseException as exc:
         logger.error("Failed to send WhatsApp alert: %s", exc)
 
     # Fallback: CRITICAL log — appears in console + log file

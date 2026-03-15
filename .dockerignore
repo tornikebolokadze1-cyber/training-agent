@@ -1,0 +1,83 @@
+# Credentials & secrets
+.env
+.env.*
+credentials.json
+token.json
+token.json.backup
+token_gmail.json
+attendees.json
+*.pem
+*.key
+
+# Temporary files
+.tmp/
+
+# Logs
+logs/
+
+# Large media files
+*.mp4
+*.m4a
+*.m4v
+*.webm
+*.wav
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Tests (not needed in production image)
+tools/tests/
+conftest.py
+
+# Git & CI
+.git/
+.github/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation (not needed in runtime)
+docs/
+*.md
+!workflows/*.md
+
+# Firebase
+firebase-debug.log
+
+# Playwright MCP
+.playwright-mcp/
+
+# Process management
+.training-agent.pid
+start.sh
+scripts/
+
+# Ruff / linting
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Railway config (not needed inside container)
+railway.toml
+Dockerfile
+.dockerignore
+
+# Lock files
+requirements.lock
+requirements-dev.txt
+
+# Pages (if any static content)
+pages/

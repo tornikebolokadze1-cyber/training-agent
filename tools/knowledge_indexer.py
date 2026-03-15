@@ -9,6 +9,7 @@ Embedding model: gemini-embedding-001 (Google) — dimension=3072.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import date
 
@@ -52,6 +53,7 @@ CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analys
 # ---------------------------------------------------------------------------
 
 _pinecone_index_cache: object | None = None
+_pinecone_lock = threading.Lock()
 
 
 def get_pinecone_index() -> object:
@@ -59,6 +61,7 @@ def get_pinecone_index() -> object:
 
     Uses dimension=3072 (gemini-embedding-001 output size) with cosine metric.
     Creates a serverless index if it does not yet exist.
+    Thread-safe: uses a lock to prevent concurrent initialization.
 
     Returns:
         A Pinecone Index object ready for upsert and query operations.
@@ -70,33 +73,38 @@ def get_pinecone_index() -> object:
     if _pinecone_index_cache is not None:
         return _pinecone_index_cache
 
-    if not PINECONE_API_KEY:
-        raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
+    with _pinecone_lock:
+        # Double-check after acquiring lock
+        if _pinecone_index_cache is not None:
+            return _pinecone_index_cache
 
-    pc = Pinecone(api_key=PINECONE_API_KEY)
+        if not PINECONE_API_KEY:
+            raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
 
-    existing = [idx.name for idx in pc.list_indexes()]
-    if PINECONE_INDEX_NAME not in existing:
-        logger.info(
-            "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
-            PINECONE_INDEX_NAME,
-            EMBEDDING_DIMENSION,
-        )
-        pc.create_index(
-            name=PINECONE_INDEX_NAME,
-            dimension=EMBEDDING_DIMENSION,
-            metric="cosine",
-            spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
-        )
-        # Wait until the index is ready
-        _wait_for_index_ready(pc)
-        logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
-    else:
-        logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
+        pc = Pinecone(api_key=PINECONE_API_KEY)
 
-    index = pc.Index(PINECONE_INDEX_NAME)
-    _pinecone_index_cache = index
-    return index
+        existing = [idx.name for idx in pc.list_indexes()]
+        if PINECONE_INDEX_NAME not in existing:
+            logger.info(
+                "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
+                PINECONE_INDEX_NAME,
+                EMBEDDING_DIMENSION,
+            )
+            pc.create_index(
+                name=PINECONE_INDEX_NAME,
+                dimension=EMBEDDING_DIMENSION,
+                metric="cosine",
+                spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
+            )
+            # Wait until the index is ready
+            _wait_for_index_ready(pc)
+            logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
+        else:
+            logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
+
+        index = pc.Index(PINECONE_INDEX_NAME)
+        _pinecone_index_cache = index
+        return index
 
 
 def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
@@ -130,20 +138,25 @@ def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
 # ---------------------------------------------------------------------------
 
 _embed_client_cache: genai.Client | None = None
+_embed_lock = threading.Lock()
 
 
 def _get_embed_client() -> genai.Client:
-    """Return a cached Gemini client for embedding calls."""
+    """Return a cached Gemini client for embedding calls. Thread-safe."""
     global _embed_client_cache
     if _embed_client_cache is not None:
         return _embed_client_cache
 
-    api_key = GEMINI_API_KEY_PAID or GEMINI_API_KEY
-    if not api_key:
-        raise RuntimeError("Gemini API key not configured — set GEMINI_API_KEY in .env")
+    with _embed_lock:
+        if _embed_client_cache is not None:
+            return _embed_client_cache
 
-    _embed_client_cache = genai.Client(api_key=api_key)
-    return _embed_client_cache
+        api_key = GEMINI_API_KEY_PAID or GEMINI_API_KEY
+        if not api_key:
+            raise RuntimeError("Gemini API key not configured — set GEMINI_API_KEY in .env")
+
+        _embed_client_cache = genai.Client(api_key=api_key)
+        return _embed_client_cache
 
 
 def embed_text(text: str) -> list[float]:

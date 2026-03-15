@@ -282,7 +282,7 @@ async def pre_meeting_job(group_number: int) -> None:
     Args:
         group_number: 1 or 2.
     """
-    today = date.today()
+    today = datetime.now(TBILISI_TZ).date()
     lecture_number = get_lecture_number(group_number, for_date=today)
 
     if lecture_number == 0:
@@ -519,7 +519,7 @@ def start_scheduler() -> AsyncIOScheduler:
     job_defaults = {
         "coalesce": True,        # merge multiple misfired instances into one
         "max_instances": 1,      # never run the same job concurrently
-        "misfire_grace_time": 10 * 60,  # 10 min tolerance for late fires
+        "misfire_grace_time": 55 * 60,  # 55 min — survive Railway restarts without silently dropping lectures
     }
 
     scheduler = AsyncIOScheduler(
