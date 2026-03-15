@@ -54,6 +54,18 @@ def _is_quota_error(error: Exception) -> bool:
 
 _client_cache: dict[str, genai.Client] = {}  # keyed by API key
 
+_anthropic_client_cache: anthropic.Anthropic | None = None
+
+
+def _get_anthropic_client() -> anthropic.Anthropic:
+    """Return a cached Anthropic client (avoids creating fresh clients per call)."""
+    global _anthropic_client_cache
+    if _anthropic_client_cache is None:
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
+        _anthropic_client_cache = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client_cache
+
 
 def _get_client(use_free: bool = False) -> genai.Client:
     """Return a cached Gemini API client (avoids creating 9+ clients per pipeline run).
@@ -463,10 +475,7 @@ def _claude_reason(transcript: str, prompt: str, purpose: str) -> str:
     Returns Claude's analysis in English (reasoning output), which will then
     be sent to Gemini for Georgian writing.
     """
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = _get_anthropic_client()
 
     system_msg = (
         "You are an expert AI training analyst and pedagogy specialist. "
@@ -486,6 +495,7 @@ def _claude_reason(transcript: str, prompt: str, purpose: str) -> str:
             response = client.messages.create(
                 model=ASSISTANT_CLAUDE_MODEL,
                 max_tokens=16000,
+                timeout=600.0,  # 10 min timeout for long transcripts
                 thinking={
                     "type": "enabled",
                     "budget_tokens": 10000,
@@ -708,6 +718,11 @@ def analyze_lecture(
     except Exception as e:
         logger.error("Summary generation failed: %s", e)
         results["summary"] = ""
+        try:
+            from tools.whatsapp_sender import alert_operator
+            alert_operator(f"Summary generation FAILED: {e}")
+        except Exception:
+            pass
 
     # Step 3: Gap analysis — Claude reasons, Gemini writes Georgian
     try:
@@ -715,6 +730,11 @@ def analyze_lecture(
     except Exception as e:
         logger.error("Gap analysis generation failed: %s", e)
         results["gap_analysis"] = ""
+        try:
+            from tools.whatsapp_sender import alert_operator
+            alert_operator(f"Gap analysis generation FAILED: {e}")
+        except Exception:
+            pass
 
     # Step 4: Deep analysis — Claude reasons, Gemini writes Georgian
     try:
@@ -722,6 +742,11 @@ def analyze_lecture(
     except Exception as e:
         logger.error("Deep analysis generation failed: %s", e)
         results["deep_analysis"] = ""
+        try:
+            from tools.whatsapp_sender import alert_operator
+            alert_operator(f"Deep analysis generation FAILED: {e}")
+        except Exception:
+            pass
 
     return results
 

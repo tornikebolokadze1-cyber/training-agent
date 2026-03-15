@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,7 +14,11 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from tools.config import (
     GROUPS,
@@ -66,6 +72,14 @@ def _evict_stale_tasks() -> list[str]:
     for key in stale:
         _processing_tasks.pop(key, None)
         logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
+    if stale:
+        try:
+            alert_operator(
+                f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
+                f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
+            )
+        except Exception:
+            pass
     return stale
 
 
@@ -110,6 +124,23 @@ app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=_allowed_hosts,
 )
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Correlation ID middleware — must be defined before routes
+@app.middleware("http")
+async def add_correlation_id(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4())[:8])
+    request.state.correlation_id = correlation_id
+    logger.info("[%s] %s %s", correlation_id, request.method, request.url.path)
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
+
 
 assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_available else None
 
@@ -328,8 +359,16 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 await asyncio.sleep(delay)
             else:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
+                try:
+                    alert_operator(f"n8n callback failed after 3 retries: {e}")
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("Callback failed with non-retryable error: %s", e)
+            try:
+                alert_operator(f"n8n callback failed (non-retryable): {e}")
+            except Exception:
+                pass
             return
 
 
@@ -338,7 +377,8 @@ async def _send_callback(payload: CallbackPayload) -> None:
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
-async def health_check():
+@limiter.limit("60/minute")
+async def health_check(request: Request):
     """Health check endpoint with basic dependency verification."""
     checks: dict[str, str] = {}
 
@@ -359,16 +399,21 @@ async def health_check():
     checks["tasks_in_progress"] = str(len(_processing_tasks))
 
     overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
+    status_code = 200 if overall == "healthy" else 503
 
-    return {
-        "status": overall,
-        "service": "training-agent",
-        "timestamp": datetime.now().isoformat(),
-        "checks": checks,
-    }
+    return JSONResponse(
+        content={
+            "status": overall,
+            "service": "training-agent",
+            "timestamp": datetime.now().isoformat(),
+            "checks": checks,
+        },
+        status_code=status_code,
+    )
 
 
 @app.post("/whatsapp-incoming")
+@limiter.limit("30/minute")
 async def whatsapp_incoming(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -443,9 +488,14 @@ async def _handle_assistant_message(message: "IncomingMessage") -> None:
             )
     except Exception as e:
         logger.error("Assistant error: %s", e, exc_info=True)
+        try:
+            alert_operator(f"WhatsApp assistant crashed: {e}")
+        except Exception:
+            pass
 
 
 @app.post("/zoom-webhook")
+@limiter.limit("10/minute")
 async def zoom_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -459,12 +509,12 @@ async def zoom_webhook(
 
     Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC.
     """
-    import hashlib
-
+    raw_body = await request.body()
     body = await request.json()
     event = body.get("event", "")
 
     # --- CRC validation (Zoom verifies webhook ownership) ---
+    # CRC events don't carry HMAC signatures, so skip verification for them.
     if event == "endpoint.url_validation":
         plain_token = body.get("payload", {}).get("plainToken", "")
         if not ZOOM_WEBHOOK_SECRET_TOKEN:
@@ -475,6 +525,26 @@ async def zoom_webhook(
             hashlib.sha256,
         ).hexdigest()
         return {"plainToken": plain_token, "encryptedToken": encrypted_token}
+
+    # --- HMAC-SHA256 signature verification ---
+    if not ZOOM_WEBHOOK_SECRET_TOKEN:
+        raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
+
+    timestamp = request.headers.get("x-zm-request-timestamp", "")
+    signature = request.headers.get("x-zm-signature", "")
+    if not timestamp or not signature:
+        raise HTTPException(status_code=401, detail="Missing Zoom signature headers")
+
+    message = f"v0:{timestamp}:{raw_body.decode()}"
+    expected_sig = "v0=" + hmac.new(
+        ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
+        message.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_sig):
+        logger.warning("Zoom webhook signature mismatch — rejecting request")
+        raise HTTPException(status_code=401, detail="Invalid Zoom webhook signature")
 
     # --- recording.completed ---
     if event != "recording.completed":
@@ -511,7 +581,6 @@ async def zoom_webhook(
         return {"status": "ignored", "reason": f"unknown group in topic: {topic}"}
 
     # Calculate lecture number from meeting date
-    from datetime import date as date_type
     start_time = obj.get("start_time", "")
     try:
         meeting_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
@@ -551,6 +620,7 @@ async def zoom_webhook(
 
 
 @app.post("/process-recording")
+@limiter.limit("5/minute")
 async def process_recording(
     request: Request,
     payload: ProcessRecordingRequest,
