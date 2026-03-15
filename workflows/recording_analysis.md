@@ -19,7 +19,7 @@ Automatically processes Zoom recordings: downloads â†’ uploads to Google Drive â
 4. Sends recording details to Python server (POST /process-recording)
 5. Returns 200 OK to Zoom
 
-### Phase 2: Python Server (`transcribe_and_index()`)
+### Phase 2: Python Server (`transcribe_and_index()` from `tools/transcribe_lecture.py`)
 1. Downloads Zoom recording to `.tmp/` (streaming, handles large files)
 2. Creates lecture subfolder in Google Drive if needed
 3. Uploads recording to Google Drive (resumable upload)
