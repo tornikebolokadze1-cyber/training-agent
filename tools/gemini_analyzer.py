@@ -25,6 +25,7 @@ from tools.config import (
     GEMINI_MODEL_TRANSCRIPTION,
     GEMINI_MODEL_ANALYSIS,
     ASSISTANT_CLAUDE_MODEL,
+    TMP_DIR,
     TRANSCRIPTION_PROMPT,
     TRANSCRIPTION_CONTINUATION_PROMPT,
     SUMMARIZATION_PROMPT,
@@ -109,6 +110,7 @@ CHUNK_DURATION_MINUTES = 45  # ~697K video tokens per chunk (safe under 1M limit
 
 def _get_video_duration_seconds(video_path: Path) -> float:
     """Get video duration in seconds using ffprobe."""
+    video_path = _validate_media_path(video_path)
     result = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -123,6 +125,19 @@ def _get_video_duration_seconds(video_path: Path) -> float:
     return float(result.stdout.strip())
 
 
+def _validate_media_path(video_path: Path) -> Path:
+    """Resolve and validate that a media path is inside TMP_DIR.
+
+    Logs a warning (instead of raising) for paths outside TMP_DIR to avoid
+    breaking CLI usage and tests while still flagging suspicious paths.
+    """
+    resolved = video_path.resolve()
+    tmp_resolved = TMP_DIR.resolve()
+    if not str(resolved).startswith(str(tmp_resolved)):
+        logger.warning("Media path outside TMP_DIR: %s", resolved)
+    return resolved
+
+
 def split_video_chunks(video_path: str | Path) -> list[Path]:
     """Split a long video into ~45-minute chunks using ffmpeg.
 
@@ -135,7 +150,7 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
     Returns:
         List of chunk file paths in order.
     """
-    video_path = Path(video_path)
+    video_path = _validate_media_path(Path(video_path))
     duration = _get_video_duration_seconds(video_path)
 
     if duration <= 0:

@@ -196,8 +196,8 @@ class WhatsAppAssistant:
         """
         history = self._chat_history.setdefault(message.chat_id, [])
         history.append({
-            "sender": message.sender_name or message.sender_id,
-            "text": message.text[:200],
+            "sender": self._sanitize_input((message.sender_name or message.sender_id)[:100]),
+            "text": self._sanitize_input(message.text[:200]),
             "ts": message.timestamp,
         })
         # Keep only last 15 messages per chat
@@ -384,7 +384,7 @@ class WhatsAppAssistant:
 
         user_prompt = (
             f"{history_section}"
-            f"Sender: {message.sender_name or 'unknown'}\n"
+            f"Sender: {self._sanitize_input((message.sender_name or 'unknown')[:100])}\n"
             f"Message: {self._sanitize_input(message.text)}\n"
             f"{context_section}"
         )

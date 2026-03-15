@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -129,20 +131,30 @@ app.add_middleware(
     allowed_hosts=_allowed_hosts,
 )
 
+# Explicit CORS deny — this is a webhook API, not a browser-facing app.
+# Adding this explicitly prevents accidental relaxation by future developers.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["POST", "GET"])
+
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-# Correlation ID middleware — must be defined before routes
+# Security + correlation ID headers middleware — must be defined before routes
 @app.middleware("http")
-async def add_correlation_id(request: Request, call_next):
+async def add_security_headers(request: Request, call_next) -> JSONResponse:
     correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4())[:8])
     request.state.correlation_id = correlation_id
     logger.info("[%s] %s %s", correlation_id, request.method, request.url.path)
     response = await call_next(request)
     response.headers["X-Correlation-ID"] = correlation_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -153,6 +165,9 @@ assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_availa
 # Models
 # ---------------------------------------------------------------------------
 
+_DRIVE_FOLDER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{10,100}$")
+
+
 class ProcessRecordingRequest(BaseModel):
     """Payload from n8n when a Zoom recording is ready."""
 
@@ -161,6 +176,11 @@ class ProcessRecordingRequest(BaseModel):
     group_number: int
     lecture_number: int
     drive_folder_id: str
+
+    def __init__(self, **data):  # type: ignore[override]
+        super().__init__(**data)
+        if self.drive_folder_id and not _DRIVE_FOLDER_ID_RE.match(self.drive_folder_id):
+            raise ValueError("Invalid Drive folder ID format")
 
 
 class CallbackPayload(BaseModel):
@@ -525,6 +545,8 @@ async def zoom_webhook(
     # CRC events don't carry HMAC signatures, so skip verification for them.
     if event == "endpoint.url_validation":
         plain_token = body.get("payload", {}).get("plainToken", "")
+        if not plain_token or len(plain_token) > 256:
+            raise HTTPException(status_code=400, detail="Invalid plainToken")
         if not ZOOM_WEBHOOK_SECRET_TOKEN:
             raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
         encrypted_token = hmac.new(
@@ -542,6 +564,15 @@ async def zoom_webhook(
     signature = request.headers.get("x-zm-signature", "")
     if not timestamp or not signature:
         raise HTTPException(status_code=401, detail="Missing Zoom signature headers")
+
+    # Reject stale requests to prevent replay attacks (Zoom best practice)
+    try:
+        ts_age = abs(time.time() - int(timestamp))
+        if ts_age > 300:  # 5 min tolerance for clock skew
+            logger.warning("Zoom webhook timestamp too old: %s seconds", ts_age)
+            raise HTTPException(status_code=401, detail="Zoom webhook timestamp expired")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid timestamp header")
 
     message = f"v0:{timestamp}:{raw_body.decode()}"
     expected_sig = "v0=" + hmac.new(

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -344,7 +345,7 @@ class TestZoomWebhookHMAC:
     async def test_invalid_signature_returns_401(self, patched_secrets):
         """A request with a wrong HMAC signature must be rejected with 401."""
         body_bytes = json.dumps(_make_recording_body()).encode()
-        timestamp = "1700000000"
+        timestamp = str(int(time.time()))
         headers = {
             "x-zm-request-timestamp": timestamp,
             "x-zm-signature": "v0=deadbeefdeadbeefdeadbeef",  # wrong
@@ -361,7 +362,7 @@ class TestZoomWebhookHMAC:
         """A correctly signed Zoom webhook must NOT return 401."""
         body_dict = _make_recording_body()
         body_bytes = json.dumps(body_dict).encode()
-        timestamp = "1700000001"
+        timestamp = str(int(time.time()))
         sig = _zoom_sig(body_bytes, timestamp)
         headers = {
             "x-zm-request-timestamp": timestamp,
@@ -381,7 +382,7 @@ class TestZoomWebhookHMAC:
         with patch.object(srv, "ZOOM_WEBHOOK_SECRET_TOKEN", ""):
             body = _make_recording_body()
             body_bytes = json.dumps(body).encode()
-            timestamp = "1700000002"
+            timestamp = str(int(time.time()))
             headers = {
                 "x-zm-request-timestamp": timestamp,
                 "x-zm-signature": "v0=anything",
@@ -394,6 +395,21 @@ class TestZoomWebhookHMAC:
                 )
         assert resp.status_code == 503
 
+    async def test_stale_timestamp_rejected(self, patched_secrets):
+        """Requests with timestamps older than 5 minutes must be rejected."""
+        body_dict = _make_recording_body()
+        body_bytes = json.dumps(body_dict).encode()
+        stale_ts = str(int(time.time()) - 600)  # 10 min old
+        sig = _zoom_sig(body_bytes, stale_ts)
+        headers = {
+            "x-zm-request-timestamp": stale_ts,
+            "x-zm-signature": sig,
+            "content-type": "application/json",
+        }
+        async with await _async_client() as client:
+            resp = await client.post("/zoom-webhook", content=body_bytes, headers=headers)
+        assert resp.status_code == 401
+
 
 # ===========================================================================
 # 6. Zoom webhook — recording.completed event routing
@@ -404,7 +420,7 @@ class TestZoomWebhookRecordingCompleted:
     def _signed_request(self, body_dict: dict):
         """Return (body_bytes, headers) with a valid HMAC signature."""
         body_bytes = json.dumps(body_dict).encode()
-        timestamp = "1700000100"
+        timestamp = str(int(time.time()))
         sig = _zoom_sig(body_bytes, timestamp)
         headers = {
             "x-zm-request-timestamp": timestamp,
