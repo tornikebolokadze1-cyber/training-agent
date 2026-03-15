@@ -158,6 +158,7 @@ LECTURE_FOLDER_IDS: dict[int, dict[int, str]] = {1: {}, 2: {}}
 ZOOM_ACCOUNT_ID = _env("ZOOM_ACCOUNT_ID")
 ZOOM_CLIENT_ID = _env("ZOOM_CLIENT_ID")
 ZOOM_CLIENT_SECRET = _env("ZOOM_CLIENT_SECRET")
+ZOOM_WEBHOOK_SECRET_TOKEN = _env("ZOOM_WEBHOOK_SECRET_TOKEN", "")
 
 # Google OAuth credentials file — resolved from base64 env var or local file.
 # This is evaluated lazily via a function to avoid crashing at import time

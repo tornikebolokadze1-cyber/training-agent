@@ -15,13 +15,16 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
 from tools.config import (
+    GROUPS,
     IS_RAILWAY,
     N8N_CALLBACK_URL,
     SERVER_HOST,
     SERVER_PORT,
     TMP_DIR,
     WEBHOOK_SECRET,
+    ZOOM_WEBHOOK_SECRET_TOKEN,
     get_lecture_folder_name,
+    get_lecture_number,
 )
 from tools.gdrive_manager import (
     ensure_folder,
@@ -440,6 +443,111 @@ async def _handle_assistant_message(message: "IncomingMessage") -> None:
             )
     except Exception as e:
         logger.error("Assistant error: %s", e, exc_info=True)
+
+
+@app.post("/zoom-webhook")
+async def zoom_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Receive Zoom webhook events directly (replaces n8n middleman).
+
+    Handles two event types:
+      - endpoint.url_validation: CRC challenge-response for Zoom verification.
+      - recording.completed: Extracts recording URL, determines group/lecture,
+        and kicks off the processing pipeline.
+
+    Authentication: Zoom signs events with ZOOM_WEBHOOK_SECRET_TOKEN via HMAC.
+    """
+    import hashlib
+
+    body = await request.json()
+    event = body.get("event", "")
+
+    # --- CRC validation (Zoom verifies webhook ownership) ---
+    if event == "endpoint.url_validation":
+        plain_token = body.get("payload", {}).get("plainToken", "")
+        if not ZOOM_WEBHOOK_SECRET_TOKEN:
+            raise HTTPException(status_code=503, detail="ZOOM_WEBHOOK_SECRET_TOKEN not configured")
+        encrypted_token = hmac.new(
+            ZOOM_WEBHOOK_SECRET_TOKEN.encode(),
+            plain_token.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
+
+    # --- recording.completed ---
+    if event != "recording.completed":
+        return {"status": "ignored", "event": event}
+
+    payload = body.get("payload", {})
+    obj = payload.get("object", {})
+    topic = obj.get("topic", "")
+    recordings = obj.get("recording_files", [])
+
+    # Find the best MP4 recording
+    video = next(
+        (r for r in recordings
+         if r.get("file_type") == "MP4"
+         and r.get("recording_type") == "shared_screen_with_speaker_view"),
+        None,
+    ) or next(
+        (r for r in recordings if r.get("file_type") == "MP4"),
+        None,
+    )
+    if not video:
+        logger.warning("Zoom webhook: no MP4 recording found in event")
+        return {"status": "ignored", "reason": "no MP4 recording"}
+
+    # Determine group from meeting topic (Georgian: ჯგუფი #1 / ჯგუფი #2)
+    group_number = 0
+    if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:
+        group_number = 1
+    elif "\u10ef\u10d2\u10e3\u10e4\u10d8 #2" in topic:
+        group_number = 2
+
+    if group_number == 0:
+        logger.warning("Zoom webhook: could not determine group from topic: %s", topic)
+        return {"status": "ignored", "reason": f"unknown group in topic: {topic}"}
+
+    # Calculate lecture number from meeting date
+    from datetime import date as date_type
+    start_time = obj.get("start_time", "")
+    try:
+        meeting_date = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        meeting_date = datetime.now().date()
+
+    lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+    if lecture_number == 0:
+        lecture_number = 1  # fallback for test meetings
+
+    download_url = video.get("download_url", "")
+    access_token = body.get("download_token", "")
+    drive_folder_id = GROUPS[group_number].get("drive_folder_id", "")
+
+    logger.info(
+        "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
+        group_number, lecture_number, topic,
+    )
+
+    # Dedup and process (reuse existing logic)
+    _evict_stale_tasks()
+    key = _task_key(group_number, lecture_number)
+    if key in _processing_tasks:
+        return {"status": "duplicate", "message": f"{key} already processing"}
+    _processing_tasks[key] = datetime.now()
+
+    proc_payload = ProcessRecordingRequest(
+        download_url=download_url,
+        access_token=access_token,
+        group_number=group_number,
+        lecture_number=lecture_number,
+        drive_folder_id=drive_folder_id,
+    )
+    background_tasks.add_task(process_recording_task, proc_payload)
+
+    return {"status": "accepted", "group": group_number, "lecture": lecture_number}
 
 
 @app.post("/process-recording")
