@@ -18,7 +18,6 @@ from tools.config import (
     LECTURE_FOLDER_IDS,
     PROJECT_ROOT,
     TOTAL_LECTURES,
-    _decode_b64_env,
     _materialize_credential_file,
     get_google_credentials_path,
     get_lecture_folder_name,
@@ -35,13 +34,16 @@ TOKEN_PATH = PROJECT_ROOT / "token.json"
 CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB chunks for resumable upload
 
 
-def _get_token_path() -> Path:
-    """Resolve the Drive token.json file path.
+_token_path_cache: Path | None = None
 
-    On Railway, decodes GOOGLE_TOKEN_JSON_B64 to a temp file.
-    Locally, uses TOKEN_PATH (project_root/token.json).
-    """
-    return _materialize_credential_file("GOOGLE_TOKEN_JSON_B64", TOKEN_PATH)
+
+def _get_token_path() -> Path:
+    """Resolve the Drive token.json file path (cached after first call)."""
+    global _token_path_cache
+    if _token_path_cache is not None and _token_path_cache.exists():
+        return _token_path_cache
+    _token_path_cache = _materialize_credential_file("GOOGLE_TOKEN_JSON_B64", TOKEN_PATH)
+    return _token_path_cache
 
 
 def _get_credentials() -> Credentials:
@@ -400,6 +402,13 @@ def restrict_to_owner(file_or_folder_id: str) -> None:
                 )
             except Exception as e:
                 logger.warning("Failed to remove permission %s: %s", perm["id"], e)
+                try:
+                    from tools.whatsapp_sender import alert_operator
+                    alert_operator(
+                        f"Drive permission removal FAILED for {file_or_folder_id}: {e}"
+                    )
+                except Exception:
+                    pass
 
 
 def ensure_private_folder(service, name: str, parent_id: str) -> str:

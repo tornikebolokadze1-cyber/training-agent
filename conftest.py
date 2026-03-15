@@ -1,3 +1,4 @@
-# Pre-import fastapi to prevent namespace package conflicts during test collection.
-import fastapi  # noqa: F401
-import fastapi.middleware.trustedhost  # noqa: F401
+# conftest.py — pytest configuration for Training Agent.
+#
+# Module stubbing is centralised in tools/tests/conftest.py.
+# This root conftest is intentionally minimal.
