@@ -36,7 +36,7 @@ Email reminders are handled automatically by Zoom Workflows (built-in Zoom autom
 - Verify ManyChat Pro subscription is active
 
 ### Wrong lecture number
-- Check group start dates in the Code node (Group 1: 2026-03-03, Group 2: 2026-03-02)
+- Check group start dates in config.py (Group 1: 2026-03-13, Group 2: 2026-03-12)
 - Lecture numbers auto-calculate from start date
 
 ### Zoom link not fetching

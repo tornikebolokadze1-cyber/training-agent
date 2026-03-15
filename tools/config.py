@@ -42,6 +42,7 @@ GROUPS = {
         "name": "მარტის ჯგუფი #1",
         "folder_name": "AI კურსი (მარტის ჯგუფი #1. 2026)",
         "drive_folder_id": _env("DRIVE_GROUP1_FOLDER_ID"),
+        "analysis_folder_id": _env("DRIVE_GROUP1_ANALYSIS_FOLDER_ID"),
         "zoom_meeting_id": _env("ZOOM_GROUP1_MEETING_ID"),
         "meeting_days": [1, 4],  # Tuesday=1, Friday=4 (Monday=0)
         "start_date": date(2026, 3, 13),  # First lecture: Friday March 13
@@ -52,6 +53,7 @@ GROUPS = {
         "name": "მარტის ჯგუფი #2",
         "folder_name": "AI კურსი (მარტის ჯგუფი #2. 2026)",
         "drive_folder_id": _env("DRIVE_GROUP2_FOLDER_ID"),
+        "analysis_folder_id": _env("DRIVE_GROUP2_ANALYSIS_FOLDER_ID"),
         "zoom_meeting_id": _env("ZOOM_GROUP2_MEETING_ID"),
         "meeting_days": [0, 3],  # Monday=0, Thursday=3
         "start_date": date(2026, 3, 12),  # First lecture: Thursday March 12
@@ -88,11 +90,19 @@ WHATSAPP_TORNIKE_PHONE = _env("WHATSAPP_TORNIKE_PHONE")  # e.g. "995599123456"
 WHATSAPP_GROUP1_ID = _env("WHATSAPP_GROUP1_ID")  # e.g. "120363XXX@g.us"
 WHATSAPP_GROUP2_ID = _env("WHATSAPP_GROUP2_ID")
 
+# Anthropic API (Claude Opus 4.6 — assistant reasoning engine)
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+
+# Pinecone (vector DB for course knowledge)
+PINECONE_API_KEY = _env("PINECONE_API_KEY")
+PINECONE_INDEX_NAME = "training-course"
+
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
-SERVER_HOST = _env("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(_env("SERVER_PORT", "5000"))
+SERVER_HOST = _env("SERVER_HOST", "127.0.0.1")
+SERVER_PORT = int(_env("SERVER_PORT", "5001"))
+SERVER_PUBLIC_URL = _env("SERVER_PUBLIC_URL")  # e.g. "https://abc123.ngrok.io"
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -106,21 +116,33 @@ TMP_DIR.mkdir(exist_ok=True)
 # Gemini Config
 # ---------------------------------------------------------------------------
 
-# Hybrid model strategy: cheap model for heavy video work, smart model for text analysis
-GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash"  # Fast, cheap, great at video → $1/lecture
-GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest, text-only → $1.30/lecture
+# Hybrid model strategy: Pro for long video transcription, 3.1 Pro for Georgian text writing
+GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-pro"  # Multimodal transcription (video chunked to fit 1M token limit)
+GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest for Georgian text writing
 
-# Step 1: Transcribe the video (multimodal — needs video file)
+# Step 1: Transcribe video (multimodal — sees slides, demos, screen shares)
 TRANSCRIPTION_PROMPT = """შენ ხარ პროფესიონალი ტრანსკრიპტორი. უყურე ამ ლექციის ვიდეოს სრულად და შეადგინე დეტალური ტრანსკრიპტი ქართულ ენაზე.
 
 მოთხოვნები:
 - გადმოეცი ყველაფერი რაც ითქვა ლექციაზე, შეძლებისდაგვარად ზუსტად
 - მონიშნე ვინ ლაპარაკობს (ლექტორი, მონაწილე, კითხვა აუდიტორიიდან)
-- აღწერე ეკრანზე ნაჩვენები სლაიდები ან დემონსტრაციები [სლაიდი: ...] ფორმატით
 - დროის მარკერები დაამატე ყოველ 10-15 წუთში [00:10], [00:25] და ა.შ.
 - ტექნიკური ტერმინები დატოვე ინგლისურად თუ ქართული ეკვივალენტი არ არსებობს
+- როცა სლაიდი ან დემო ჩანს ეკრანზე, აღწერე რა ჩანს: [სლაიდი: ...] ან [დემო: ...]
+- ეკრანზე ნაჩვენები ტექსტი, კოდი, ან დიაგრამები ასევე ჩაწერე ტრანსკრიპტში
 
-ტრანსკრიპტი უნდა იყოს სრული და დეტალური."""
+ტრანსკრიპტი უნდა იყოს სრული და დეტალური — როგორც აუდიო, ასევე ვიზუალური კონტენტი."""
+
+# Continuation prompt for chunked video transcription (chunks 2+)
+TRANSCRIPTION_CONTINUATION_PROMPT = """ეს არის იგივე ლექციის გაგრძელება (ნაწილი {chunk_number}/{total_chunks}).
+წინა ნაწილი მთავრდებოდა ამ ადგილას. გააგრძელე ტრანსკრიპტი იქიდან, სადაც ეს ნაწილი იწყება.
+
+იგივე მოთხოვნებით:
+- გადმოეცი ყველაფერი ზუსტად
+- მონიშნე ვინ ლაპარაკობს
+- დროის მარკერები (ამ ნაწილის დასაწყისიდან ტაიმერი გაგრძელდეს წინა ნაწილის ბოლო დროის მარკერიდან)
+- სლაიდები და დემოები აღწერე [სლაიდი: ...] ან [დემო: ...] ფორმატით
+- ეკრანზე ნაჩვენები ტექსტი, კოდი, ან დიაგრამები ჩაწერე"""
 
 # Step 2: Summarize transcript (text-only — analyzed by 3.1 Pro)
 SUMMARIZATION_PROMPT = """შენ ხარ AI ტრენინგის ექსპერტი ანალიტიკოსი. წაიკითხე ქვემოთ მოცემული ლექციის ტრანსკრიპტი სრულად.
@@ -278,6 +300,14 @@ DEEP_ANALYSIS_PROMPT = """შენ ხარ სამი სფეროს �
 
 # Model explicitly named for deep analysis use case (text-only, highest reasoning)
 GEMINI_MODEL_DEEP_ANALYSIS = "gemini-3.1-pro-preview"
+
+# WhatsApp Assistant ("მრჩეველი") config
+ASSISTANT_NAME = "მრჩეველი"
+ASSISTANT_TRIGGER_WORD = "მრჩეველო"
+ASSISTANT_SIGNATURE = "AI ასისტენტი - მრჩეველი"
+ASSISTANT_COOLDOWN_SECONDS = 300  # 5 min between passive responses
+ASSISTANT_CLAUDE_MODEL = "claude-opus-4-6"
+GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
 
 
 # ---------------------------------------------------------------------------

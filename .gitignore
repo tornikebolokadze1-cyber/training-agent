@@ -3,13 +3,25 @@
 .env.*
 credentials.json
 token.json
+token.json.backup
 token_gmail.json
 attendees.json
 *.pem
 *.key
+*.backup
 
 # Temporary files
 .tmp/
+
+# Application logs (rotated automatically)
+logs/
+
+# Large media files (safety net outside .tmp/)
+*.mp4
+*.m4a
+*.m4v
+*.webm
+*.wav
 
 # Python
 __pycache__/
@@ -32,6 +44,12 @@ firebase-debug.log
 .idea/
 *.swp
 *.swo
+
+# Ruff cache
+.ruff_cache/
+
+# Process management
+.training-agent.pid
 
 # OS
 .DS_Store

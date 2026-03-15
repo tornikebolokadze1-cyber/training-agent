@@ -30,6 +30,7 @@ from tools.config import (
     get_lecture_folder_name,
     get_lecture_number,
 )
+from tools.whatsapp_sender import alert_operator
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,11 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         meeting_id,
         RECORDING_POLL_TIMEOUT // 60,
     )
+    alert_operator(
+        f"Recording NOT FOUND after {RECORDING_POLL_TIMEOUT // 60} min "
+        f"for meeting {meeting_id}.\n"
+        f"Check Zoom dashboard — manual processing may be needed."
+    )
     return None
 
 
@@ -168,24 +174,16 @@ def _run_post_meeting_pipeline(
         1. Poll Zoom until recording is available.
         2. Download the recording to .tmp/.
         3. Upload recording to Google Drive (correct lecture folder).
-        4. Transcribe + analyse with Gemini.
-        5. Create summary Google Doc in the lecture folder.
-        6. Send gap analysis privately to Tornike via WhatsApp.
+        4. Delegate to transcribe_and_index() for the full analysis pipeline
+           (transcribe → analyze → Drive summary + private report → WhatsApp → Pinecone).
 
     Args:
         group_number: 1 or 2.
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
-    # Deferred imports — all blocking / sync libraries
-    from tools.gdrive_manager import (
-        create_google_doc,
-        ensure_folder,
-        get_drive_service,
-        upload_file,
-    )
-    from tools.gemini_analyzer import analyze_lecture
-    from tools.whatsapp_sender import send_group_upload_notification, send_private_report
+    from tools.gdrive_manager import ensure_folder, get_drive_service, upload_file
+    from tools.transcribe_lecture import transcribe_and_index
 
     group = GROUPS[group_number]
     lecture_folder_name = get_lecture_folder_name(lecture_number)
@@ -217,13 +215,18 @@ def _run_post_meeting_pipeline(
         zm.download_recording(download_url, access_token, local_path)
     except Exception as exc:
         logger.error("[post] Download failed: %s", exc)
+        alert_operator(
+            f"Recording download FAILED for Group {group_number}, "
+            f"Lecture #{lecture_number}.\nError: {exc}\n"
+            f"Check Zoom dashboard for manual download."
+        )
         return
 
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
     logger.info("[post] Download complete: %.1f MB", file_size_mb)
 
     try:
-        # ---- Step 3: Upload to Google Drive --------------------------------
+        # ---- Step 3: Upload recording to Google Drive ----------------------
         logger.info("[post] Uploading recording to Google Drive...")
         service = get_drive_service()
         lecture_folder_id = ensure_folder(
@@ -231,66 +234,19 @@ def _run_post_meeting_pipeline(
             lecture_folder_name,
             group["drive_folder_id"],
         )
-        recording_file_id = upload_file(local_path, lecture_folder_id)
-        drive_recording_url = (
-            f"https://drive.google.com/file/d/{recording_file_id}/view"
-        )
-        logger.info("[post] Recording uploaded: %s", drive_recording_url)
+        upload_file(local_path, lecture_folder_id)
+        logger.info("[post] Recording uploaded to Drive")
 
-        # ---- Step 4: Gemini analysis ----------------------------------------
-        logger.info("[post] Starting Gemini analysis (this takes a while)...")
-        analysis = analyze_lecture(str(local_path))
+        # ---- Step 4: Full analysis pipeline --------------------------------
+        # Delegates all analysis, Drive uploads, WhatsApp notifications,
+        # and Pinecone indexing to the single source of truth.
+        logger.info("[post] Running full analysis pipeline...")
+        index_counts = transcribe_and_index(group_number, lecture_number, local_path)
         logger.info(
-            "[post] Analysis complete — transcript %d chars, summary %d chars",
-            len(analysis["transcript"]),
-            len(analysis["summary"]),
-        )
-
-        # ---- Step 5: Create summary Google Doc --------------------------------
-        summary_title = f"{lecture_folder_name} — შეჯამება"
-        doc_id = create_google_doc(
-            summary_title,
-            analysis["summary"],
-            lecture_folder_id,
-        )
-        summary_doc_url = (
-            f"https://docs.google.com/document/d/{doc_id}/edit"
-        )
-        logger.info("[post] Summary doc created: %s", summary_doc_url)
-
-        # ---- Step 6: Notify WhatsApp group that materials are uploaded -----
-        try:
-            send_group_upload_notification(
-                group_number, lecture_number, drive_recording_url, summary_doc_url,
-            )
-            logger.info("[post] WhatsApp group notified about uploaded materials")
-        except Exception as exc:
-            logger.error("[post] WhatsApp group notification failed: %s", exc)
-
-        # ---- Step 7: Send gap + deep analysis privately to Tornike ----------
-        gap_header = (
-            f"📊 ლექცია #{lecture_number} — ანალიზი\n"
-            f"ჯგუფი: {group_number} ({group['name']})\n"
-            f"{'─' * 30}\n\n"
-        )
-        send_private_report(gap_header + analysis["gap_analysis"])
-        logger.info("[post] Gap analysis sent to Tornike via WhatsApp")
-
-        # Deep analysis: global AI trends + scored rubric
-        deep = analysis.get("deep_analysis", "")
-        if deep:
-            deep_header = (
-                f"🌍 ლექცია #{lecture_number} — ღრმა ანალიზი (გლობალური კონტექსტი)\n"
-                f"ჯგუფი: {group_number} ({group['name']})\n"
-                f"{'━' * 30}\n\n"
-            )
-            send_private_report(deep_header + deep)
-            logger.info("[post] Deep analysis sent to Tornike via WhatsApp")
-
-        logger.info(
-            "[post] Pipeline complete — Group %d, Lecture #%d",
+            "[post] Pipeline complete — Group %d, Lecture #%d (%d vectors indexed)",
             group_number,
             lecture_number,
+            sum(index_counts.values()),
         )
 
     except Exception as exc:
@@ -299,6 +255,10 @@ def _run_post_meeting_pipeline(
             group_number,
             lecture_number,
             exc,
+        )
+        alert_operator(
+            f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+            f"Error: {exc}"
         )
     finally:
         # Always clean up the local temp file
@@ -348,7 +308,7 @@ async def pre_meeting_job(group_number: int) -> None:
     )
 
     # ---- Create Zoom meeting ------------------------------------------------
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     zoom_join_url: str = ""
     zoom_meeting_id: str = ""
 
@@ -376,6 +336,11 @@ async def pre_meeting_job(group_number: int) -> None:
     except Exception as exc:
         logger.error("[pre] Failed to create Zoom meeting: %s", exc)
         zoom_join_url = "(Zoom meeting creation failed)"
+        alert_operator(
+            f"Zoom meeting creation FAILED for Group {group_number}, "
+            f"Lecture #{lecture_number}.\nError: {exc}\n"
+            f"Create the meeting manually."
+        )
 
     # NOTE: Email invitations are handled automatically by Zoom when a meeting
     # is created with attendee emails in the settings. No separate email step
@@ -447,7 +412,7 @@ async def post_meeting_job(group_number: int, meeting_id: str) -> None:
         meeting_id,
     )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None,
         _run_post_meeting_pipeline,

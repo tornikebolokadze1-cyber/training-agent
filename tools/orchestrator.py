@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import signal
 import sys
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from tools.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     N8N_CALLBACK_URL,
+    PROJECT_ROOT,
     SERVER_HOST,
     SERVER_PORT,
     WEBHOOK_SECRET,
@@ -73,9 +75,7 @@ def validate_credentials() -> None:
             else:
                 logger.warning("Optional credential not set: %s — some features may be disabled", name)
         else:
-            # Mask the value for safe logging
-            display = value[:4] + "****" if len(value) > 4 else "****"
-            logger.debug("Credential present: %s = %s", name, display)
+            logger.debug("Credential present: %s = [SET]", name)
 
     if missing_required:
         raise EnvironmentError(
@@ -122,9 +122,9 @@ async def status_endpoint() -> JSONResponse:
         state["started_at"] = None
 
     # --- scheduler ---
-    from tools.scheduler import _scheduler_ref  # type: ignore[attr-defined]
+    import tools.scheduler as _sched_mod
 
-    scheduler = _scheduler_ref
+    scheduler = _sched_mod._scheduler_ref
     if scheduler is None:
         state["scheduler_state"] = "unavailable"
         state["scheduled_jobs"] = []
@@ -273,15 +273,37 @@ def start() -> None:
 def _configure_logging() -> None:
     """Set up structured logging for the entire application.
 
-    Uses a consistent format across all modules:
-        2026-03-14 20:00:00 INFO  [tools.orchestrator] message
+    Logs to both stdout (for real-time monitoring) and a rotating file
+    (for post-incident debugging). File logs rotate at 10 MB, keeping
+    the last 5 files (~50 MB max disk usage).
+
+    Format:
+        2026-03-14 20:00:00 INFO     [tools.orchestrator] message
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
+    log_fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
+    date_fmt = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(log_fmt, datefmt=date_fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Console handler — stdout
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    # File handler — rotating, 10 MB per file, 5 backups
+    log_dir = PROJECT_ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "training_agent.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
     # Suppress overly chatty third-party loggers
     logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
     logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)

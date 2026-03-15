@@ -85,8 +85,9 @@ def _load_credentials() -> Credentials:
         )
         creds = flow.run_local_server(port=0)
 
-    # Persist token for future runs
+    # Persist token for future runs (restricted permissions)
     TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+    TOKEN_PATH.chmod(0o600)
     logger.info("Saved refreshed token to %s", TOKEN_PATH)
 
     return creds

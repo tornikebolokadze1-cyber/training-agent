@@ -27,22 +27,25 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 ### Python Tools (`tools/`)
 | Tool | Purpose |
 |------|---------|
-| `config.py` | Shared config: groups, schedules, folder IDs, Gemini prompts |
+| `config.py` | Shared config: groups, schedules, folder IDs, Gemini/Claude prompts |
 | `gdrive_manager.py` | Google Drive: folder creation, resumable upload, Doc creation |
-| `gemini_analyzer.py` | Gemini multimodal: video upload, transcription, analysis |
+| `gemini_analyzer.py` | Multi-model pipeline: Gemini transcription → Claude reasoning → Gemini writing |
+| `transcribe_lecture.py` | Main analysis pipeline (single source of truth for all entry points) |
+| `knowledge_indexer.py` | Pinecone RAG: chunk, embed, upsert lecture content for assistant |
 | `whatsapp_sender.py` | WhatsApp messaging via Green API (group + private) |
+| `whatsapp_assistant.py` | AI assistant "მრჩეველი": Claude reasoning + Gemini Georgian response |
 | `manychat_sender.py` | Legacy ManyChat API (deprecated — replaced by Green API) |
 | `process_recording.py` | CLI tool: manual recording processing and testing |
-| `server.py` | FastAPI webhook server (receives n8n calls) |
+| `server.py` | FastAPI webhook server (receives n8n calls + WhatsApp messages) |
 | `scheduler.py` | APScheduler: cron jobs for pre/post meeting automation |
 | `zoom_manager.py` | Zoom S2S OAuth: meeting creation, recording download |
 | `orchestrator.py` | Unified entry point: APScheduler + FastAPI on single loop |
 | `email_sender.py` | Gmail OAuth2 (backup — Zoom handles invitations directly) |
 
 ### n8n Workflows (aipulsegeorgia2025.app.n8n.cloud)
-1. **Pre-Meeting Reminders** — 18:00 trigger → email + WhatsApp Zoom link
-2. **Recording Processor** — Zoom webhook → Python handoff
-3. **Post-Processing Delivery** — Python callback → private WhatsApp report
+1. **Pre-Meeting Reminders** (Hsa5YDWrOytFxAL5) — 18:00 trigger → email + WhatsApp Zoom link
+2. **Zoom Recording → Python** (9K6kBOFPgG8xSuff, active) — Zoom webhook + CRC → Python handoff
+3. **Post-Processing Delivery** (1mw2v47eliAk2l1s) — Python callback → email notification
 
 ## Critical Rules
 - NEVER commit `.env`, `credentials.json`, or `token.json`
@@ -50,16 +53,18 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 - Always validate n8n workflows before activating
 - Use resumable uploads for files over 10MB
 - Gemini prompts are in Georgian — don't translate them
-- Gap analysis reports go ONLY to Tornike (private WhatsApp), never to Drive
-- Lecture summaries go to Google Drive in the correct ლექცია folder
+- Gap + deep analysis reports go to private Drive folder (კურსი #N ანალიზი) + link via private WhatsApp
+- Lecture summaries go to Google Drive in the correct ლექცია folder (shared with group)
 - Python server must validate WEBHOOK_SECRET on all incoming requests
 
 ## API Integrations
 - **Zoom**: Server-to-Server OAuth (meeting:write, recording:read)
 - **Google Drive/Docs**: OAuth2 with refresh tokens
-- **Gemini**: API key, hybrid models (2.5 Flash for video, 3.1 Pro for text analysis)
+- **Gemini**: API key, 2.5 Pro for video transcription, 3.1 Pro Preview for Georgian text
+- **Claude/Anthropic**: API key, Opus 4.6 with extended thinking for analysis reasoning
+- **Pinecone**: Vector DB (gemini-embedding-001, 3072 dims) for course knowledge RAG
 - **WhatsApp (Green API)**: REST API via WhatsApp Web QR code connection
-- **Email**: Handled by Zoom directly (meeting_invitees in settings)
+- **Email**: Gmail OAuth2 (backup — Zoom handles meeting invitations directly)
 
 ## Code Style
 - Python 3.12+, type hints, async where beneficial
@@ -77,5 +82,16 @@ pip install -r requirements.txt
 python -m tools.gdrive_manager
 
 # Start the full system (scheduler + webhook server)
-python -m tools.orchestrator
+python -m tools.orchestrator       # or: ./start.sh
+
+# Run tests
+pytest tools/tests/test_core.py -v
 ```
+
+## Operations
+- **Server port**: 5001 (macOS ControlCenter uses 5000)
+- **Health check**: `curl http://localhost:5001/health`
+- **Full status**: `curl http://localhost:5001/status`
+- **launchd service**: `com.aipulsegeorgia.training-agent` (auto-restarts on crash)
+- **Logs**: `logs/training_agent.log` (rotating, 10 MB × 5 backups)
+- **Operator alerts**: `alert_operator()` in `whatsapp_sender.py` — last-resort WhatsApp notification on pipeline failures

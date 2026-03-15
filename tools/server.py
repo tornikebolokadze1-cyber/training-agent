@@ -7,9 +7,11 @@ import logging
 import traceback
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
 from tools.config import (
@@ -21,21 +23,45 @@ from tools.config import (
     get_lecture_folder_name,
 )
 from tools.gdrive_manager import (
-    create_google_doc,
     ensure_folder,
     get_drive_service,
     upload_file,
 )
-from tools.gemini_analyzer import analyze_lecture
-from tools.whatsapp_sender import send_group_upload_notification, send_private_report
+from tools.transcribe_lecture import transcribe_and_index
+from tools.whatsapp_sender import alert_operator
+
+try:
+    from tools.whatsapp_assistant import WhatsAppAssistant, IncomingMessage
+    _assistant_available = True
+except ImportError:
+    _assistant_available = False
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-flight task tracking (deduplication + observability)
+# ---------------------------------------------------------------------------
+_processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
+
+
+def _task_key(group: int, lecture: int) -> str:
+    return f"g{group}_l{lecture}"
+
 
 app = FastAPI(
     title="Training Agent",
     description="Webhook server for Zoom recording processing and AI analysis",
     version="1.0.0",
 )
+
+# Reject requests with Host headers from unknown origins
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1", f"localhost:{SERVER_PORT}",
+                   f"127.0.0.1:{SERVER_PORT}"],
+)
+
+assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_available else None
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +95,17 @@ class CallbackPayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 def verify_webhook_secret(authorization: str | None = Header(None)) -> None:
-    """Validate the webhook secret from the Authorization header."""
+    """Validate the webhook secret from the Authorization header.
+
+    Fails closed: if WEBHOOK_SECRET is not configured, all requests are
+    rejected to prevent accidental open access in production.
+    """
     if not WEBHOOK_SECRET:
-        logger.warning("WEBHOOK_SECRET not configured — skipping auth")
-        return
+        logger.error("WEBHOOK_SECRET not configured — rejecting request (fail closed)")
+        raise HTTPException(
+            status_code=503,
+            detail="Server misconfigured: WEBHOOK_SECRET not set",
+        )
 
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
@@ -87,10 +120,17 @@ def verify_webhook_secret(authorization: str | None = Header(None)) -> None:
 # ---------------------------------------------------------------------------
 
 async def process_recording_task(payload: ProcessRecordingRequest) -> None:
-    """Background task: download → upload → analyze → callback.
+    """Background task: download → upload to Drive → run full analysis pipeline.
 
-    This runs asynchronously after the webhook returns 200.
+    Delegates all analysis, Drive uploads, WhatsApp notifications, and Pinecone
+    indexing to ``transcribe_and_index()`` from transcribe_lecture.py, avoiding
+    pipeline duplication.
+
+    Long-running sync calls (Drive upload, analysis pipeline) are wrapped in
+    ``asyncio.to_thread()`` to avoid blocking the event loop.
     """
+    import asyncio
+
     group = payload.group_number
     lecture = payload.lecture_number
     lecture_folder_name = get_lecture_folder_name(lecture)
@@ -101,6 +141,13 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
     local_path = None
     try:
+        # Step 0: Validate download URL (SSRF prevention)
+        parsed = urlparse(payload.download_url)
+        if parsed.scheme != "https":
+            raise ValueError(f"Only HTTPS download URLs allowed, got: {parsed.scheme}")
+        if not parsed.hostname or not parsed.hostname.endswith("zoom.us"):
+            raise ValueError(f"Download URL must be from zoom.us, got: {parsed.hostname}")
+
         # Step 1: Download the Zoom recording
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"group{group}_lecture{lecture}_{timestamp}.mp4"
@@ -113,78 +160,39 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         logger.info("Download complete: %.1f MB", file_size_mb)
 
-        # Step 2: Ensure lecture subfolder exists in Google Drive
-        service = get_drive_service()
-        lecture_folder_id = ensure_folder(
-            service, lecture_folder_name, payload.drive_folder_id
+        # Step 2: Ensure lecture subfolder exists and upload recording to Drive
+        # Wrapped in to_thread() to avoid blocking the event loop
+        service = await asyncio.to_thread(get_drive_service)
+        lecture_folder_id = await asyncio.to_thread(
+            ensure_folder, service, lecture_folder_name, payload.drive_folder_id
         )
-
-        # Step 3: Upload recording to Google Drive
         logger.info("Uploading recording to Google Drive...")
-        recording_file_id = upload_file(local_path, lecture_folder_id)
+        recording_file_id = await asyncio.to_thread(upload_file, local_path, lecture_folder_id)
         drive_recording_url = f"https://drive.google.com/file/d/{recording_file_id}/view"
         logger.info("Recording uploaded: %s", drive_recording_url)
 
-        # Step 4: Analyze with Gemini (this is the long step)
-        logger.info("Starting Gemini multimodal analysis...")
-        analysis = analyze_lecture(str(local_path))
+        # Step 3: Run the full analysis pipeline (transcribe → analyze →
+        # Drive summary + private report → WhatsApp notifications → Pinecone)
+        logger.info("Running full analysis pipeline...")
+        index_counts = await asyncio.to_thread(transcribe_and_index, group, lecture, local_path)
 
-        # Step 5: Create summary document in Google Drive
-        summary_title = f"{lecture_folder_name} — შეჯამება"
-        summary_doc_id = create_google_doc(
-            summary_title, analysis["summary"], lecture_folder_id
-        )
-        summary_doc_url = f"https://docs.google.com/document/d/{summary_doc_id}/edit"
-        logger.info("Summary doc created: %s", summary_doc_url)
-
-        # Step 6: Notify WhatsApp group that materials are uploaded
-        try:
-            send_group_upload_notification(
-                group, lecture, drive_recording_url, summary_doc_url,
-            )
-            logger.info("WhatsApp group notified about uploaded materials")
-        except Exception as exc:
-            logger.error("WhatsApp group notification failed: %s", exc)
-
-        # Step 7: Send gap analysis privately to Tornike via WhatsApp
-        gap_header = (
-            f"📊 ლექცია #{lecture} — ანალიზი\n"
-            f"ჯგუფი: {group}\n"
-            f"{'─' * 30}\n\n"
-        )
-        send_private_report(gap_header + analysis["gap_analysis"])
-        logger.info("Gap analysis sent to Tornike via WhatsApp")
-
-        # Step 7b: Send deep analysis if available
-        deep = analysis.get("deep_analysis", "")
-        if deep:
-            deep_header = (
-                f"🌍 ლექცია #{lecture} — ღრმა ანალიზი (გლობალური კონტექსტი)\n"
-                f"ჯგუფი: {group}\n"
-                f"{'━' * 30}\n\n"
-            )
-            send_private_report(deep_header + deep)
-            logger.info("Deep analysis sent to Tornike via WhatsApp")
-
-        # Step 8: Callback to n8n with success
+        # Step 4: Callback to n8n with success
         await _send_callback(CallbackPayload(
             status="success",
             group_number=group,
             lecture_number=lecture,
-            summary_doc_url=summary_doc_url,
             drive_recording_url=drive_recording_url,
-            gap_analysis_text=analysis["gap_analysis"],
         ))
 
         logger.info(
-            "Processing complete: Group %d, Lecture #%d", group, lecture
+            "Processing complete: Group %d, Lecture #%d (%d vectors indexed)",
+            group, lecture, sum(index_counts.values()),
         )
 
     except Exception as e:
         error_msg = f"Processing failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
 
-        # Callback to n8n with error
         await _send_callback(CallbackPayload(
             status="error",
             group_number=group,
@@ -192,8 +200,18 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
             error_message=str(e),
         ))
 
+        # Last-resort alert — ensures Tornike knows even if n8n callback fails
+        # Wrapped in to_thread because alert_operator makes blocking HTTP calls
+        await asyncio.to_thread(
+            alert_operator,
+            f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
+            f"Error: {e}",
+        )
+
     finally:
-        # Clean up temporary file
+        key = _task_key(group, lecture)
+        _processing_tasks.pop(key, None)
+
         if local_path and local_path.exists():
             local_path.unlink()
             logger.info("Cleaned up temp file: %s", local_path)
@@ -208,7 +226,7 @@ async def _download_recording(url: str, access_token: str, dest: Path) -> None:
         async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
             response.raise_for_status()
             with open(dest, "wb") as f:
-                async for chunk in response.aiter_bytes(chunk_size=8192):
+                async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                     f.write(chunk)
 
 
@@ -222,17 +240,29 @@ async def _send_callback(payload: CallbackPayload) -> None:
     if WEBHOOK_SECRET:
         headers["Authorization"] = f"Bearer {WEBHOOK_SECRET}"
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                N8N_CALLBACK_URL,
-                json=payload.model_dump(),
-                headers=headers,
-            )
-            response.raise_for_status()
-            logger.info("Callback sent to n8n: status=%s", payload.status)
-    except Exception as e:
-        logger.error("Failed to send callback to n8n: %s", e)
+    import asyncio
+
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    N8N_CALLBACK_URL,
+                    json=payload.model_dump(),
+                    headers=headers,
+                )
+                response.raise_for_status()
+                logger.info("Callback sent to n8n: status=%s", payload.status)
+                return
+        except Exception as e:
+            if attempt < 3:
+                delay = 5 * attempt
+                logger.warning(
+                    "Callback attempt %d/3 failed: %s — retrying in %ds",
+                    attempt, e, delay,
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -241,12 +271,110 @@ async def _send_callback(payload: CallbackPayload) -> None:
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with basic dependency verification."""
+    checks: dict[str, str] = {}
+
+    # Check tmp directory is writable
+    try:
+        test_file = TMP_DIR / ".health_check"
+        test_file.write_text("ok")
+        test_file.unlink()
+        checks["tmp_dir"] = "ok"
+    except Exception as e:
+        checks["tmp_dir"] = f"error: {e}"
+
+    # Check critical env vars are present
+    checks["webhook_secret"] = "configured" if WEBHOOK_SECRET else "MISSING"
+    checks["n8n_callback"] = "configured" if N8N_CALLBACK_URL else "not set"
+
+    # Report in-flight tasks
+    checks["tasks_in_progress"] = str(len(_processing_tasks))
+
+    overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
+
     return {
-        "status": "healthy",
+        "status": overall,
         "service": "training-agent",
         "timestamp": datetime.now().isoformat(),
+        "checks": checks,
     }
+
+
+@app.post("/whatsapp-incoming")
+async def whatsapp_incoming(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Receive incoming WhatsApp messages from Green API webhook.
+
+    Green API sends notifications for all incoming messages.
+    We process them in the background to return 200 immediately.
+
+    Authentication: same Bearer token as /process-recording.
+    Configure Green API webhookUrlToken to send this header.
+    """
+    verify_webhook_secret(authorization)
+
+    # Parse the raw JSON (Green API format varies)
+    body = await request.json()
+
+    # Only process incoming text messages
+    type_webhook = body.get("typeWebhook")
+    if type_webhook != "incomingMessageReceived":
+        return {"status": "ignored", "reason": f"type: {type_webhook}"}
+
+    message_data = body.get("messageData", {})
+    type_message = message_data.get("typeMessage")
+
+    # Extract text from different message types
+    sender_data = body.get("senderData", {})
+    text = ""
+    if type_message == "textMessage":
+        text = message_data.get("textMessageData", {}).get("textMessage", "")
+    elif type_message in ("extendedTextMessage", "quotedMessage"):
+        text = message_data.get("extendedTextMessageData", {}).get("text", "")
+    else:
+        return {"status": "ignored", "reason": f"message type: {type_message}"}
+
+    if not text.strip():
+        return {"status": "ignored", "reason": "empty text"}
+
+    # Skip messages sent by the bot itself (prevents infinite loops)
+    if message_data.get("fromMe", False):
+        return {"status": "ignored", "reason": "own message"}
+
+    if not _assistant_available or assistant is None:
+        logger.warning("WhatsApp assistant not available — ignoring incoming message")
+        return {"status": "ignored", "reason": "assistant not available"}
+
+    incoming = IncomingMessage(
+        chat_id=sender_data.get("chatId", ""),
+        sender_id=sender_data.get("sender", ""),
+        sender_name=sender_data.get("senderName", ""),
+        text=text,
+        timestamp=body.get("timestamp", 0),
+    )
+
+    # Process in background
+    background_tasks.add_task(_handle_assistant_message, incoming)
+
+    return {"status": "accepted"}
+
+
+async def _handle_assistant_message(message: "IncomingMessage") -> None:
+    """Background task: run the assistant pipeline."""
+    try:
+        result = await assistant.handle_message(message)
+        if result:
+            logger.info("Assistant responded in %s", message.chat_id[:20])
+        else:
+            logger.debug(
+                "Assistant chose not to respond to message in %s",
+                message.chat_id[:20],
+            )
+    except Exception as e:
+        logger.error("Assistant error: %s", e, exc_info=True)
 
 
 @app.post("/process-recording")
@@ -262,6 +390,31 @@ async def process_recording(
     Results are sent back to n8n via callback webhook.
     """
     verify_webhook_secret(authorization)
+
+    # Input validation
+    if payload.group_number not in (1, 2):
+        raise HTTPException(status_code=422, detail=f"Invalid group_number: {payload.group_number}")
+    if not (1 <= payload.lecture_number <= 15):
+        raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {payload.lecture_number}")
+
+    # Deduplication: reject if this group+lecture is already being processed.
+    # Best-effort: the check-and-set is NOT locked, but since all async endpoint
+    # code runs on a single event loop thread (no awaits between check and set),
+    # concurrent requests are effectively serialised here.
+    key = _task_key(payload.group_number, payload.lecture_number)
+    if key in _processing_tasks:
+        started = _processing_tasks[key]
+        logger.warning(
+            "Duplicate request rejected: Group %d, Lecture #%d (in progress since %s)",
+            payload.group_number, payload.lecture_number, started.isoformat(),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                   f"is already being processed (started {started.isoformat()})",
+        )
+
+    _processing_tasks[key] = datetime.now()
 
     logger.info(
         "Received recording request: Group %d, Lecture #%d",

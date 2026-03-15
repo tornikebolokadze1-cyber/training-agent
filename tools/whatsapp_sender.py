@@ -22,6 +22,7 @@ import httpx
 from tools.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
+    WEBHOOK_SECRET,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
@@ -84,6 +85,13 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
                 return data
 
             error_text = response.text
+
+            # Don't retry on client errors (except 429 rate limit)
+            if 400 <= response.status_code < 500 and response.status_code != 429:
+                raise RuntimeError(
+                    f"{purpose} failed with HTTP {response.status_code}: {error_text}"
+                )
+
             logger.warning(
                 "%s attempt %d failed: HTTP %d — %s",
                 purpose, attempt, response.status_code, error_text,
@@ -231,6 +239,91 @@ def send_private_report(report_text: str) -> dict[str, Any]:
     return send_message_to_chat(chat_id, report_text)
 
 
+def alert_operator(message: str) -> None:
+    """Last-resort alert to Tornike when automated systems fail.
+
+    Tries to send a WhatsApp message. If that also fails, logs at CRITICAL
+    level (which goes to both console and the rotating log file). This
+    function NEVER raises — it is the safety net, not another failure point.
+
+    Args:
+        message: Plain-text alert (keep it short and actionable).
+    """
+    prefix = "⚠️ Training Agent ALERT\n\n"
+    try:
+        if WHATSAPP_TORNIKE_PHONE and GREEN_API_INSTANCE_ID and GREEN_API_TOKEN:
+            chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
+            send_message_to_chat(chat_id, prefix + message)
+            logger.info("Operator alert sent via WhatsApp")
+            return
+    except Exception as exc:
+        logger.error("Failed to send WhatsApp alert: %s", exc)
+
+    # Fallback: CRITICAL log — appears in console + log file
+    logger.critical("OPERATOR ALERT (WhatsApp unavailable): %s", message)
+
+
+# ---------------------------------------------------------------------------
+# Webhook configuration (for receiving incoming messages)
+# ---------------------------------------------------------------------------
+
+
+def configure_webhook(webhook_url: str) -> dict[str, Any]:
+    """Configure Green API to send incoming message notifications to a webhook URL.
+
+    Args:
+        webhook_url: Public URL that Green API will POST incoming messages to.
+                     e.g. 'https://abc123.ngrok.io/whatsapp-incoming'
+
+    Returns:
+        Green API response dict.
+    """
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        raise ValueError("Green API not configured")
+
+    url = f"{_base_url()}/setSettings/{GREEN_API_TOKEN}"
+
+    # webhookUrlToken is sent as Authorization header by Green API
+    # Must match what /whatsapp-incoming expects (Bearer <WEBHOOK_SECRET>)
+    token = f"Bearer {WEBHOOK_SECRET}" if WEBHOOK_SECRET else ""
+
+    settings = {
+        "webhookUrl": webhook_url,
+        "webhookUrlToken": token,
+        "incomingWebhook": "yes",
+        "outgoingMessageWebhook": "no",
+        "outgoingAPIMessageWebhook": "no",
+        "stateWebhook": "no",
+        "deviceWebhook": "no",
+    }
+
+    with httpx.Client(timeout=30) as client:
+        response = client.post(url, json=settings)
+
+    response.raise_for_status()
+    result = response.json()
+    logger.info("Green API webhook configured: %s → %s", webhook_url, result)
+    return result
+
+
+def get_webhook_settings() -> dict[str, Any]:
+    """Get current Green API webhook settings.
+
+    Returns:
+        Dict with current webhook configuration.
+    """
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        raise ValueError("Green API not configured")
+
+    url = f"{_base_url()}/getSettings/{GREEN_API_TOKEN}"
+
+    with httpx.Client(timeout=30) as client:
+        response = client.get(url)
+
+    response.raise_for_status()
+    return response.json()
+
+
 # ---------------------------------------------------------------------------
 # Utility: fetch all groups (for getting group IDs)
 # ---------------------------------------------------------------------------
@@ -284,7 +377,7 @@ def _split_message(text: str) -> list[str]:
             split_at = remaining[:MESSAGE_MAX_LENGTH].rfind("\n")
         if split_at < MESSAGE_MAX_LENGTH // 2:
             split_at = remaining[:MESSAGE_MAX_LENGTH].rfind(" ")
-        if split_at < 0:
+        if split_at <= 0:
             split_at = MESSAGE_MAX_LENGTH
 
         chunks.append(remaining[:split_at].rstrip())

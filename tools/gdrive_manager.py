@@ -10,7 +10,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 from tools.config import (
     GOOGLE_CREDENTIALS_PATH,
@@ -24,7 +24,7 @@ from tools.config import (
 logger = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/docs",
 ]
 
@@ -43,11 +43,19 @@ def _get_credentials() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            import os
+            if not os.environ.get("DISPLAY") and not os.environ.get("BROWSER"):
+                raise RuntimeError(
+                    "OAuth token expired and cannot be refreshed. "
+                    "Run the application locally with a browser to re-authorize: "
+                    "python -m tools.gdrive_manager"
+                )
             flow = InstalledAppFlow.from_client_secrets_file(
                 GOOGLE_CREDENTIALS_PATH, SCOPES
             )
             creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json())
+        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        TOKEN_PATH.chmod(0o600)
 
     return creds
 
@@ -81,8 +89,9 @@ def create_folder(service, name: str, parent_id: str) -> str:
 
 def find_folder(service, name: str, parent_id: str) -> str | None:
     """Find an existing folder by name inside a parent. Returns ID or None."""
+    safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
     query = (
-        f"name = '{name}' "
+        f"name = '{safe_name}' "
         f"and '{parent_id}' in parents "
         f"and mimeType = 'application/vnd.google-apps.folder' "
         f"and trashed = false"
@@ -102,7 +111,7 @@ def ensure_folder(service, name: str, parent_id: str) -> str:
 
 
 def create_all_lecture_folders() -> dict[int, dict[int, str]]:
-    """Create ლექცია #2 through ლექცია #15 for both groups.
+    """Create ლექცია #1 through ლექცია #15 for both groups.
 
     Returns a nested dict: {group_number: {lecture_number: folder_id}}.
     Skips folders that already exist.
@@ -182,15 +191,95 @@ def upload_file(
 
 
 # ---------------------------------------------------------------------------
+# File Download
+# ---------------------------------------------------------------------------
+
+def download_file(
+    file_id: str,
+    destination: str | Path,
+) -> Path:
+    """Download a file from Google Drive to a local path.
+
+    Uses chunked download with progress reporting for large files.
+
+    Args:
+        file_id: Google Drive file ID.
+        destination: Local path to save the file.
+
+    Returns:
+        Path to the downloaded file.
+    """
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    service = get_drive_service()
+    request = service.files().get_media(fileId=file_id)
+
+    with open(destination, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request, chunksize=CHUNK_SIZE)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                progress = int(status.progress() * 100)
+                logger.info("Download progress: %d%%", progress)
+
+    file_size_mb = destination.stat().st_size / (1024 * 1024)
+    logger.info("Downloaded '%s' (%.1f MB) to %s", file_id, file_size_mb, destination)
+    return destination
+
+
+def list_files_in_folder(folder_id: str) -> list[dict]:
+    """List all files in a Google Drive folder.
+
+    Returns a list of dicts with 'id', 'name', 'mimeType', 'size'.
+    """
+    service = get_drive_service()
+    query = f"'{folder_id}' in parents and trashed = false"
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, mimeType, size)",
+        orderBy="name",
+    ).execute()
+    return results.get("files", [])
+
+
+# ---------------------------------------------------------------------------
 # Google Doc Creation
 # ---------------------------------------------------------------------------
 
 def create_google_doc(title: str, content: str, folder_id: str) -> str:
-    """Create a Google Doc with the given content in the specified folder.
+    """Create or update a Google Doc with the given content in the specified folder.
+
+    If a document with the same title already exists in the folder, it is
+    updated in place (idempotent). Otherwise a new document is created.
 
     Returns the document ID (also the Drive file ID).
     """
     service = get_drive_service()
+
+    # Check for existing doc with same title (idempotency)
+    safe_title = title.replace("\\", "\\\\").replace("'", "\\'")
+    query = (
+        f"name = '{safe_title}' "
+        f"and '{folder_id}' in parents "
+        f"and mimeType = 'application/vnd.google-apps.document' "
+        f"and trashed = false"
+    )
+    existing = service.files().list(q=query, fields="files(id)").execute().get("files", [])
+    if existing:
+        doc_id = existing[0]["id"]
+        logger.info("Updating existing Google Doc '%s' (ID: %s)", title, doc_id)
+        media = MediaIoBaseUpload(
+            io.BytesIO(content.encode("utf-8")),
+            mimetype="text/plain",
+            resumable=False,
+        )
+        service.files().update(
+            fileId=doc_id,
+            media_body=media,
+        ).execute()
+        return doc_id
 
     # Create the doc as a file in Drive
     metadata = {
@@ -216,6 +305,47 @@ def create_google_doc(title: str, content: str, folder_id: str) -> str:
     link = doc.get("webViewLink", "")
     logger.info("Created Google Doc '%s' (ID: %s, Link: %s)", title, doc_id, link)
     return doc_id
+
+
+# ---------------------------------------------------------------------------
+# Permission Management
+# ---------------------------------------------------------------------------
+
+def restrict_to_owner(file_or_folder_id: str) -> None:
+    """Remove all non-owner permissions from a file or folder.
+
+    After this call, only the OAuth account owner can access the resource.
+    Useful for private analysis docs that shouldn't be visible to group members.
+    """
+    service = get_drive_service()
+    permissions = service.permissions().list(
+        fileId=file_or_folder_id,
+        fields="permissions(id, role, type)",
+    ).execute().get("permissions", [])
+
+    for perm in permissions:
+        if perm["role"] != "owner":
+            try:
+                service.permissions().delete(
+                    fileId=file_or_folder_id,
+                    permissionId=perm["id"],
+                ).execute()
+                logger.info(
+                    "Removed permission %s (role=%s, type=%s) from %s",
+                    perm["id"], perm["role"], perm.get("type"), file_or_folder_id,
+                )
+            except Exception as e:
+                logger.warning("Failed to remove permission %s: %s", perm["id"], e)
+
+
+def ensure_private_folder(service, name: str, parent_id: str) -> str:
+    """Find or create a folder, then restrict access to owner only.
+
+    Returns the folder ID.
+    """
+    folder_id = ensure_folder(service, name, parent_id)
+    restrict_to_owner(folder_id)
+    return folder_id
 
 
 # ---------------------------------------------------------------------------

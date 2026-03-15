@@ -395,7 +395,7 @@ def download_recording(
     logger.info("Downloading recording to %s …", dest)
 
     try:
-        with httpx.Client(timeout=None, follow_redirects=True) as client:
+        with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0), follow_redirects=True) as client:
             with client.stream("GET", authenticated_url) as response:
                 if response.status_code not in (200, 206):
                     raise ZoomDownloadError(
@@ -453,7 +453,6 @@ def download_all_recordings(
     if dest_dir is None:
         dest_dir = TMP_DIR / str(meeting_id)
 
-    token = get_access_token()
     recordings_data = get_meeting_recordings(meeting_id)
     recording_files: list[dict[str, Any]] = recordings_data.get("recording_files", [])
 
@@ -467,6 +466,10 @@ def download_all_recordings(
                 rec.get("status"),
             )
             continue
+
+        # Refresh token before each download — large files may take longer
+        # than the token's 1-hour lifetime
+        token = get_access_token()
 
         file_type: str = rec.get("file_type", "MP4").upper()
         rec_type: str = rec.get("recording_type", "unknown")

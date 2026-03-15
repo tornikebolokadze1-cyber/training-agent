@@ -1,25 +1,32 @@
 """Gemini lecture analysis: hybrid model pipeline.
 
-Cost-optimized: 2.5 Flash for video transcription (~$1/lecture),
-3.1 Pro for text analysis (~$1.30/lecture). Total ~$2.30/lecture.
+Multimodal transcription with Gemini 2.5 Pro (video chunked into ~45min
+segments via ffmpeg to fit within 1M token limit — preserves slides,
+demos, and screen shares), then Claude Opus reasoning + Gemini Georgian
+writing for analysis.
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from pathlib import Path
 
 from google import genai
 from google.genai import types
 
+import anthropic
+
 from tools.config import (
+    ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_MODEL_TRANSCRIPTION,
     GEMINI_MODEL_ANALYSIS,
-    GEMINI_MODEL_DEEP_ANALYSIS,
+    ASSISTANT_CLAUDE_MODEL,
     TRANSCRIPTION_PROMPT,
+    TRANSCRIPTION_CONTINUATION_PROMPT,
     SUMMARIZATION_PROMPT,
     GAP_ANALYSIS_PROMPT,
     DEEP_ANALYSIS_PROMPT,
@@ -57,13 +64,112 @@ def _get_client(use_free: bool = False) -> genai.Client:
         logger.info("Using FREE Gemini API key (fallback)")
         return genai.Client(api_key=GEMINI_API_KEY)
     if not GEMINI_API_KEY_PAID:
+        if not GEMINI_API_KEY:
+            raise RuntimeError(
+                "No Gemini API key configured — set GEMINI_API_KEY or "
+                "GEMINI_API_KEY_PAID in .env"
+            )
         logger.warning("Paid key not configured — falling back to free key")
         return genai.Client(api_key=GEMINI_API_KEY)
     return genai.Client(api_key=GEMINI_API_KEY_PAID)
 
 
 # ---------------------------------------------------------------------------
-# Video Upload
+# Video Chunking (multimodal — keeps video frames for slides/demos)
+# ---------------------------------------------------------------------------
+
+CHUNK_DURATION_MINUTES = 45  # ~697K video tokens per chunk (safe under 1M limit)
+
+
+def _get_video_duration_seconds(video_path: Path) -> float:
+    """Get video duration in seconds using ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            "--", str(video_path),
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr[-300:]}")
+    return float(result.stdout.strip())
+
+
+def split_video_chunks(video_path: str | Path) -> list[Path]:
+    """Split a long video into ~45-minute chunks using ffmpeg.
+
+    Uses stream copy (no re-encoding) for near-instant splitting.
+    Gemini tokenizes video at ~258 tokens/sec, so 45 min = ~697K tokens
+    which fits safely within the 1M token limit with audio overhead.
+
+    For videos under 45 minutes, returns the original file as a single-element list.
+
+    Returns:
+        List of chunk file paths in order.
+    """
+    video_path = Path(video_path)
+    duration = _get_video_duration_seconds(video_path)
+
+    if duration <= 0:
+        raise ValueError(f"Video has zero or negative duration ({duration}s): {video_path}")
+
+    chunk_seconds = CHUNK_DURATION_MINUTES * 60
+
+    if duration <= chunk_seconds:
+        logger.info(
+            "Video is %.0f min — fits in one chunk, no splitting needed.",
+            duration / 60,
+        )
+        return [video_path]
+
+    num_chunks = int(duration // chunk_seconds) + (1 if duration % chunk_seconds > 0 else 0)
+    logger.info(
+        "Video is %.0f min — splitting into %d chunks of ~%d min each.",
+        duration / 60, num_chunks, CHUNK_DURATION_MINUTES,
+    )
+
+    chunk_paths: list[Path] = []
+    min_chunk_size = 1024 * 100  # 100 KB minimum for a valid chunk
+    for i in range(num_chunks):
+        start = i * chunk_seconds
+        chunk_path = video_path.with_suffix(f".chunk{i}.mp4")
+
+        if chunk_path.exists():
+            # Validate existing chunk is not corrupted/truncated
+            if chunk_path.stat().st_size >= min_chunk_size:
+                logger.info("Chunk %d already exists: %s (valid)", i, chunk_path.name)
+                chunk_paths.append(chunk_path)
+                continue
+            logger.warning(
+                "Stale chunk %d too small (%d bytes) — re-creating",
+                i, chunk_path.stat().st_size,
+            )
+            chunk_path.unlink()
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-i", str(video_path),
+            "-t", str(chunk_seconds),
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
+            "--", str(chunk_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg chunk {i} failed: {result.stderr[-500:]}")
+
+        size_mb = chunk_path.stat().st_size / (1024 * 1024)
+        logger.info("Chunk %d: %s (%.1f MB)", i, chunk_path.name, size_mb)
+        chunk_paths.append(chunk_path)
+
+    return chunk_paths
+
+
+# ---------------------------------------------------------------------------
+# File Upload (audio or video)
 # ---------------------------------------------------------------------------
 
 def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object, bool]:
@@ -99,13 +205,31 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
 def wait_for_processing(client: genai.Client, file_name: str) -> object:
     """Poll until the uploaded file is processed and ready.
 
-    Raises RuntimeError if processing fails or times out.
+    Retries on transient network errors. Raises RuntimeError if processing
+    fails or times out.
     """
     logger.info("Waiting for Gemini to process file '%s'...", file_name)
     elapsed = 0
+    consecutive_errors = 0
 
     while elapsed < FILE_POLL_TIMEOUT:
-        file_info = client.files.get(name=file_name)
+        try:
+            file_info = client.files.get(name=file_name)
+            consecutive_errors = 0  # Reset on success
+        except Exception as e:
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                raise RuntimeError(
+                    f"Too many consecutive errors polling file '{file_name}': {e}"
+                ) from e
+            logger.warning(
+                "Network error polling file status (attempt %d/5): %s — retrying in %ds",
+                consecutive_errors, e, FILE_POLL_INTERVAL,
+            )
+            time.sleep(FILE_POLL_INTERVAL)
+            elapsed += FILE_POLL_INTERVAL
+            continue
+
         state = str(file_info.state)
 
         # Handle both enum and string representations
@@ -189,145 +313,397 @@ def _generate_with_retry(
     raise RuntimeError("Unreachable")
 
 
-def transcribe_video(file_ref: object, use_free: bool = False) -> str:
-    """Transcribe a video lecture using Gemini 2.5 Flash (cheap, fast, multimodal).
+def transcribe_video(file_ref: object, use_free: bool = False,
+                     chunk_number: int = 0, total_chunks: int = 1) -> str:
+    """Transcribe a video chunk using Gemini 2.5 Pro (multimodal — sees slides/demos).
 
     Args:
         file_ref: The uploaded file object from upload_video().
         use_free: Whether to use the free API key (default: paid).
+        chunk_number: Zero-based chunk index (0 = first/only chunk).
+        total_chunks: Total number of chunks for this lecture.
 
     Returns:
-        Full Georgian transcript with timestamps and speaker markers.
+        Georgian transcript for this chunk with timestamps, speaker markers,
+        and slide/demo descriptions.
     """
     client = _get_client(use_free=use_free)
+
+    if chunk_number == 0:
+        prompt = TRANSCRIPTION_PROMPT
+    else:
+        prompt = TRANSCRIPTION_CONTINUATION_PROMPT.format(
+            chunk_number=chunk_number + 1,
+            total_chunks=total_chunks,
+        )
+
     return _generate_with_retry(
         client,
         model=GEMINI_MODEL_TRANSCRIPTION,
-        contents=[file_ref, TRANSCRIPTION_PROMPT],
-        purpose="transcription",
-        max_output_tokens=65536,  # Transcripts can be very long for 2hr lectures
+        contents=[file_ref, prompt],
+        purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
+        max_output_tokens=65536,
         use_free=use_free,
     )
+
+
+def transcribe_chunked_video(
+    video_path: str | Path,
+    use_free: bool = False,
+) -> tuple[str, bool]:
+    """Split video into chunks if needed, transcribe each multimodally, concatenate.
+
+    Handles the full flow: split → upload → transcribe → cleanup → join.
+    Uses try/finally to ensure Gemini uploads and local chunk files are
+    cleaned up even when a mid-pipeline failure occurs.
+
+    Args:
+        video_path: Path to the original video file.
+        use_free: Whether to start with the free API key.
+
+    Returns:
+        Tuple of (full transcript text, whether free tier was used).
+    """
+    chunks = split_video_chunks(video_path)
+    total_chunks = len(chunks)
+    transcripts: list[str] = []
+
+    # Track resources for cleanup on failure
+    uploaded_gemini_files: list[tuple[str, bool]] = []  # (file_name, use_free)
+
+    try:
+        for i, chunk_path in enumerate(chunks):
+            logger.info(
+                "Processing chunk %d/%d: %s", i + 1, total_chunks, chunk_path.name,
+            )
+
+            # Upload chunk to Gemini
+            file_ref, use_free = upload_video(chunk_path, use_free=use_free)
+            uploaded_gemini_files.append((file_ref.name, use_free))
+
+            # Transcribe with chunk context
+            transcript = transcribe_video(
+                file_ref, use_free=use_free,
+                chunk_number=i, total_chunks=total_chunks,
+            )
+            transcripts.append(transcript)
+            logger.info(
+                "Chunk %d/%d transcribed: %d chars",
+                i + 1, total_chunks, len(transcript),
+            )
+
+            # Clean up Gemini file immediately (success path)
+            try:
+                client = _get_client(use_free=use_free)
+                client.files.delete(name=file_ref.name)
+                uploaded_gemini_files.pop()  # Remove from cleanup list
+                logger.info("Cleaned up Gemini file: %s", file_ref.name)
+            except Exception as e:
+                logger.warning("Failed to delete Gemini file %s: %s", file_ref.name, e)
+
+            # Clean up local chunk file (but not the original video)
+            if chunk_path != Path(video_path) and chunk_path.exists():
+                chunk_path.unlink()
+                logger.info("Cleaned up local chunk: %s", chunk_path.name)
+
+    finally:
+        # Clean up any remaining Gemini uploads on failure
+        for file_name, was_free in uploaded_gemini_files:
+            try:
+                client = _get_client(use_free=was_free)
+                client.files.delete(name=file_name)
+                logger.info("Cleaned up leaked Gemini file: %s", file_name)
+            except Exception as e:
+                logger.warning("Failed to clean up Gemini file %s: %s", file_name, e)
+
+        # Clean up any remaining local chunk files on failure
+        for chunk_path in chunks:
+            if chunk_path != Path(video_path) and chunk_path.exists():
+                try:
+                    chunk_path.unlink()
+                    logger.info("Cleaned up leaked chunk file: %s", chunk_path.name)
+                except Exception as e:
+                    logger.warning("Failed to clean up chunk %s: %s", chunk_path.name, e)
+
+    full_transcript = "\n\n".join(transcripts)
+    logger.info(
+        "Full transcript assembled: %d chars from %d chunks",
+        len(full_transcript), total_chunks,
+    )
+    return full_transcript, use_free
 
 
 # ---------------------------------------------------------------------------
-# Step 2 & 3: Text Analysis with 3.1 Pro (smartest model, text-only = cheap)
+# Claude Reasoning (extended thinking for deep analysis)
 # ---------------------------------------------------------------------------
 
-def generate_summary(transcript: str, use_free: bool = False) -> str:
-    """Generate a lecture summary using Gemini 3.1 Pro (text-only, deep analysis).
+def _claude_reason(transcript: str, prompt: str, purpose: str) -> str:
+    """Use Claude Opus 4.6 with extended thinking to reason about the transcript.
 
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free API key (default: paid).
+    Returns Claude's analysis in English (reasoning output), which will then
+    be sent to Gemini for Georgian writing.
+    """
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
 
-    Returns:
-        Lecture summary text in Georgian.
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    system_msg = (
+        "You are an expert AI training analyst and pedagogy specialist. "
+        "You will analyze a lecture transcript and provide deep, structured analysis. "
+        "Think carefully and thoroughly about every aspect. "
+        "Your analysis will be translated to Georgian by another model, "
+        "so write clearly and structurally in English."
+    )
+
+    user_msg = f"{prompt}\n\nTRANSCRIPT:\n{transcript}"
+
+    logger.info("Sending transcript to Claude Opus for %s reasoning...", purpose)
+
+    max_attempts = 5  # More attempts for rate limits
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.messages.create(
+                model=ASSISTANT_CLAUDE_MODEL,
+                max_tokens=16000,
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
+                system=system_msg,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+
+            # Extract text blocks (skip thinking blocks)
+            text_parts = [
+                block.text for block in response.content
+                if block.type == "text"
+            ]
+            result = "\n".join(text_parts)
+            logger.info(
+                "Claude %s reasoning complete (%d chars, %d input tokens, %d output tokens)",
+                purpose, len(result),
+                response.usage.input_tokens, response.usage.output_tokens,
+            )
+            return result
+
+        except anthropic.RateLimitError as e:
+            # Rate limits need long waits (30K tokens/min limit)
+            # Exponential backoff: 65s, 130s, 195s, 260s, 325s
+            delay = 65 * attempt
+            logger.warning(
+                "Claude %s rate limited (attempt %d/%d) — waiting %ds for reset...",
+                purpose, attempt, max_attempts, delay,
+            )
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Claude {purpose} failed after {max_attempts} rate limit hits: {e}"
+                ) from e
+            time.sleep(delay)
+
+        except Exception as e:
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            logger.warning(
+                "Claude %s attempt %d/%d failed: %s — retrying in %ds",
+                purpose, attempt, max_attempts, e, delay,
+            )
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Claude {purpose} failed after {max_attempts} attempts: {e}"
+                ) from e
+            time.sleep(delay)
+
+    raise RuntimeError("Unreachable")
+
+
+def _gemini_write_georgian(claude_analysis: str, prompt: str, purpose: str, use_free: bool = False) -> str:
+    """Take Claude's English analysis and write the final Georgian output with Gemini.
+
+    Gemini 3.1 Pro excels at Georgian language — it takes Claude's structured
+    analysis and produces fluent, professional Georgian text.
     """
     client = _get_client(use_free=use_free)
+
+    writing_prompt = (
+        f"{prompt}\n\n"
+        "---\n"
+        "ქვემოთ მოცემულია ექსპერტის ანალიზი ინგლისურად. "
+        "გადმოეცი ეს ანალიზი სრულად და დეტალურად ქართულ ენაზე, "
+        "შეინარჩუნე ორიგინალის სტრუქტურა და სიღრმე. "
+        "არ გამოტოვო არცერთი მნიშვნელოვანი პუნქტი.\n\n"
+        f"EXPERT ANALYSIS:\n{claude_analysis}"
+    )
+
     return _generate_with_retry(
         client,
         model=GEMINI_MODEL_ANALYSIS,
-        contents=[SUMMARIZATION_PROMPT + transcript],
-        purpose="summary",
-        max_output_tokens=16384,
-        use_free=use_free,
-    )
-
-
-def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
-    """Generate gap analysis using Gemini 3.1 Pro (text-only, deep analysis).
-
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free API key (default: paid).
-
-    Returns:
-        Gap analysis text in Georgian (private — for instructor only).
-    """
-    client = _get_client(use_free=use_free)
-    return _generate_with_retry(
-        client,
-        model=GEMINI_MODEL_ANALYSIS,
-        contents=[GAP_ANALYSIS_PROMPT + transcript],
-        purpose="gap analysis",
-        max_output_tokens=16384,
-        use_free=use_free,
-    )
-
-
-def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
-    """Generate deep analysis with global AI trends context using Gemini 3.1 Pro.
-
-    This is the comprehensive analysis that compares the lecture against
-    world-class AI training standards, identifies blind spots, and provides
-    a scored rubric. Sent privately to Tornike only.
-
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free API key (default: paid).
-
-    Returns:
-        Deep analysis text in Georgian (private — for instructor only).
-    """
-    client = _get_client(use_free=use_free)
-    return _generate_with_retry(
-        client,
-        model=GEMINI_MODEL_DEEP_ANALYSIS,
-        contents=[DEEP_ANALYSIS_PROMPT + transcript],
-        purpose="deep analysis (global AI context)",
+        contents=[writing_prompt],
+        purpose=f"{purpose} (Georgian writing)",
         max_output_tokens=32768,
         use_free=use_free,
     )
 
 
 # ---------------------------------------------------------------------------
+# Step 2 & 3: Dual-Model Analysis (Claude thinks, Gemini writes Georgian)
+# ---------------------------------------------------------------------------
+
+def generate_summary(transcript: str, use_free: bool = False) -> str:
+    """Generate lecture summary: Claude reasons, Gemini writes Georgian.
+
+    Args:
+        transcript: Full lecture transcript text.
+        use_free: Whether to use the free Gemini API key (default: paid).
+
+    Returns:
+        Lecture summary text in Georgian.
+    """
+    claude_analysis = _claude_reason(
+        transcript,
+        prompt=(
+            "Analyze this AI training lecture transcript thoroughly. Produce a comprehensive summary covering:\n"
+            "1. Main topics discussed\n"
+            "2. Key concepts and ideas explained\n"
+            "3. Practical examples and demonstrations shown\n"
+            "4. Key takeaways and conclusions\n"
+            "5. Action items for participants\n\n"
+            "Be detailed and precise. The summary should be comprehensive enough for "
+            "someone who missed the lecture to understand the core material."
+        ),
+        purpose="summary",
+    )
+    return _gemini_write_georgian(claude_analysis, SUMMARIZATION_PROMPT, "summary", use_free)
+
+
+def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
+    """Generate gap analysis: Claude reasons, Gemini writes Georgian.
+
+    Args:
+        transcript: Full lecture transcript text.
+        use_free: Whether to use the free Gemini API key (default: paid).
+
+    Returns:
+        Gap analysis text in Georgian (private — for instructor only).
+    """
+    claude_analysis = _claude_reason(
+        transcript,
+        prompt=(
+            "You are a critical AI training quality expert and pedagogy specialist. "
+            "Analyze this lecture transcript with a critical eye:\n\n"
+            "1. Teaching Quality — How clearly was material explained? Any vague/incomplete explanations?\n"
+            "2. Critical Gaps — Important topics missed or insufficiently covered? Logical gaps?\n"
+            "3. Technical Accuracy — Any inaccuracies or outdated information?\n"
+            "4. Pedagogical Recommendations — How to improve structure, exercises, engagement?\n"
+            "5. Pacing and Time Management — Too fast/slow? Optimal time distribution?\n"
+            "6. Recommendations for Next Lecture — What to cover deeper? What to prepare?\n\n"
+            "Be honest, constructive, and specific. The goal is continuous improvement."
+        ),
+        purpose="gap analysis",
+    )
+    return _gemini_write_georgian(claude_analysis, GAP_ANALYSIS_PROMPT, "gap analysis", use_free)
+
+
+def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
+    """Generate deep analysis with global AI context: Claude reasons, Gemini writes Georgian.
+
+    Claude's deep knowledge of AI industry trends, competitors, and global standards
+    makes it ideal for this analysis. Gemini then writes the Georgian output.
+
+    Args:
+        transcript: Full lecture transcript text.
+        use_free: Whether to use the free Gemini API key (default: paid).
+
+    Returns:
+        Deep analysis text in Georgian (private — for instructor only).
+    """
+    claude_analysis = _claude_reason(
+        transcript,
+        prompt=(
+            "You are three experts in one: AI industry analyst, pedagogy specialist, "
+            "and Georgian business context consultant. Perform a comprehensive analysis:\n\n"
+            "PART I — Teaching Quality (traditional analysis)\n"
+            "1-6. Teaching quality, critical gaps, technical accuracy, pedagogical "
+            "recommendations, pacing, next lecture recommendations.\n\n"
+            "PART II — Global AI Trends Context\n"
+            "7. Compare lecture material against current global AI trends and latest developments. "
+            "What are leading AI trainers (Andrew Ng, DeepLearning.AI, Google, Microsoft, fast.ai) "
+            "teaching in similar courses? Where does this lecture fall short or exceed?\n"
+            "8. Market relevance for Georgian context — how applicable for Georgian managers and businesses?\n"
+            "9. Competitive analysis — 3-5 topics/skills competitors teach that this course doesn't.\n"
+            "10. Critical blind spots — which AI concepts/tools are crucial in 2025-2026 but fully missing?\n\n"
+            "PART III — Action Plan and Rating\n"
+            "11. 5-7 concrete, measurable action steps for the instructor before next lecture.\n"
+            "12. Rate the lecture on 5 dimensions (1-10): Content Depth, Practical Value, "
+            "Participant Engagement, Technical Accuracy, Market Relevance. Justify each score.\n"
+            "13. One most important critical message to the instructor — direct and honest.\n\n"
+            "Be analytical, honest, and strict. This analysis is private — only for the instructor."
+        ),
+        purpose="deep analysis",
+    )
+    return _gemini_write_georgian(claude_analysis, DEEP_ANALYSIS_PROMPT, "deep analysis", use_free)
+
+
+# ---------------------------------------------------------------------------
 # Full Pipeline
 # ---------------------------------------------------------------------------
 
-def analyze_lecture(file_path: str | Path) -> dict[str, str]:
-    """Hybrid lecture analysis: 2.5 Flash transcribes video, 3.1 Pro analyzes text.
+def analyze_lecture(
+    file_path: str | Path,
+    existing_transcript: str | None = None,
+) -> dict[str, str]:
+    """Hybrid lecture analysis: video chunking → multimodal transcription → Claude+Gemini analysis.
 
-    Cost-optimized pipeline (~$2.30 per 2-hour lecture):
-    - Step 1: 2.5 Flash watches the video and transcribes (~$1.00)
-    - Step 2: 3.1 Pro reads transcript and writes summary (~$0.56)
-    - Step 3: 3.1 Pro reads transcript and writes gap analysis (~$0.74)
+    Pipeline:
+    - Step 0: Split video into ~45-min chunks (ffmpeg, no re-encoding)
+    - Step 1: Gemini 2.5 Pro transcribes each chunk multimodally (sees slides, demos)
+    - Step 2: Claude Opus reasons → Gemini writes Georgian summary
+    - Step 3: Claude Opus reasons → Gemini writes Georgian gap analysis
+    - Step 4: Claude Opus reasons → Gemini writes Georgian deep analysis
 
     Args:
         file_path: Path to the video file.
+        existing_transcript: If provided, skip transcription and use this text.
 
     Returns:
-        Dict with keys: 'transcript', 'summary', 'gap_analysis', 'file_name'
+        Dict with keys: 'transcript', 'summary', 'gap_analysis', 'deep_analysis'
     """
-    # Step 1: Upload video and transcribe with 2.5 Flash (cheap multimodal)
-    file_ref, use_free = upload_video(file_path)
-    transcript = transcribe_video(file_ref, use_free=use_free)
-    logger.info("Transcript length: %d chars", len(transcript))
+    file_path = Path(file_path)
 
-    # Clean up Gemini file immediately — video no longer needed
+    if existing_transcript:
+        transcript = existing_transcript
+        logger.info("Using existing transcript (%d chars)", len(transcript))
+    else:
+        # Step 0+1: Split video into chunks and transcribe multimodally
+        transcript, _use_free = transcribe_chunked_video(file_path, use_free=False)
+        logger.info("Full transcript length: %d chars", len(transcript))
+
+    # Each analysis step starts fresh with use_free=False (paid tier).
+    # Quota from transcription doesn't mean analysis is also exhausted —
+    # they use different models and quotas reset independently.
+    results: dict[str, str] = {"transcript": transcript}
+
+    # Step 2: Summary — Claude reasons, Gemini writes Georgian
     try:
-        client = _get_client(use_free=use_free)
-        client.files.delete(name=file_ref.name)
-        logger.info("Cleaned up Gemini file: %s", file_ref.name)
+        results["summary"] = generate_summary(transcript, use_free=False)
     except Exception as e:
-        logger.warning("Failed to delete Gemini file %s: %s", file_ref.name, e)
+        logger.error("Summary generation failed: %s", e)
+        results["summary"] = ""
 
-    # Step 2: Summary with 3.1 Pro (text-only, smartest analysis)
-    summary = generate_summary(transcript, use_free=use_free)
+    # Step 3: Gap analysis — Claude reasons, Gemini writes Georgian
+    try:
+        results["gap_analysis"] = generate_gap_analysis(transcript, use_free=False)
+    except Exception as e:
+        logger.error("Gap analysis generation failed: %s", e)
+        results["gap_analysis"] = ""
 
-    # Step 3: Gap analysis with 3.1 Pro (text-only, deep teaching insights)
-    gap_analysis = generate_gap_analysis(transcript, use_free=use_free)
+    # Step 4: Deep analysis — Claude reasons, Gemini writes Georgian
+    try:
+        results["deep_analysis"] = generate_deep_analysis(transcript, use_free=False)
+    except Exception as e:
+        logger.error("Deep analysis generation failed: %s", e)
+        results["deep_analysis"] = ""
 
-    # Step 4: Deep analysis with global AI context (text-only, highest reasoning)
-    deep_analysis = generate_deep_analysis(transcript, use_free=use_free)
-
-    return {
-        "transcript": transcript,
-        "summary": summary,
-        "gap_analysis": gap_analysis,
-        "deep_analysis": deep_analysis,
-        "file_name": file_ref.name,
-    }
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -362,3 +738,8 @@ if __name__ == "__main__":
     print("GAP ANALYSIS:")
     print("=" * 60)
     print(results["gap_analysis"])
+
+    print("\n" + "=" * 60)
+    print("DEEP ANALYSIS:")
+    print("=" * 60)
+    print(results["deep_analysis"])
