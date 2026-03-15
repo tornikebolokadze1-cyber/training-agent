@@ -103,7 +103,6 @@ _status_router = APIRouter()
 
 @_status_router.get("/status", tags=["Orchestrator"])
 async def status_endpoint(authorization: str | None = Header(None)) -> JSONResponse:
-    verify_webhook_secret(authorization)
     """Return a unified health dashboard.
 
     Fields:
@@ -114,6 +113,7 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
         last_execution_results: Most recent job execution records (if any).
         server: Basic server info.
     """
+    verify_webhook_secret(authorization)
     state: dict[str, Any] = {}
 
     # --- uptime ---
