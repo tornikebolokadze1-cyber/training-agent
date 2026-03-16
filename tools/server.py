@@ -725,6 +725,33 @@ async def process_recording(
 
 
 # ---------------------------------------------------------------------------
+# Manual trigger — operator use only
+# ---------------------------------------------------------------------------
+
+
+@app.post("/trigger-pre-meeting")
+@limiter.limit("2/minute")
+async def trigger_pre_meeting(
+    request: Request,
+    authorization: str | None = Header(None),
+    group: int = 2,
+):
+    """Manually trigger a pre-meeting job for a group.
+
+    Operator-only endpoint: requires WEBHOOK_SECRET.
+    """
+    verify_webhook_secret(authorization)
+    if group not in GROUPS:
+        raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
+
+    from tools.scheduler import pre_meeting_job
+    import asyncio
+    asyncio.ensure_future(pre_meeting_job(group_number=group))
+
+    return {"status": "triggered", "group": group}
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
