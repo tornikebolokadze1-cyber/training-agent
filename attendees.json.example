@@ -1,0 +1,12 @@
+{
+  "1": [
+    "student1@example.com",
+    "student2@example.com",
+    "student3@example.com"
+  ],
+  "2": [
+    "student4@example.com",
+    "student5@example.com",
+    "student6@example.com"
+  ]
+}

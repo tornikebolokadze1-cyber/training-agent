@@ -357,7 +357,7 @@ class TestConstants:
         assert zm.TBILISI_TZ.key == "Asia/Tbilisi"
 
     def test_meeting_duration(self):
-        assert zm.MEETING_DURATION_MINUTES == 120
+        assert zm.MEETING_DURATION_MINUTES == 180
 
     def test_max_retries_is_positive(self):
         assert zm.MAX_RETRIES > 0

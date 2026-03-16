@@ -20,7 +20,7 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 | #1 | Tuesday, Friday | 20:00-22:00 | AI კურსი (მარტის ჯგუფი #1. 2026) |
 | #2 | Monday, Thursday | 20:00-22:00 | AI კურსი (მარტის ჯგუფი #2. 2026) |
 
-15 lectures per group. Lecture #1 completed for both.
+15 lectures per group.
 
 ## System Components
 
@@ -42,10 +42,10 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 | `orchestrator.py` | Unified entry point: APScheduler + FastAPI on single loop |
 | `email_sender.py` | Gmail OAuth2 (backup — Zoom handles invitations directly) |
 
-### n8n Workflows (aipulsegeorgia2025.app.n8n.cloud)
-1. **Pre-Meeting Reminders** (Hsa5YDWrOytFxAL5) — 18:00 trigger → email + WhatsApp Zoom link
-2. **Zoom Recording → Python** (9K6kBOFPgG8xSuff, active) — Zoom webhook + CRC → Python handoff
-3. **Post-Processing Delivery** (1mw2v47eliAk2l1s) — Python callback → email notification
+### n8n Workflows
+1. **Pre-Meeting Reminders** — 18:00 trigger → email + WhatsApp Zoom link
+2. **Zoom Recording → Python** — Zoom webhook + CRC → Python handoff
+3. **Post-Processing Delivery** — Python callback → email notification
 
 ## Critical Rules
 - NEVER commit `.env`, `credentials.json`, or `token.json`

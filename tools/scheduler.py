@@ -15,6 +15,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from apscheduler.executors.asyncio import AsyncIOExecutor
@@ -75,8 +76,12 @@ def _import_zoom_manager():
 # ---------------------------------------------------------------------------
 
 
-def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
-    """Poll the Zoom API until a recording is available for *meeting_id*.
+def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
+    """Poll the Zoom API until all recording segments are available.
+
+    When a host disconnects and rejoins, Zoom creates multiple recording
+    segments under the same meeting ID. This function waits for at least one
+    completed MP4, then does one extra poll to catch late-arriving segments.
 
     Blocks the calling thread. Intended to be called via
     ``asyncio.get_event_loop().run_in_executor()``.
@@ -85,9 +90,9 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         meeting_id: The Zoom meeting ID string.
 
     Returns:
-        The first recording file dict from Zoom's API (contains
-        ``download_url``, ``file_type``, etc.) or ``None`` if the timeout
-        expires before a recording appears.
+        A list of completed MP4 recording file dicts (each contains
+        ``download_url``, ``file_type``, etc.), or an empty list if the
+        timeout expires before any recording appears.
 
     Raises:
         ImportError: If ``tools.zoom_manager`` is not yet implemented.
@@ -121,7 +126,7 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
                     )
                 except Exception:
                     logger.error("[recording] alert_operator also failed for meeting %s", meeting_id)
-                return None
+                return []
 
             logger.warning(
                 "[recording] Transient error for meeting %s: %s — retrying in %d min",
@@ -131,7 +136,7 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
             elapsed += RECORDING_POLL_INTERVAL
             continue
 
-        # Zoom returns a list of recording files; pick the main MP4.
+        # Zoom returns a list of recording files; collect all completed MP4s.
         files: list[dict] = recordings.get("recording_files", [])
         mp4_files = [
             f for f in files
@@ -140,13 +145,39 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         ]
 
         if mp4_files:
-            recording = mp4_files[0]
             logger.info(
-                "[recording] Recording ready for meeting %s: %s",
+                "[recording] Found %d completed MP4 segment(s) for meeting %s "
+                "— waiting one more poll to catch late segments...",
+                len(mp4_files),
                 meeting_id,
-                recording.get("download_url", "(no url)"),
             )
-            return recording
+            # Wait one extra cycle — a second segment may still be processing
+            time.sleep(RECORDING_POLL_INTERVAL)
+            try:
+                recordings = zm.get_meeting_recordings(meeting_id)
+                files = recordings.get("recording_files", [])
+                mp4_files = [
+                    f for f in files
+                    if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
+                    and f.get("status", "").upper() == "COMPLETED"
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "[recording] Extra poll failed: %s — proceeding with %d segment(s)",
+                    exc, len(mp4_files),
+                )
+
+            logger.info(
+                "[recording] Final count: %d MP4 segment(s) for meeting %s",
+                len(mp4_files),
+                meeting_id,
+            )
+            for i, seg in enumerate(mp4_files, 1):
+                logger.info(
+                    "[recording]   Segment %d: %s",
+                    i, seg.get("download_url", "(no url)"),
+                )
+            return mp4_files
 
         logger.info(
             "[recording] Not ready yet for meeting %s (elapsed %d min) — "
@@ -171,12 +202,48 @@ def check_recording_ready(meeting_id: str) -> dict[str, Any] | None:
         )
     except Exception:
         logger.error("[recording] alert_operator also failed for meeting %s", meeting_id)
-    return None
+    return []
 
 
 # ---------------------------------------------------------------------------
 # Post-meeting pipeline (blocking — runs in thread executor)
 # ---------------------------------------------------------------------------
+
+
+def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
+    """Concatenate multiple MP4 segments into a single file using ffmpeg.
+
+    Uses the "concat demuxer" which is lossless and fast (no re-encoding).
+
+    Args:
+        segment_paths: Ordered list of MP4 file paths to join.
+        output_path: Destination path for the merged file.
+
+    Raises:
+        RuntimeError: If ffmpeg exits with a non-zero return code.
+    """
+    import subprocess
+
+    concat_list = output_path.parent / f"{output_path.stem}_segments.txt"
+    concat_list.write_text(
+        "\n".join(f"file '{p}'" for p in segment_paths),
+        encoding="utf-8",
+    )
+
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_list), "-c", "copy", str(output_path),
+    ]
+    logger.info("[post] Concatenating %d segments with ffmpeg...", len(segment_paths))
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    concat_list.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg concat failed: {result.stderr[:500]}")
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    logger.info("[post] Concatenation complete: %.1f MB", size_mb)
 
 
 def _run_post_meeting_pipeline(
@@ -187,10 +254,11 @@ def _run_post_meeting_pipeline(
     """Full post-meeting pipeline, executed in a background thread.
 
     Steps:
-        1. Poll Zoom until recording is available.
-        2. Download the recording to .tmp/.
-        3. Upload recording to Google Drive (correct lecture folder).
-        4. Delegate to transcribe_and_index() for the full analysis pipeline
+        1. Poll Zoom until recording segments are available.
+        2. Download all segments to .tmp/.
+        3. If multiple segments, concatenate with ffmpeg (lossless).
+        4. Upload recording to Google Drive (correct lecture folder).
+        5. Delegate to transcribe_and_index() for the full analysis pipeline
            (transcribe → analyze → Drive summary + private report → WhatsApp → Pinecone).
 
     Args:
@@ -210,39 +278,72 @@ def _run_post_meeting_pipeline(
         meeting_id,
     )
 
-    # ---- Step 1: Wait for recording ----------------------------------------
-    recording = check_recording_ready(meeting_id)
-    if not recording:
+    # ---- Step 1: Wait for recording segments -------------------------------
+    recordings = check_recording_ready(meeting_id)
+    if not recordings:
         logger.error(
             "[post] Aborting: no recording found for meeting %s", meeting_id
         )
         return
 
-    # ---- Step 2: Download recording ----------------------------------------
+    # ---- Step 2: Download all segments -------------------------------------
     zm = _import_zoom_manager()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    segment_paths: list[Path] = []
+    temp_files: list[Path] = []
+
+    logger.info("[post] Downloading %d recording segment(s)...", len(recordings))
+    for i, rec in enumerate(recordings):
+        seg_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}_seg{i}.mp4"
+        seg_path = TMP_DIR / seg_filename
+
+        try:
+            access_token = zm.get_access_token()
+            zm.download_recording(rec["download_url"], access_token, seg_path)
+            segment_paths.append(seg_path)
+            temp_files.append(seg_path)
+        except Exception as exc:
+            logger.error("[post] Download failed for segment %d: %s", i, exc)
+            alert_operator(
+                f"Recording download FAILED for Group {group_number}, "
+                f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
+                f"Check Zoom dashboard for manual download."
+            )
+            # Clean up any segments already downloaded
+            for p in temp_files:
+                p.unlink(missing_ok=True)
+            return
+
+    # ---- Step 3: Concatenate if multiple segments --------------------------
     local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
     local_path = TMP_DIR / local_filename
 
-    logger.info("[post] Downloading recording to %s...", local_path)
-    try:
-        access_token = zm.get_access_token()
-        download_url = recording.get("download_url", "")
-        zm.download_recording(download_url, access_token, local_path)
-    except Exception as exc:
-        logger.error("[post] Download failed: %s", exc)
-        alert_operator(
-            f"Recording download FAILED for Group {group_number}, "
-            f"Lecture #{lecture_number}.\nError: {exc}\n"
-            f"Check Zoom dashboard for manual download."
-        )
-        return
+    if len(segment_paths) == 1:
+        # Single segment — just rename
+        segment_paths[0].rename(local_path)
+        temp_files = [local_path]
+    else:
+        try:
+            _concatenate_segments(segment_paths, local_path)
+            temp_files.append(local_path)
+        except Exception as exc:
+            logger.error("[post] Segment concatenation failed: %s", exc)
+            alert_operator(
+                f"ffmpeg concat FAILED for Group {group_number}, "
+                f"Lecture #{lecture_number}.\nError: {exc}\n"
+                f"Segments are in .tmp/ for manual merge."
+            )
+            return
 
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
-    logger.info("[post] Download complete: %.1f MB", file_size_mb)
+    logger.info(
+        "[post] Recording ready: %.1f MB (%d segment(s))",
+        file_size_mb,
+        len(segment_paths),
+    )
 
     try:
-        # ---- Step 3: Upload recording to Google Drive ----------------------
+        # ---- Step 4: Upload recording to Google Drive ----------------------
         logger.info("[post] Uploading recording to Google Drive...")
         service = get_drive_service()
         lecture_folder_id = ensure_folder(
@@ -253,7 +354,7 @@ def _run_post_meeting_pipeline(
         upload_file(local_path, lecture_folder_id)
         logger.info("[post] Recording uploaded to Drive")
 
-        # ---- Step 4: Full analysis pipeline --------------------------------
+        # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
         # and Pinecone indexing to the single source of truth.
         logger.info("[post] Running full analysis pipeline...")
@@ -277,10 +378,11 @@ def _run_post_meeting_pipeline(
             f"Error: {exc}"
         )
     finally:
-        # Always clean up the local temp file
-        if local_path.exists():
-            local_path.unlink()
-            logger.info("[post] Cleaned up temp file: %s", local_path)
+        # Clean up all temp files (segments + merged)
+        for p in temp_files:
+            if p.exists():
+                p.unlink()
+                logger.info("[post] Cleaned up temp file: %s", p.name)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +499,7 @@ async def pre_meeting_job(group_number: int) -> None:
             group_number=group_number,
             lecture_number=lecture_number,
             meeting_id=zoom_meeting_id,
-            fire_at_hour=LECTURE_START_HOUR + 2,  # 22:00
+            fire_at_hour=LECTURE_START_HOUR + 2,  # 22:00 — polling handles variable end times
         )
     else:
         logger.warning(
@@ -470,11 +572,12 @@ def _schedule_post_meeting(
     lecture_number: int,
     meeting_id: str,
     fire_at_hour: int,
+    fire_at_minute: int = 0,
 ) -> None:
     """Add a one-shot post-meeting job to the running scheduler.
 
-    The job fires today at *fire_at_hour*:00 Tbilisi time and is automatically
-    removed after it runs (``misfire_grace_time`` of 30 min).
+    The job fires today at *fire_at_hour*:*fire_at_minute* Tbilisi time and is
+    automatically removed after it runs (``misfire_grace_time`` of 30 min).
 
     Args:
         scheduler: The running ``AsyncIOScheduler`` instance.
@@ -482,10 +585,11 @@ def _schedule_post_meeting(
         lecture_number: Ordinal lecture number (for logging).
         meeting_id: Zoom meeting ID.
         fire_at_hour: Local hour (GMT+4) at which to fire.
+        fire_at_minute: Local minute at which to fire (default 0).
     """
     now_tbilisi = datetime.now(TBILISI_TZ)
     fire_time = now_tbilisi.replace(
-        hour=fire_at_hour, minute=0, second=0, microsecond=0
+        hour=fire_at_hour, minute=fire_at_minute, second=0, microsecond=0
     )
 
     # If the fire time is in the past (e.g. scheduler started late), fire in

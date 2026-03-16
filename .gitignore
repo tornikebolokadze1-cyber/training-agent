@@ -45,6 +45,11 @@ firebase-debug.log
 *.swp
 *.swo
 
+# Test coverage artifacts
+.coverage
+coverage.json
+htmlcov/
+
 # Ruff cache
 .ruff_cache/
 

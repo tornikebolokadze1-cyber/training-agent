@@ -98,21 +98,21 @@ class TestCheckRecordingReadyAuthError:
 
         return result, zm.get_meeting_recordings, alert_mock
 
-    def test_401_error_returns_none(self):
+    def test_401_error_returns_empty(self):
         result, _, _ = self._run("HTTP 401 Unauthorized")
-        assert result is None
+        assert result == []
 
-    def test_403_error_returns_none(self):
+    def test_403_error_returns_empty(self):
         result, _, _ = self._run("HTTP 403 Forbidden")
-        assert result is None
+        assert result == []
 
-    def test_unauthorized_keyword_returns_none(self):
+    def test_unauthorized_keyword_returns_empty(self):
         result, _, _ = self._run("unauthorized access denied")
-        assert result is None
+        assert result == []
 
-    def test_forbidden_keyword_returns_none(self):
+    def test_forbidden_keyword_returns_empty(self):
         result, _, _ = self._run("forbidden by policy")
-        assert result is None
+        assert result == []
 
     def test_auth_error_calls_api_only_once(self):
         """Auth errors must not trigger a retry loop — exactly one API call."""
@@ -174,8 +174,8 @@ class TestCheckRecordingReadyTransientError:
              patch("tools.scheduler.time.sleep"):
             result = sched.check_recording_ready("mtg-retry")
 
-        assert result is not None
-        assert result["download_url"] == "https://zoom.example.com/recording.mp4"
+        assert len(result) == 1
+        assert result[0]["download_url"] == "https://zoom.example.com/recording.mp4"
 
     def test_transient_error_does_not_call_alert_operator(self):
         """A single transient error followed by success must not alert the operator."""
@@ -516,8 +516,8 @@ class TestImportZoomManager:
 
 
 class TestCheckRecordingReadyTimeout:
-    def test_timeout_returns_none(self):
-        """When polling exceeds RECORDING_POLL_TIMEOUT, returns None."""
+    def test_timeout_returns_empty_list(self):
+        """When polling exceeds RECORDING_POLL_TIMEOUT, returns empty list."""
         zm = _make_zoom_manager(get_meeting_recordings_return={"recording_files": []})
         alert_mock = MagicMock()
 
@@ -529,7 +529,7 @@ class TestCheckRecordingReadyTimeout:
              patch.object(sched, "RECORDING_POLL_TIMEOUT", 0):
             result = sched.check_recording_ready("mtg-timeout")
 
-        assert result is None
+        assert result == []
 
     def test_timeout_calls_alert_operator(self):
         """Timeout triggers an alert to the operator."""
@@ -555,19 +555,19 @@ class TestCheckRecordingReadyTimeout:
 
 class TestRunPostMeetingPipeline:
     def test_no_recording_aborts_early(self):
-        """If check_recording_ready returns None, pipeline aborts."""
-        with patch.object(sched, "check_recording_ready", return_value=None):
+        """If check_recording_ready returns empty list, pipeline aborts."""
+        with patch.object(sched, "check_recording_ready", return_value=[]):
             sched._run_post_meeting_pipeline(1, 3, "mtg-no-rec")
 
     def test_download_failure_alerts_operator(self, tmp_path):
         """If recording download fails, operator is alerted."""
-        recording = {"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}
+        recordings = [{"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}]
         mock_zm = MagicMock()
         mock_zm.get_access_token.return_value = "token-123"
         mock_zm.download_recording.side_effect = ConnectionError("Network down")
         alert_mock = MagicMock()
 
-        with patch.object(sched, "check_recording_ready", return_value=recording), \
+        with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "alert_operator", alert_mock), \
              patch.object(sched, "TMP_DIR", tmp_path):
@@ -578,7 +578,7 @@ class TestRunPostMeetingPipeline:
 
     def test_successful_pipeline_calls_transcribe(self, tmp_path):
         """Full success path: download -> Drive upload -> transcribe_and_index."""
-        recording = {"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}
+        recordings = [{"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}]
         mock_zm = MagicMock()
         mock_zm.get_access_token.return_value = "token"
         def fake_download(url, token, path):
@@ -590,7 +590,7 @@ class TestRunPostMeetingPipeline:
         mock_upload = MagicMock()
 
         # Patch at source modules since _run_post_meeting_pipeline uses local imports
-        with patch.object(sched, "check_recording_ready", return_value=recording), \
+        with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
@@ -605,7 +605,7 @@ class TestRunPostMeetingPipeline:
 
     def test_pipeline_exception_alerts_operator(self, tmp_path):
         """If transcribe_and_index raises, operator is alerted."""
-        recording = {"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}
+        recordings = [{"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}]
         mock_zm = MagicMock()
         mock_zm.get_access_token.return_value = "token"
         def fake_download(url, token, path):
@@ -615,7 +615,7 @@ class TestRunPostMeetingPipeline:
         mock_groups = {1: {"name": "g1", "drive_folder_id": "folder-1"}}
         alert_mock = MagicMock()
 
-        with patch.object(sched, "check_recording_ready", return_value=recording), \
+        with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \

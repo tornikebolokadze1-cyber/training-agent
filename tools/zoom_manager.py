@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 ZOOM_OAUTH_URL = "https://zoom.us/oauth/token"
 ZOOM_API_BASE = "https://api.zoom.us/v2"
-MEETING_DURATION_MINUTES = 120
+MEETING_DURATION_MINUTES = 180  # 3 hours — lectures often run 30 min over
 
 # Retry configuration
 MAX_RETRIES = 3
