@@ -149,4 +149,14 @@ jobs:
 
       - name: Verify health check command
         run: |
-          docker run --rm training-agent:ci python -c "import tools.server; print('Import OK')"
+          docker run --rm \
+            -e ANTHROPIC_API_KEY=test \
+            -e GEMINI_API_KEY=test \
+            -e PINECONE_API_KEY=test \
+            -e WEBHOOK_SECRET=test \
+            -e ZOOM_ACCOUNT_ID=test \
+            -e ZOOM_CLIENT_ID=test \
+            -e ZOOM_CLIENT_SECRET=test \
+            -e GREEN_API_INSTANCE_ID=test \
+            -e GREEN_API_TOKEN=test \
+            training-agent:ci python -c "import tools.server; print('Import OK')"
