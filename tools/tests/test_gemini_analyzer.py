@@ -240,85 +240,88 @@ class TestClaudeReasonTimeout:
 
 
 class TestAnalyzeLectureQualityGates:
-    """When any analysis step (summary / gap / deep) raises an exception,
-    analyze_lecture must call alert_operator with a descriptive message and
-    must still return a dict with all four expected keys."""
+    """When the combined Claude call or Gemini Georgian writing raises,
+    analyze_lecture must call alert_operator and still return all keys."""
 
     def setup_method(self):
         _reset_client_caches()
 
-    def _run_analyze_with_failures(
-        self,
-        fail_summary: bool = False,
-        fail_gap: bool = False,
-        fail_deep: bool = False,
-    ):
-        """Patch generate_* functions and alert_operator, then run analyze_lecture."""
-
-        def _maybe_raise(label: bool, name: str):
-            if label:
-                raise RuntimeError(f"Simulated {name} failure")
-            return f"{name} output"
-
+    def _run_with_claude_failure(self):
+        """Simulate _claude_reason_all raising an exception."""
         mock_alert = MagicMock()
-
         with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
-             patch.object(ga, "generate_summary",
-                          side_effect=lambda t, **kw: _maybe_raise(fail_summary, "summary")), \
-             patch.object(ga, "generate_gap_analysis",
-                          side_effect=lambda t, **kw: _maybe_raise(fail_gap, "gap_analysis")), \
-             patch.object(ga, "generate_deep_analysis",
-                          side_effect=lambda t, **kw: _maybe_raise(fail_deep, "deep_analysis")), \
+             patch.object(ga, "_claude_reason_all",
+                          side_effect=RuntimeError("Claude API error")), \
              patch("tools.whatsapp_sender.alert_operator", mock_alert), \
              patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
-
             result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
-
         return result, mock_alert
 
-    def test_summary_failure_triggers_alert(self):
-        result, mock_alert = self._run_analyze_with_failures(fail_summary=True)
+    def _run_with_gemini_write_failure(self, fail_label: str):
+        """Simulate _gemini_write_georgian failing for a specific label."""
+        mock_alert = MagicMock()
+        claude_output = {"summary": "english summary", "gap_analysis": "english gap", "deep_analysis": "english deep"}
 
-        # alert_operator must have been called at least once for summary
+        def _write_side_effect(text, prompt, label, use_free=False):
+            if label == fail_label:
+                raise RuntimeError(f"Simulated {label} writing failure")
+            return f"{label} georgian output"
+
+        with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
+             patch.object(ga, "_claude_reason_all", return_value=claude_output), \
+             patch.object(ga, "_gemini_write_georgian", side_effect=_write_side_effect), \
+             patch("tools.whatsapp_sender.alert_operator", mock_alert), \
+             patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
+            result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
+        return result, mock_alert
+
+    def test_claude_failure_triggers_alert(self):
+        result, mock_alert = self._run_with_claude_failure()
+        assert mock_alert.call_count >= 1
+        alert_messages = " ".join(str(c) for c in mock_alert.call_args_list)
+        assert "Claude" in alert_messages or "claude" in alert_messages.lower()
+
+    def test_claude_failure_produces_empty_results(self):
+        result, _ = self._run_with_claude_failure()
+        assert result["summary"] == ""
+        assert result["gap_analysis"] == ""
+        assert result["deep_analysis"] == ""
+
+    def test_summary_write_failure_triggers_alert(self):
+        result, mock_alert = self._run_with_gemini_write_failure("summary")
         assert mock_alert.call_count >= 1
         alert_messages = " ".join(str(c) for c in mock_alert.call_args_list)
         assert "Summary" in alert_messages or "summary" in alert_messages.lower()
 
-    def test_gap_analysis_failure_triggers_alert(self):
-        result, mock_alert = self._run_analyze_with_failures(fail_gap=True)
-
+    def test_gap_write_failure_triggers_alert(self):
+        result, mock_alert = self._run_with_gemini_write_failure("gap analysis")
         assert mock_alert.call_count >= 1
         alert_messages = " ".join(str(c) for c in mock_alert.call_args_list)
         assert "Gap" in alert_messages or "gap" in alert_messages.lower()
 
-    def test_deep_analysis_failure_triggers_alert(self):
-        result, mock_alert = self._run_analyze_with_failures(fail_deep=True)
-
+    def test_deep_write_failure_triggers_alert(self):
+        result, mock_alert = self._run_with_gemini_write_failure("deep analysis")
         assert mock_alert.call_count >= 1
         alert_messages = " ".join(str(c) for c in mock_alert.call_args_list)
         assert "Deep" in alert_messages or "deep" in alert_messages.lower()
 
-    def test_all_three_failures_each_trigger_alert(self):
-        result, mock_alert = self._run_analyze_with_failures(
-            fail_summary=True, fail_gap=True, fail_deep=True
-        )
-
-        # One alert per failed step
-        assert mock_alert.call_count == 3
-
     def test_failed_steps_produce_empty_string_in_result(self):
-        result, _ = self._run_analyze_with_failures(
-            fail_summary=True, fail_gap=True, fail_deep=True
-        )
-
+        result, _ = self._run_with_claude_failure()
         assert result["summary"] == ""
         assert result["gap_analysis"] == ""
         assert result["deep_analysis"] == ""
 
     def test_successful_steps_not_empty(self):
-        result, mock_alert = self._run_analyze_with_failures(fail_summary=False)
-
-        assert result["summary"] == "summary output"
+        """When Claude succeeds and Gemini writes all three, results are non-empty."""
+        mock_alert = MagicMock()
+        claude_output = {"summary": "english summary", "gap_analysis": "english gap", "deep_analysis": "english deep"}
+        with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
+             patch.object(ga, "_claude_reason_all", return_value=claude_output), \
+             patch.object(ga, "_gemini_write_georgian", return_value="georgian text"), \
+             patch("tools.whatsapp_sender.alert_operator", mock_alert), \
+             patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
+            result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
+        assert result["summary"] == "georgian text"
         assert mock_alert.call_count == 0
 
 
@@ -337,11 +340,11 @@ class TestAnalyzeLectureDictStructure:
         _reset_client_caches()
 
     def _run_happy_path(self):
+        claude_output = {"summary": "english summary", "gap_analysis": "english gap", "deep_analysis": "english deep"}
         with patch.object(ga, "transcribe_chunked_video",
                           return_value=("full transcript", False)), \
-             patch.object(ga, "generate_summary", return_value="summary text"), \
-             patch.object(ga, "generate_gap_analysis", return_value="gap text"), \
-             patch.object(ga, "generate_deep_analysis", return_value="deep text"):
+             patch.object(ga, "_claude_reason_all", return_value=claude_output), \
+             patch.object(ga, "_gemini_write_georgian", return_value="georgian text"):
             return ga.analyze_lecture(Path("/fake/lecture.mp4"))
 
     def test_result_is_dict(self):
@@ -359,11 +362,7 @@ class TestAnalyzeLectureDictStructure:
     def test_all_expected_keys_present_on_full_failure(self):
         with patch.object(ga, "transcribe_chunked_video",
                           return_value=("transcript", False)), \
-             patch.object(ga, "generate_summary",
-                          side_effect=RuntimeError("fail")), \
-             patch.object(ga, "generate_gap_analysis",
-                          side_effect=RuntimeError("fail")), \
-             patch.object(ga, "generate_deep_analysis",
+             patch.object(ga, "_claude_reason_all",
                           side_effect=RuntimeError("fail")), \
              patch("tools.whatsapp_sender.alert_operator", MagicMock()), \
              patch("tools.gemini_analyzer.alert_operator", MagicMock(), create=True):
@@ -374,10 +373,10 @@ class TestAnalyzeLectureDictStructure:
     def test_existing_transcript_skips_transcription(self):
         """When existing_transcript is supplied, transcribe_chunked_video must
         not be called at all."""
+        claude_output = {"summary": "s", "gap_analysis": "g", "deep_analysis": "d"}
         with patch.object(ga, "transcribe_chunked_video") as mock_transcribe, \
-             patch.object(ga, "generate_summary", return_value="s"), \
-             patch.object(ga, "generate_gap_analysis", return_value="g"), \
-             patch.object(ga, "generate_deep_analysis", return_value="d"):
+             patch.object(ga, "_claude_reason_all", return_value=claude_output), \
+             patch.object(ga, "_gemini_write_georgian", return_value="geo"):
             result = ga.analyze_lecture(
                 Path("/fake/lecture.mp4"),
                 existing_transcript="pre-built transcript",

@@ -593,16 +593,78 @@ def _gemini_write_georgian(claude_analysis: str, prompt: str, purpose: str, use_
 # Step 2 & 3: Dual-Model Analysis (Claude thinks, Gemini writes Georgian)
 # ---------------------------------------------------------------------------
 
-def generate_summary(transcript: str, use_free: bool = False) -> str:
-    """Generate lecture summary: Claude reasons, Gemini writes Georgian.
+def _claude_reason_all(transcript: str) -> dict[str, str]:
+    """Single Claude call that produces summary, gap analysis, and deep analysis.
 
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free Gemini API key (default: paid).
+    Sends the transcript once and asks Claude to produce all three analyses
+    in clearly separated sections.  This saves ~$3/lecture vs three separate calls.
 
     Returns:
-        Lecture summary text in Georgian.
+        Dict with keys 'summary', 'gap_analysis', 'deep_analysis' (English text).
     """
+    combined_prompt = (
+        "You are three experts in one: AI training analyst, pedagogy specialist, "
+        "and Georgian business context consultant.\n\n"
+        "Analyze the lecture transcript below and produce THREE clearly separated analyses.\n"
+        "Use the EXACT section headers shown (they are used for parsing).\n\n"
+        "===SUMMARY===\n"
+        "Comprehensive lecture summary covering:\n"
+        "1. Main topics discussed\n"
+        "2. Key concepts and ideas explained\n"
+        "3. Practical examples and demonstrations shown\n"
+        "4. Key takeaways and conclusions\n"
+        "5. Action items for participants\n"
+        "Be detailed — someone who missed the lecture should understand the core material.\n\n"
+        "===GAP_ANALYSIS===\n"
+        "Critical quality analysis:\n"
+        "1. Teaching Quality — clarity of explanations, vague/incomplete areas\n"
+        "2. Critical Gaps — important topics missed or insufficiently covered\n"
+        "3. Technical Accuracy — inaccuracies or outdated information\n"
+        "4. Pedagogical Recommendations — structure, exercises, engagement\n"
+        "5. Pacing and Time Management\n"
+        "6. Recommendations for Next Lecture\n"
+        "Be honest, constructive, and specific.\n\n"
+        "===DEEP_ANALYSIS===\n"
+        "PART I — Teaching Quality: points 1-6 from gap analysis (brief, avoid repetition).\n"
+        "PART II — Global AI Trends Context:\n"
+        "7. Compare against current global AI trends and leading trainers "
+        "(Andrew Ng, DeepLearning.AI, Google, Microsoft, fast.ai).\n"
+        "8. Market relevance for Georgian managers and businesses.\n"
+        "9. Competitive analysis — 3-5 topics competitors teach that this course doesn't.\n"
+        "10. Critical blind spots — crucial AI concepts/tools for 2025-2026 that are missing.\n"
+        "PART III — Action Plan and Rating:\n"
+        "11. 5-7 concrete action steps for the instructor before next lecture.\n"
+        "12. Rate on 5 dimensions (1-10): Content Depth, Practical Value, "
+        "Participant Engagement, Technical Accuracy, Market Relevance. Justify each.\n"
+        "13. One most important critical message — direct and honest.\n\n"
+        "Be analytical, honest, and strict. Gap and deep analyses are private — for the instructor only."
+    )
+
+    raw = _claude_reason(transcript, prompt=combined_prompt, purpose="combined analysis")
+
+    # Parse the three sections
+    sections: dict[str, str] = {}
+    for key, header in [
+        ("summary", "===SUMMARY==="),
+        ("gap_analysis", "===GAP_ANALYSIS==="),
+        ("deep_analysis", "===DEEP_ANALYSIS==="),
+    ]:
+        start = raw.find(header)
+        if start == -1:
+            logger.warning("Section %s not found in Claude response", header)
+            sections[key] = ""
+            continue
+        start += len(header)
+        # Find next section or end
+        next_headers = [raw.find(h, start) for h in ["===SUMMARY===", "===GAP_ANALYSIS===", "===DEEP_ANALYSIS==="] if raw.find(h, start) != -1]
+        end = min(next_headers) if next_headers else len(raw)
+        sections[key] = raw[start:end].strip()
+
+    return sections
+
+
+def generate_summary(transcript: str, use_free: bool = False) -> str:
+    """Generate lecture summary: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
         transcript,
         prompt=(
@@ -621,15 +683,7 @@ def generate_summary(transcript: str, use_free: bool = False) -> str:
 
 
 def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
-    """Generate gap analysis: Claude reasons, Gemini writes Georgian.
-
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free Gemini API key (default: paid).
-
-    Returns:
-        Gap analysis text in Georgian (private — for instructor only).
-    """
+    """Generate gap analysis: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
         transcript,
         prompt=(
@@ -649,18 +703,7 @@ def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
 
 
 def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
-    """Generate deep analysis with global AI context: Claude reasons, Gemini writes Georgian.
-
-    Claude's deep knowledge of AI industry trends, competitors, and global standards
-    makes it ideal for this analysis. Gemini then writes the Georgian output.
-
-    Args:
-        transcript: Full lecture transcript text.
-        use_free: Whether to use the free Gemini API key (default: paid).
-
-    Returns:
-        Deep analysis text in Georgian (private — for instructor only).
-    """
+    """Generate deep analysis with global AI context: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
         transcript,
         prompt=(
@@ -701,9 +744,8 @@ def analyze_lecture(
     Pipeline:
     - Step 0: Split video into ~45-min chunks (ffmpeg, no re-encoding)
     - Step 1: Gemini 2.5 Pro transcribes each chunk multimodally (sees slides, demos)
-    - Step 2: Claude Opus reasons → Gemini writes Georgian summary
-    - Step 3: Claude Opus reasons → Gemini writes Georgian gap analysis
-    - Step 4: Claude Opus reasons → Gemini writes Georgian deep analysis
+    - Step 2: Single Claude Opus call → produces summary + gap + deep analysis (English)
+    - Steps 3-5: Gemini writes each analysis in Georgian (3 separate calls, different prompts)
 
     Args:
         file_path: Path to the video file.
@@ -722,46 +764,46 @@ def analyze_lecture(
         transcript, _use_free = transcribe_chunked_video(file_path, use_free=False)
         logger.info("Full transcript length: %d chars", len(transcript))
 
-    # Each analysis step starts fresh with use_free=False (paid tier).
-    # Quota from transcription doesn't mean analysis is also exhausted —
-    # they use different models and quotas reset independently.
     results: dict[str, str] = {"transcript": transcript}
 
-    # Step 2: Summary — Claude reasons, Gemini writes Georgian
+    # Step 2: Single Claude call for all three analyses (saves ~$3/lecture)
+    claude_sections: dict[str, str] = {}
     try:
-        results["summary"] = generate_summary(transcript, use_free=False)
+        claude_sections = _claude_reason_all(transcript)
+        logger.info(
+            "Combined Claude analysis complete: %s",
+            {k: len(v) for k, v in claude_sections.items()},
+        )
     except Exception as e:
-        logger.error("Summary generation failed: %s", e)
-        results["summary"] = ""
+        logger.error("Combined Claude analysis failed: %s", e)
         try:
             from tools.whatsapp_sender import alert_operator
-            alert_operator(f"Summary generation FAILED: {e}")
+            alert_operator(f"Combined Claude analysis FAILED: {e}")
         except Exception as alert_err:
             logger.error("alert_operator also failed: %s", alert_err)
 
-    # Step 3: Gap analysis — Claude reasons, Gemini writes Georgian
-    try:
-        results["gap_analysis"] = generate_gap_analysis(transcript, use_free=False)
-    except Exception as e:
-        logger.error("Gap analysis generation failed: %s", e)
-        results["gap_analysis"] = ""
+    # Steps 3-5: Gemini writes Georgian from each Claude section
+    analysis_configs = [
+        ("summary", SUMMARIZATION_PROMPT, "summary"),
+        ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
+        ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
+    ]
+    for key, prompt, label in analysis_configs:
+        claude_text = claude_sections.get(key, "")
+        if not claude_text:
+            logger.warning("Skipping %s — no Claude output", label)
+            results[key] = ""
+            continue
         try:
-            from tools.whatsapp_sender import alert_operator
-            alert_operator(f"Gap analysis generation FAILED: {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
-
-    # Step 4: Deep analysis — Claude reasons, Gemini writes Georgian
-    try:
-        results["deep_analysis"] = generate_deep_analysis(transcript, use_free=False)
-    except Exception as e:
-        logger.error("Deep analysis generation failed: %s", e)
-        results["deep_analysis"] = ""
-        try:
-            from tools.whatsapp_sender import alert_operator
-            alert_operator(f"Deep analysis generation FAILED: {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+            results[key] = _gemini_write_georgian(claude_text, prompt, label, use_free=False)
+        except Exception as e:
+            logger.error("%s Georgian writing failed: %s", label.title(), e)
+            results[key] = ""
+            try:
+                from tools.whatsapp_sender import alert_operator
+                alert_operator(f"{label.title()} Georgian writing FAILED: {e}")
+            except Exception as alert_err:
+                logger.error("alert_operator also failed: %s", alert_err)
 
     return results
 
