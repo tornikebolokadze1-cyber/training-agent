@@ -117,6 +117,10 @@ if _server_public_url:
     if _parsed.hostname:
         _allowed_hosts.append(_parsed.hostname)
 
+# Allow Cloudflare quick tunnels (local development)
+if not IS_RAILWAY:
+    _allowed_hosts.append("*.trycloudflare.com")
+
 # On Railway, the internal health checker and proxy use IP-based Host headers
 # that can't be enumerated. Railway's own proxy already validates external
 # hosts, so we use wildcard to avoid rejecting legitimate internal traffic.
