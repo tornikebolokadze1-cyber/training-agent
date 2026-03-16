@@ -450,8 +450,8 @@ class TestSchedulerConstants:
     def test_reminder_hour_derived_from_lecture_start(self):
         assert sched.REMINDER_HOUR == sched.LECTURE_START_HOUR - (sched.REMINDER_OFFSET_MINUTES // 60)
 
-    def test_reminder_hour_is_19(self):
-        assert sched.REMINDER_HOUR == 19
+    def test_reminder_hour_is_18(self):
+        assert sched.REMINDER_HOUR == 18
 
     def test_recording_initial_delay_is_15_min(self):
         assert sched.RECORDING_INITIAL_DELAY == 15 * 60

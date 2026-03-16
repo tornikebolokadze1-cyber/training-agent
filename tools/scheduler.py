@@ -1,7 +1,7 @@
 """Pre-meeting automation scheduler for Training Agent.
 
 Orchestrates the full lifecycle for both training groups:
-  - T-60 min: create Zoom meeting, send email + WhatsApp reminders
+  - T-120 min: create Zoom meeting, send email + WhatsApp reminders
   - Post-meeting: download recording, upload to Drive, transcribe,
     generate summary Doc, run gap analysis, send private WhatsApp report.
 
@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 LECTURE_START_HOUR = 20       # 20:00 GMT+4
-REMINDER_OFFSET_MINUTES = 60  # fire at T-60 (19:00)
-REMINDER_HOUR = LECTURE_START_HOUR - (REMINDER_OFFSET_MINUTES // 60)  # 19
+REMINDER_OFFSET_MINUTES = 120  # fire at T-120 (18:00)
+REMINDER_HOUR = LECTURE_START_HOUR - (REMINDER_OFFSET_MINUTES // 60)  # 18
 REMINDER_MINUTE = 0
 
 # Recording polling: Zoom processes recordings 15–90 min after meeting ends.
@@ -393,7 +393,7 @@ def _run_post_meeting_pipeline(
 async def pre_meeting_job(group_number: int) -> None:
     """Create a Zoom meeting and send email + WhatsApp reminders.
 
-    Fires at T-60 min (19:00 Tbilisi time) on each meeting day.
+    Fires at T-120 min (18:00 Tbilisi time) on each meeting day.
     Immediately schedules a post-meeting job on the scheduler for T+120 min
     (22:00) so recording polling starts right after the lecture ends.
 
@@ -628,8 +628,8 @@ def start_scheduler() -> AsyncIOScheduler:
     """Build and start the AsyncIOScheduler with all recurring pre-meeting jobs.
 
     Recurring cron jobs:
-        - Group 1: Tuesday (dow=tue) and Friday (dow=fri) at 19:00 Tbilisi
-        - Group 2: Monday (dow=mon) and Thursday (dow=thu) at 19:00 Tbilisi
+        - Group 1: Tuesday (dow=tue) and Friday (dow=fri) at 18:00 Tbilisi
+        - Group 2: Monday (dow=mon) and Thursday (dow=thu) at 18:00 Tbilisi
 
     Post-meeting jobs are added dynamically by ``pre_meeting_job()`` each time
     a meeting is created, so they carry the real Zoom meeting ID.
