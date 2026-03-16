@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import types
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -492,7 +491,6 @@ class TestImportZoomManager:
         # Temporarily replace tools.zoom_manager with a module that raises on import
         saved = sys.modules.pop("tools.zoom_manager", None)
         # Also block re-import by making importlib fail
-        import importlib
         original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
         def blocking_import(name, *args, **kwargs):

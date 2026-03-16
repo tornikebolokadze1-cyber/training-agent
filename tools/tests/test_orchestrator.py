@@ -30,7 +30,7 @@ for _mod_name in list(sys.modules):
                              "tools.server", "tools.orchestrator")):
         sys.modules.pop(_mod_name, None)
 
-import tools.orchestrator as orch
+import tools.orchestrator as orch  # noqa: E402
 
 
 # ===========================================================================
@@ -348,7 +348,7 @@ class TestOnStartup:
 
     def test_sets_started_at(self):
         """_on_startup should set app.state.started_at to a UTC datetime."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         mock_state = MagicMock()
         with patch.object(orch, "app") as mock_app, \

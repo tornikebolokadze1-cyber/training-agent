@@ -453,8 +453,6 @@ class TestSplitVideoChunks:
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
-        call_count = [0]
-
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
                 return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
@@ -506,7 +504,7 @@ class TestSplitVideoChunks:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
-            result = ga.split_video_chunks(video)
+            ga.split_video_chunks(video)
 
         # ffprobe call + ffmpeg for chunk1 and chunk2 only (chunk0 reused)
         ffmpeg_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "ffmpeg"]
@@ -529,7 +527,7 @@ class TestSplitVideoChunks:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
-            result = ga.split_video_chunks(video)
+            ga.split_video_chunks(video)
 
         # All 3 chunks should have ffmpeg calls (chunk0 was recreated)
         ffmpeg_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "ffmpeg"]
@@ -604,8 +602,6 @@ class TestUploadVideo:
         free_client.files.upload.return_value = fake_uploaded
 
         fake_processed = MagicMock()
-
-        call_count = [0]
 
         def mock_get_client(use_free=False):
             if use_free:

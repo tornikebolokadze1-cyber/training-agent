@@ -103,7 +103,7 @@ app = FastAPI(
 # On Railway, the public hostname is dynamic (*.up.railway.app), so we
 # must allow it.  RAILWAY_PUBLIC_DOMAIN is auto-set by Railway when a
 # public domain is configured.
-import os as _os
+import os as _os  # noqa: E402
 
 _allowed_hosts = ["localhost", "127.0.0.1", f"localhost:{SERVER_PORT}",
                   f"127.0.0.1:{SERVER_PORT}"]

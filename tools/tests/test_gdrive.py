@@ -462,7 +462,7 @@ class TestCreateAllLectureFolders:
         with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.gdrive_manager.GROUPS", fake_groups):
                 with patch("tools.gdrive_manager.TOTAL_LECTURES", 2):
-                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}) as mock_lfi:
+                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}):
                         result = gdrive.create_all_lecture_folders()
 
         assert 1 in result
@@ -483,7 +483,7 @@ class TestCreateAllLectureFolders:
         with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.gdrive_manager.GROUPS", fake_groups):
                 with patch("tools.gdrive_manager.TOTAL_LECTURES", 2):
-                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}) as mock_lfi:
+                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}):
                         result = gdrive.create_all_lecture_folders()
 
         assert 1 in result

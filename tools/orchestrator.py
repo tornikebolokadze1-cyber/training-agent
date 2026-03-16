@@ -95,8 +95,8 @@ def validate_credentials() -> None:
 # /status endpoint — mounted on the imported FastAPI app
 # ---------------------------------------------------------------------------
 
-from fastapi import APIRouter, Header
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Header  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 
 _status_router = APIRouter()
 

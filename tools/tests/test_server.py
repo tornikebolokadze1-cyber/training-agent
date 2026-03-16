@@ -41,13 +41,13 @@ for _mod_name in list(sys.modules):
 
 # Now re-import real packages
 
-import httpx
-from httpx import ASGITransport, AsyncClient
-from pathlib import Path
+import httpx  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-import tools.whatsapp_sender as _wa_sender_mod
-import tools.server as srv
-from tools.server import (
+import tools.whatsapp_sender as _wa_sender_mod  # noqa: E402
+import tools.server as srv  # noqa: E402
+from tools.server import (  # noqa: E402
     _evict_stale_tasks,
     _processing_tasks,
     _task_key,
@@ -947,7 +947,6 @@ class TestDownloadRecording:
         mock_client.__aexit__ = MagicMock(return_value=False)
 
         # Make the async context managers actually awaitable
-        import asyncio
 
         async def async_return(val):
             return val
@@ -975,7 +974,6 @@ class TestDownloadRecording:
 
         mock_response.aiter_bytes = fake_aiter_bytes
 
-        import asyncio
 
         async def async_return(val):
             return val
@@ -1010,7 +1008,6 @@ class TestDownloadRecording:
 
         mock_response.aiter_bytes = fake_aiter_bytes
 
-        import asyncio
 
         async def async_return(val):
             return val
@@ -1053,7 +1050,6 @@ class TestSendCallback:
 
     async def test_sends_auth_header_when_secret_set(self):
         """Authorization header is included when WEBHOOK_SECRET is configured."""
-        import asyncio
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -1082,7 +1078,6 @@ class TestSendCallback:
 
     async def test_retries_on_http_error(self, mock_alert_operator):
         """HTTP errors trigger retries up to 3 attempts, then alert_operator."""
-        import asyncio
 
         call_count = 0
 
@@ -1116,7 +1111,6 @@ class TestSendCallback:
 
     async def test_non_retryable_error_alerts_immediately(self, mock_alert_operator):
         """Non-retryable errors (e.g. TypeError) alert immediately without retry."""
-        import asyncio
 
         call_count = 0
 
@@ -1168,7 +1162,6 @@ class TestHandleAssistantMessage:
         mock_assistant = MagicMock()
         mock_assistant.handle_message = MagicMock(return_value=MagicMock())
         # Make handle_message a coroutine
-        import asyncio
         async def mock_handle(m):
             return "response text"
         mock_assistant.handle_message = mock_handle
@@ -1181,7 +1174,6 @@ class TestHandleAssistantMessage:
         """When assistant returns None (chose not to respond), no error."""
         msg = self._make_message()
         mock_assistant = MagicMock()
-        import asyncio
         async def mock_handle(m):
             return None
         mock_assistant.handle_message = mock_handle
