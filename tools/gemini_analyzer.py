@@ -484,7 +484,13 @@ def transcribe_chunked_video(
 # Claude Reasoning (extended thinking for deep analysis)
 # ---------------------------------------------------------------------------
 
-def _claude_reason(transcript: str, prompt: str, purpose: str) -> str:
+def _claude_reason(
+    transcript: str,
+    prompt: str,
+    purpose: str,
+    max_tokens: int = 16000,
+    budget_tokens: int = 10000,
+) -> str:
     """Use Claude Opus 4.6 with extended thinking to reason about the transcript.
 
     Returns Claude's analysis in English (reasoning output), which will then
@@ -509,11 +515,11 @@ def _claude_reason(transcript: str, prompt: str, purpose: str) -> str:
         try:
             response = client.messages.create(
                 model=ASSISTANT_CLAUDE_MODEL,
-                max_tokens=16000,
+                max_tokens=max_tokens,
                 timeout=600.0,  # 10 min timeout for long transcripts
                 thinking={
                     "type": "enabled",
-                    "budget_tokens": 10000,
+                    "budget_tokens": budget_tokens,
                 },
                 system=system_msg,
                 messages=[{"role": "user", "content": user_msg}],
@@ -640,7 +646,13 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         "Be analytical, honest, and strict. Gap and deep analyses are private — for the instructor only."
     )
 
-    raw = _claude_reason(transcript, prompt=combined_prompt, purpose="combined analysis")
+    raw = _claude_reason(
+        transcript,
+        prompt=combined_prompt,
+        purpose="combined analysis",
+        max_tokens=32000,
+        budget_tokens=16000,
+    )
 
     # Parse the three sections
     sections: dict[str, str] = {}
