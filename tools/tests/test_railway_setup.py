@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
