@@ -332,6 +332,7 @@ def create_meeting(
 
     return {
         "id": data["id"],
+        "uuid": data.get("uuid", ""),  # instance-specific UUID for recordings API
         "join_url": data["join_url"],
         "start_url": data["start_url"],
         "topic": data["topic"],

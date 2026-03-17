@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -16,7 +17,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -25,6 +26,7 @@ from slowapi.util import get_remote_address
 from tools.config import (
     GROUPS,
     IS_RAILWAY,
+    MINIMUM_LECTURE_DURATION_MINUTES,
     N8N_CALLBACK_URL,
     SERVER_HOST,
     SERVER_PORT,
@@ -617,13 +619,111 @@ def _extract_recording_context(body: dict) -> dict | None:
     }
 
 
+def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict:
+    """Handle meeting.ended event with duration-based processing gate.
+
+    User requirement: if meeting lasted ≥2 hours → start processing.
+    If <2 hours → ignore (temporary disconnect, they'll rejoin).
+    """
+    payload = body.get("payload", {})
+    obj = payload.get("object", {})
+
+    meeting_id = str(obj.get("id", ""))
+    meeting_uuid = str(obj.get("uuid", ""))
+    topic = obj.get("topic", "")
+    start_time_str = obj.get("start_time", "")
+    duration_minutes = obj.get("duration", 0)
+
+    # Determine group from topic
+    group_number = 0
+    if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:   # ჯგუფი #1
+        group_number = 1
+    elif "\u10ef\u10d2\u10e3\u10e4\u10d8 #2" in topic:  # ჯგუფი #2
+        group_number = 2
+
+    if group_number == 0:
+        logger.warning("[meeting.ended] Unknown group from topic: %s", topic)
+        return {"status": "ignored", "reason": "unknown group"}
+
+    # Calculate actual duration from timestamps
+    actual_duration = duration_minutes
+    try:
+        start_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+        end_dt = datetime.now(start_dt.tzinfo)
+        actual_duration = (end_dt - start_dt).total_seconds() / 60
+    except (ValueError, AttributeError):
+        logger.warning("[meeting.ended] Could not parse start_time, using Zoom duration: %d min", duration_minutes)
+
+    logger.info(
+        "[meeting.ended] Meeting %s ended — Group %d, topic='%s', duration=%.0f min",
+        meeting_id, group_number, topic, actual_duration,
+    )
+
+    # DURATION GATE
+    if actual_duration < MINIMUM_LECTURE_DURATION_MINUTES:
+        logger.info(
+            "[meeting.ended] Duration %.0f min < %d min — temporary disconnect, NOT processing",
+            actual_duration, MINIMUM_LECTURE_DURATION_MINUTES,
+        )
+        return {
+            "status": "ignored",
+            "reason": "duration_below_threshold",
+            "duration_minutes": round(actual_duration),
+            "threshold_minutes": MINIMUM_LECTURE_DURATION_MINUTES,
+        }
+
+    # Duration ≥ 2 hours — real lecture end, start pipeline
+    try:
+        meeting_date = datetime.fromisoformat(start_time_str.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        meeting_date = datetime.now(TBILISI_TZ).date()
+
+    lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+    if lecture_number == 0:
+        lecture_number = 1
+
+    _evict_stale_tasks()
+    key = _task_key(group_number, lecture_number)
+    if key in _processing_tasks:
+        logger.info("[meeting.ended] %s already processing — skipping", key)
+        return {"status": "duplicate", "message": f"{key} already processing"}
+    _processing_tasks[key] = datetime.now()
+
+    # Use meeting UUID for polling (Zoom recordings API needs UUID, not numeric ID)
+    poll_id = meeting_uuid if meeting_uuid else meeting_id
+
+    logger.info(
+        "[meeting.ended] Duration %.0f min ≥ %d min — starting post-meeting pipeline "
+        "for Group %d, Lecture #%d (poll_id=%s)",
+        actual_duration, MINIMUM_LECTURE_DURATION_MINUTES,
+        group_number, lecture_number, poll_id,
+    )
+
+    # Import and run post-meeting pipeline in background thread
+    from tools.scheduler import _run_post_meeting_pipeline
+    background_tasks.add_task(
+        _run_post_meeting_pipeline,
+        group_number,
+        lecture_number,
+        poll_id,
+    )
+
+    return {
+        "status": "accepted",
+        "trigger": "meeting.ended",
+        "group": group_number,
+        "lecture": lecture_number,
+        "duration_minutes": round(actual_duration),
+    }
+
+
 @app.post("/zoom-webhook")
 @limiter.limit("10/minute")
 async def zoom_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """Receive Zoom webhook events (CRC validation + recording.completed).
+    """Receive Zoom webhook events (CRC + meeting.ended + recording.completed).
 
     Authentication: Zoom HMAC-SHA256 signature (not WEBHOOK_SECRET).
     See CLAUDE.md for why this is an intentional exception.
@@ -637,34 +737,39 @@ async def zoom_webhook(
 
     _verify_zoom_signature(raw_body, request)
 
-    if event != "recording.completed":
-        return {"status": "ignored", "event": event}
+    # Handle meeting.ended → duration gate → start pipeline if ≥2hr
+    if event == "meeting.ended":
+        return _handle_meeting_ended(body, background_tasks)
 
-    ctx = _extract_recording_context(body)
-    if ctx is None:
-        return {"status": "ignored", "reason": "no valid recording or unknown group"}
+    # Handle recording.completed → direct download processing
+    if event == "recording.completed":
+        ctx = _extract_recording_context(body)
+        if ctx is None:
+            return {"status": "ignored", "reason": "no valid recording or unknown group"}
 
-    logger.info(
-        "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
-        ctx["group_number"], ctx["lecture_number"], ctx["topic"],
-    )
+        logger.info(
+            "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
+            ctx["group_number"], ctx["lecture_number"], ctx["topic"],
+        )
 
-    _evict_stale_tasks()
-    key = _task_key(ctx["group_number"], ctx["lecture_number"])
-    if key in _processing_tasks:
-        return {"status": "duplicate", "message": f"{key} already processing"}
-    _processing_tasks[key] = datetime.now()
+        _evict_stale_tasks()
+        key = _task_key(ctx["group_number"], ctx["lecture_number"])
+        if key in _processing_tasks:
+            return {"status": "duplicate", "message": f"{key} already processing"}
+        _processing_tasks[key] = datetime.now()
 
-    proc_payload = ProcessRecordingRequest(
-        download_url=ctx["download_url"],
-        access_token=ctx["access_token"],
-        group_number=ctx["group_number"],
-        lecture_number=ctx["lecture_number"],
-        drive_folder_id=ctx["drive_folder_id"],
-    )
-    background_tasks.add_task(process_recording_task, proc_payload)
+        proc_payload = ProcessRecordingRequest(
+            download_url=ctx["download_url"],
+            access_token=ctx["access_token"],
+            group_number=ctx["group_number"],
+            lecture_number=ctx["lecture_number"],
+            drive_folder_id=ctx["drive_folder_id"],
+        )
+        background_tasks.add_task(process_recording_task, proc_payload)
 
-    return {"status": "accepted", "group": ctx["group_number"], "lecture": ctx["lecture_number"]}
+        return {"status": "accepted", "group": ctx["group_number"], "lecture": ctx["lecture_number"]}
+
+    return {"status": "ignored", "event": event}
 
 
 @app.post("/process-recording")
@@ -749,6 +854,108 @@ async def trigger_pre_meeting(
     asyncio.ensure_future(pre_meeting_job(group_number=group))
 
     return {"status": "triggered", "group": group}
+
+
+# ---------------------------------------------------------------------------
+# Analytics dashboard
+# ---------------------------------------------------------------------------
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+@limiter.limit("30/minute")
+async def analytics_dashboard(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Serve the analytics dashboard HTML.
+
+    Operator-only endpoint: requires WEBHOOK_SECRET.
+    """
+    verify_webhook_secret(authorization)
+    from tools.analytics import get_dashboard_data, render_dashboard_html
+    data = await asyncio.to_thread(get_dashboard_data)
+    return HTMLResponse(content=render_dashboard_html(data))
+
+
+@app.get("/api/scores", include_in_schema=False)
+@limiter.limit("60/minute")
+async def api_scores(
+    request: Request,
+    authorization: str | None = Header(None),
+    group: int | None = None,
+):
+    """Return raw lecture scores as JSON.
+
+    Query param: group=1|2 (optional, omit for all groups).
+    """
+    verify_webhook_secret(authorization)
+    if group is not None and group not in GROUPS:
+        raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
+
+    from tools.analytics import get_all_scores
+    rows = await asyncio.to_thread(get_all_scores, group)
+    return {"scores": rows, "total": len(rows)}
+
+
+@app.get("/api/stats", include_in_schema=False)
+@limiter.limit("60/minute")
+async def api_stats(
+    request: Request,
+    authorization: str | None = Header(None),
+    group: int | None = None,
+):
+    """Return statistical analysis per dimension as JSON.
+
+    Query param: group=1|2 (optional, omit for both groups).
+    """
+    verify_webhook_secret(authorization)
+    if group is not None and group not in GROUPS:
+        raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
+
+    from tools.analytics import get_dashboard_data
+    data = await asyncio.to_thread(get_dashboard_data)
+
+    if group is not None:
+        return {
+            "group": group,
+            "lecture_count": data["groups"][group]["lecture_count"],
+            "stats": data["groups"][group]["stats"],
+            "best_lecture": data["groups"][group]["best_lecture"],
+            "worst_lecture": data["groups"][group]["worst_lecture"],
+        }
+
+    return {
+        "groups": {
+            str(gn): {
+                "lecture_count": data["groups"][gn]["lecture_count"],
+                "stats": data["groups"][gn]["stats"],
+                "best_lecture": data["groups"][gn]["best_lecture"],
+                "worst_lecture": data["groups"][gn]["worst_lecture"],
+            }
+            for gn in (1, 2)
+        },
+        "cross_group": data["cross_group"],
+        "generated_at": data["generated_at"],
+    }
+
+
+@app.post("/api/backfill-scores", include_in_schema=False)
+@limiter.limit("2/minute")
+async def api_backfill_scores(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Trigger backfill of scores from .tmp/ deep analysis files.
+
+    Processes any existing deep_analysis text files that are not yet
+    indexed in the analytics DB. Safe to call repeatedly — skips
+    already-indexed lectures.
+    """
+    verify_webhook_secret(authorization)
+    from tools.analytics import backfill_from_tmp
+    result = await asyncio.to_thread(backfill_from_tmp)
+    logger.info("Manual score backfill triggered: %s", result)
+    return {"status": "ok", **result}
 
 
 # ---------------------------------------------------------------------------

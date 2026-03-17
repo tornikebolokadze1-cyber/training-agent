@@ -429,6 +429,7 @@ async def pre_meeting_job(group_number: int) -> None:
     loop = asyncio.get_running_loop()
     zoom_join_url: str = ""
     zoom_meeting_id: str = ""
+    zoom_meeting_uuid: str = ""
 
     try:
         zm = _import_zoom_manager()
@@ -442,10 +443,12 @@ async def pre_meeting_job(group_number: int) -> None:
         )
         zoom_join_url = meeting_info.get("join_url", "")
         zoom_meeting_id = str(meeting_info.get("id", ""))
+        zoom_meeting_uuid = str(meeting_info.get("uuid", ""))
         logger.info(
-            "[pre] Zoom meeting created: %s (ID: %s)",
+            "[pre] Zoom meeting created: %s (ID: %s, UUID: %s)",
             zoom_join_url,
             zoom_meeting_id,
+            zoom_meeting_uuid,
         )
     except ImportError as exc:
         logger.error("[pre] zoom_manager not available: %s", exc)
@@ -490,20 +493,23 @@ async def pre_meeting_job(group_number: int) -> None:
         except Exception:
             logger.error("[pre] alert_operator also failed for Group %d", group_number)
 
-    # ---- Schedule post-meeting job ------------------------------------------
-    # Fire at 22:00 today (lecture end time) so that post-meeting processing
-    # starts polling immediately after the session finishes.
-    if zoom_meeting_id:
+    # ---- Schedule post-meeting fallback job ----------------------------------
+    # The primary trigger is now the meeting.ended webhook (in server.py).
+    # This scheduler job is a SAFETY NET — it fires at 23:30 (T+210 min)
+    # and only runs if the webhook didn't already start processing.
+    poll_id = zoom_meeting_uuid or zoom_meeting_id
+    if poll_id:
         _schedule_post_meeting(
             scheduler=_get_running_scheduler(),
             group_number=group_number,
             lecture_number=lecture_number,
-            meeting_id=zoom_meeting_id,
-            fire_at_hour=LECTURE_START_HOUR + 2,  # 22:00 — polling handles variable end times
+            meeting_id=poll_id,
+            fire_at_hour=23,
+            fire_at_minute=30,  # 23:30 — safety net (webhook is primary)
         )
     else:
         logger.warning(
-            "[pre] No meeting ID — post-meeting job will NOT be scheduled "
+            "[pre] No meeting ID/UUID — post-meeting job will NOT be scheduled "
             "for Group %d, Lecture #%d",
             group_number,
             lecture_number,
@@ -516,21 +522,34 @@ async def pre_meeting_job(group_number: int) -> None:
 
 
 async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: str) -> None:
-    """Kick off the post-meeting recording pipeline in a background thread.
+    """Kick off the post-meeting recording pipeline (FALLBACK path).
 
-    APScheduler calls this coroutine from the AsyncIOExecutor. We immediately
-    hand off the blocking work to a ``ThreadPoolExecutor`` so the event loop
-    stays free.
+    This is a safety net — the primary trigger is the meeting.ended webhook
+    in server.py. This job only fires at 23:30 and skips if the webhook
+    already started processing.
 
     Args:
         group_number: 1 or 2.
         lecture_number: Lecture ordinal (passed from schedule time, not re-derived).
-        meeting_id: Zoom meeting ID returned when the meeting was created.
+        meeting_id: Zoom meeting UUID (preferred) or numeric ID.
     """
+    # Check if webhook already started processing this lecture
+    try:
+        from tools.server import _processing_tasks, _task_key
+        key = _task_key(group_number, lecture_number)
+        if key in _processing_tasks:
+            logger.info(
+                "[post] Scheduler FALLBACK skipped — %s already processing "
+                "(webhook handled it)",
+                key,
+            )
+            return
+    except ImportError:
+        pass  # server module not available (standalone scheduler mode)
 
     logger.info(
-        "[post] Dispatching post-meeting pipeline — Group %d, Lecture #%d, "
-        "Meeting %s",
+        "[post] Scheduler FALLBACK firing — webhook did not handle "
+        "Group %d, Lecture #%d, Meeting %s",
         group_number,
         lecture_number,
         meeting_id,

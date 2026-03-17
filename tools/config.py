@@ -129,6 +129,11 @@ _ATTENDEES = _load_attendees()
 # ---------------------------------------------------------------------------
 TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 
+# Minimum meeting duration (minutes) to consider a meeting "really ended".
+# Below this threshold, a meeting.ended event is treated as a temporary
+# disconnect (break/reconnect) — the pipeline will NOT start.
+MINIMUM_LECTURE_DURATION_MINUTES = 120
+
 # ---------------------------------------------------------------------------
 # Group Definitions
 # ---------------------------------------------------------------------------
