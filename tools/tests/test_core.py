@@ -324,8 +324,7 @@ class TestIndexLectureContentValidation:
         assert "summary" in CONTENT_TYPES
         assert "gap_analysis" in CONTENT_TYPES
         assert "deep_analysis" in CONTENT_TYPES
-        assert "frame" in CONTENT_TYPES
-        assert len(CONTENT_TYPES) == 5
+        assert len(CONTENT_TYPES) == 4
 
 
 # ===========================================================================

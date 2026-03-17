@@ -18,7 +18,7 @@ from pathlib import Path
 from tools.config import GROUPS, TMP_DIR, get_lecture_folder_name
 from tools.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
 from tools.gemini_analyzer import analyze_lecture
-from tools.knowledge_indexer import index_lecture_content, index_lecture_frames
+from tools.knowledge_indexer import index_lecture_content
 from tools.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
 
 logger = logging.getLogger(__name__)
@@ -234,7 +234,6 @@ def transcribe_and_index(
     5. Send WhatsApp notification to training group (video + summary ready)
     6. Send private report link to Tornike via WhatsApp
     7. Index text content into Pinecone for RAG
-    8. Index video frames into Pinecone (multimodal embedding for visual search)
 
     Automatically resumes from existing transcript if found in .tmp/.
     """
@@ -275,6 +274,22 @@ def transcribe_and_index(
             out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
             out_path.write_text(text, encoding="utf-8")
             logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
+
+    # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
+    try:
+        from tools.analytics import save_scores_from_analysis
+        if results.get("deep_analysis"):
+            saved = save_scores_from_analysis(
+                group_number, lecture_number, results["deep_analysis"]
+            )
+            if not saved:
+                logger.warning(
+                    "Score extraction returned no data for Group %d Lecture #%d "
+                    "(score table missing or malformed in deep analysis)",
+                    group_number, lecture_number,
+                )
+    except Exception as _analytics_err:
+        logger.error("Score persistence failed (non-fatal): %s", _analytics_err)
 
     # Step 2: Upload summary to Google Drive
     summary = results.get("summary", "")
@@ -327,20 +342,6 @@ def transcribe_and_index(
                 alert_operator(f"Pinecone indexing FAILED for {content_type} (G{group_number} L#{lecture_number}): {e}")
             except Exception as alert_err:
                 logger.error("alert_operator also failed: %s", alert_err)
-
-    # Step 7: Index video frames into Pinecone (multimodal embedding)
-    logger.info("Step 7: Indexing video frames into Pinecone...")
-    try:
-        frame_count = index_lecture_frames(group_number, lecture_number, video_path)
-        index_counts["frame"] = frame_count
-        logger.info("Indexed %d frame vectors", frame_count)
-    except Exception as e:
-        logger.error("Frame indexing failed: %s", e)
-        index_counts["frame"] = 0
-        try:
-            alert_operator(f"Frame indexing FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
 
     # Quality gate: warn if critical analysis outputs are empty
     empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]

@@ -325,7 +325,6 @@ ASSISTANT_SIGNATURE = "AI ასისტენტი - მრჩეველი
 ASSISTANT_COOLDOWN_SECONDS = 300  # 5 min between passive responses
 ASSISTANT_CLAUDE_MODEL = "claude-opus-4-6"
 GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
-GEMINI_EMBEDDING_MULTIMODAL = "gemini-embedding-2-preview"  # Video/image/audio embedding
 
 
 # ---------------------------------------------------------------------------

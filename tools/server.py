@@ -856,6 +856,115 @@ async def trigger_pre_meeting(
     return {"status": "triggered", "group": group}
 
 
+class ManualTriggerRequest(BaseModel):
+    """Payload for manual pipeline trigger from Google Drive file."""
+
+    group_number: int
+    lecture_number: int
+    drive_file_id: str
+
+
+async def _manual_pipeline_task(
+    group_number: int,
+    lecture_number: int,
+    drive_file_id: str,
+) -> None:
+    """Background task: download from Drive → run full analysis pipeline."""
+    from tools.gdrive_manager import download_file
+
+    local_path = None
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
+        local_path = TMP_DIR / filename
+
+        logger.info(
+            "Manual trigger: downloading Drive file %s for Group %d, Lecture #%d...",
+            drive_file_id, group_number, lecture_number,
+        )
+        await asyncio.to_thread(download_file, drive_file_id, local_path)
+        file_size_mb = local_path.stat().st_size / (1024 * 1024)
+        logger.info("Manual trigger: download complete (%.1f MB)", file_size_mb)
+
+        logger.info("Manual trigger: running full analysis pipeline...")
+        index_counts = await asyncio.to_thread(
+            transcribe_and_index, group_number, lecture_number, local_path,
+        )
+        logger.info(
+            "Manual trigger: pipeline complete for Group %d, Lecture #%d (%d vectors)",
+            group_number, lecture_number, sum(index_counts.values()),
+        )
+    except Exception as e:
+        error_msg = f"Manual pipeline failed: {e}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        await asyncio.to_thread(
+            alert_operator,
+            f"Manual pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+            f"Error: {e}",
+        )
+    finally:
+        key = _task_key(group_number, lecture_number)
+        _processing_tasks.pop(key, None)
+        if local_path and local_path.exists():
+            local_path.unlink()
+            logger.info("Cleaned up temp file: %s", local_path)
+
+
+@app.post("/manual-trigger")
+@limiter.limit("2/minute")
+async def manual_trigger(
+    request: Request,
+    payload: ManualTriggerRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Manually trigger the analysis pipeline from a Google Drive recording.
+
+    Operator-only endpoint: requires WEBHOOK_SECRET.
+    Downloads the recording from Drive, then runs the full pipeline
+    (transcribe → analyze → Drive upload → WhatsApp → Pinecone).
+    """
+    verify_webhook_secret(authorization)
+
+    if payload.group_number not in (1, 2):
+        raise HTTPException(status_code=422, detail=f"Invalid group_number: {payload.group_number}")
+    if not (1 <= payload.lecture_number <= 15):
+        raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {payload.lecture_number}")
+    if not _DRIVE_FOLDER_ID_RE.match(payload.drive_file_id):
+        raise HTTPException(status_code=422, detail="Invalid Drive file ID format")
+
+    _evict_stale_tasks()
+
+    key = _task_key(payload.group_number, payload.lecture_number)
+    if key in _processing_tasks:
+        started = _processing_tasks[key]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                   f"is already being processed (started {started.isoformat()})",
+        )
+
+    _processing_tasks[key] = datetime.now()
+
+    logger.info(
+        "Manual trigger: Group %d, Lecture #%d, Drive file: %s",
+        payload.group_number, payload.lecture_number, payload.drive_file_id,
+    )
+
+    background_tasks.add_task(
+        _manual_pipeline_task,
+        payload.group_number,
+        payload.lecture_number,
+        payload.drive_file_id,
+    )
+
+    return {
+        "status": "accepted",
+        "message": f"Manual pipeline started for Group {payload.group_number}, "
+                   f"Lecture #{payload.lecture_number} (Drive file: {payload.drive_file_id})",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Analytics dashboard
 # ---------------------------------------------------------------------------

@@ -1,18 +1,16 @@
 """Pinecone RAG indexing pipeline for the Training Agent.
 
-Indexes lecture transcripts, summaries, gap analyses, and video frame
-embeddings into a Pinecone vector database so the WhatsApp assistant can
-retrieve relevant course knowledge — including visual context from slides.
+Indexes lecture transcripts, summaries, gap analyses, and deep analyses
+into a Pinecone vector database so the WhatsApp assistant can retrieve
+relevant course knowledge.
 
-Embedding models:
+Embedding model:
 - gemini-embedding-001: text embedding (3072 dims)
-- gemini-embedding-2-preview: multimodal embedding for video frames (3072 dims)
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
 import threading
 import time
 from datetime import date
@@ -25,10 +23,8 @@ from tools.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_EMBEDDING_MODEL,
-    GEMINI_EMBEDDING_MULTIMODAL,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
-    TMP_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,10 +48,7 @@ RETRY_BASE_DELAY = 5  # seconds
 UPSERT_BATCH_SIZE = 100
 
 # Valid content types (used for metadata and vector ID generation)
-CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analysis", "frame"})
-
-# Frame extraction settings
-FRAME_INTERVAL_SECONDS = 60  # 1 screenshot per minute
+CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analysis"})
 
 
 # ---------------------------------------------------------------------------
@@ -440,181 +433,6 @@ def _batch_upsert(index: object, vectors: list[dict]) -> int:
                     ) from e
                 time.sleep(delay)
     return total
-
-
-# ---------------------------------------------------------------------------
-# Frame extraction & multimodal embedding
-# ---------------------------------------------------------------------------
-
-
-def extract_frames(video_path: str | Path, interval: int = FRAME_INTERVAL_SECONDS) -> list[Path]:
-    """Extract one frame per interval from a video using ffmpeg.
-
-    Args:
-        video_path: Path to the video file.
-        interval: Seconds between frames (default: 60 = 1 per minute).
-
-    Returns:
-        Sorted list of extracted frame file paths.
-    """
-    video_path = Path(video_path)
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-
-    frames_dir = TMP_DIR / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-
-    # Clean any previous frames
-    for old in frames_dir.glob("frame_*.jpg"):
-        old.unlink()
-
-    cmd = [
-        "ffmpeg", "-i", str(video_path),
-        "-vf", f"fps=1/{interval}",
-        "-q:v", "2",
-        "-y",
-        str(frames_dir / "frame_%04d.jpg"),
-    ]
-    logger.info("Extracting frames every %ds from %s...", interval, video_path.name)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg frame extraction failed: {result.stderr[:500]}")
-
-    frames = sorted(frames_dir.glob("frame_*.jpg"))
-    logger.info("Extracted %d frames.", len(frames))
-    return frames
-
-
-def embed_frame(image_path: Path) -> list[float]:
-    """Generate an embedding for an image using Gemini Embedding 2 (multimodal).
-
-    Args:
-        image_path: Path to a JPEG image file.
-
-    Returns:
-        A list of 3072 floats representing the embedding vector.
-    """
-    client = _get_embed_client()
-    image_bytes = image_path.read_bytes()
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.debug(
-                "Embedding frame %s with %s (attempt %d/%d)...",
-                image_path.name, GEMINI_EMBEDDING_MULTIMODAL, attempt, MAX_RETRIES,
-            )
-            response = client.models.embed_content(
-                model=GEMINI_EMBEDDING_MULTIMODAL,
-                contents=genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-            )
-            vector = response.embeddings[0].values
-            logger.debug("Frame embedding generated (%d dims).", len(vector))
-            return list(vector)
-
-        except Exception as e:
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(
-                "Frame embedding attempt %d/%d failed: %s — retrying in %ds",
-                attempt, MAX_RETRIES, e, delay,
-            )
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(
-                    f"Frame embedding failed after {MAX_RETRIES} attempts: {e}"
-                ) from e
-            time.sleep(delay)
-
-    raise RuntimeError("Unreachable")
-
-
-def index_lecture_frames(
-    group_number: int,
-    lecture_number: int,
-    video_path: str | Path,
-) -> int:
-    """Extract frames from a lecture video, embed, and upsert into Pinecone.
-
-    Each frame is embedded with Gemini Embedding 2 (multimodal) and stored
-    alongside text embeddings in the same Pinecone index. This enables
-    cross-modal search: text queries can match visual content from slides.
-
-    Frames are extracted every FRAME_INTERVAL_SECONDS (default 60s), embedded,
-    then deleted from disk — only vectors persist in Pinecone.
-
-    Args:
-        group_number: Training group (1 or 2).
-        lecture_number: Lecture sequence number (1–15).
-        video_path: Path to the lecture video file.
-
-    Returns:
-        Number of frame vectors upserted.
-    """
-    video_path = Path(video_path)
-    frames: list[Path] = []
-
-    try:
-        frames = extract_frames(video_path)
-        if not frames:
-            logger.warning("No frames extracted from %s", video_path.name)
-            return 0
-
-        index = get_pinecone_index()
-        today_iso = date.today().isoformat()
-
-        # Clean stale frame vectors from previous runs
-        try:
-            index.delete(
-                filter={
-                    "group_number": {"$eq": group_number},
-                    "lecture_number": {"$eq": lecture_number},
-                    "content_type": {"$eq": "frame"},
-                },
-            )
-            logger.info("Cleaned stale frame vectors for g%d l%d", group_number, lecture_number)
-        except Exception as e:
-            logger.warning("Failed to clean stale frame vectors: %s", e)
-
-        vectors: list[dict] = []
-        for i, frame_path in enumerate(frames):
-            minute = (i + 1) * (FRAME_INTERVAL_SECONDS // 60)
-            try:
-                embedding = embed_frame(frame_path)
-                vector_id = f"g{group_number}_l{lecture_number}_frame_{i}"
-                vectors.append({
-                    "id": vector_id,
-                    "values": embedding,
-                    "metadata": {
-                        "group_number": group_number,
-                        "lecture_number": lecture_number,
-                        "content_type": "frame",
-                        "date": today_iso,
-                        "chunk_index": i,
-                        "minute": minute,
-                        "text": f"ლექცია #{lecture_number}, წუთი {minute} — ვიზუალური ფრეიმი",
-                    },
-                })
-                logger.debug("Embedded frame %d (minute %d)", i, minute)
-            except Exception as e:
-                logger.warning("Failed to embed frame %d: %s — skipping", i, e)
-                continue
-
-        if not vectors:
-            logger.warning("No frames successfully embedded")
-            return 0
-
-        total = _batch_upsert(index, vectors)
-        logger.info(
-            "Indexed %d frame vectors for g%d l%d.",
-            total, group_number, lecture_number,
-        )
-        return total
-
-    finally:
-        # Always clean up frame files
-        frames_dir = TMP_DIR / "frames"
-        if frames_dir.exists():
-            for f in frames_dir.glob("frame_*.jpg"):
-                f.unlink()
-            logger.debug("Cleaned up frame files from %s", frames_dir)
 
 
 # ---------------------------------------------------------------------------
