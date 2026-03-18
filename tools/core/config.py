@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Load .env file if present (local development); in Railway, env vars
 # are injected directly and this is a no-op.
-env_path = Path(__file__).parent.parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(env_path)
 
 # Detect deployment environment
@@ -114,7 +114,7 @@ def _load_attendees() -> dict[str, list[str]]:
             logger.error("Invalid ATTENDEES_JSON_B64: %s", exc)
 
     # Fall back to local file
-    attendees_path = Path(__file__).parent.parent / "attendees.json"
+    attendees_path = Path(__file__).parent.parent.parent / "attendees.json"
     if attendees_path.exists():
         with open(attendees_path, encoding="utf-8") as f:
             return json.load(f)
@@ -300,7 +300,7 @@ _config_warnings = validate_critical_config()
 # Paths
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 TMP_DIR = PROJECT_ROOT / ".tmp"
 TMP_DIR.mkdir(exist_ok=True)
 

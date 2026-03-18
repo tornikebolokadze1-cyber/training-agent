@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 FILES_TO_ENCODE = {
     "GOOGLE_CREDENTIALS_JSON_B64": PROJECT_ROOT / "credentials.json",
