@@ -64,10 +64,10 @@ def validate_credentials() -> None:
     """Check that all required environment variables are present.
 
     Logs a warning for optional values that are missing and raises
-    ``EnvironmentError`` immediately on the first missing required value.
+    ``OSError`` immediately on the first missing required value.
 
     Raises:
-        EnvironmentError: If one or more required credentials are absent.
+        OSError: If one or more required credentials are absent.
     """
     missing_required: list[str] = []
 
@@ -281,7 +281,7 @@ def start() -> None:
         2. Launches APScheduler + FastAPI/uvicorn on a single asyncio event loop.
 
     Raises:
-        EnvironmentError: If required credentials are missing.
+        OSError: If required credentials are missing.
         SystemExit: On unrecoverable startup failures.
     """
     _configure_logging()

@@ -11,6 +11,7 @@ Embedding model:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import date
 
@@ -55,6 +56,7 @@ CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analys
 # ---------------------------------------------------------------------------
 
 _pinecone_index_cache: object | None = None
+_pinecone_lock = threading.Lock()
 
 
 def get_pinecone_index() -> object:
@@ -62,6 +64,7 @@ def get_pinecone_index() -> object:
 
     Uses dimension=3072 (gemini-embedding-001 output size) with cosine metric.
     Creates a serverless index if it does not yet exist.
+    Thread-safe via lock to prevent duplicate initialization.
 
     Returns:
         A Pinecone Index object ready for upsert and query operations.
@@ -72,6 +75,10 @@ def get_pinecone_index() -> object:
     global _pinecone_index_cache
     if _pinecone_index_cache is not None:
         return _pinecone_index_cache
+
+    with _pinecone_lock:
+        if _pinecone_index_cache is not None:
+            return _pinecone_index_cache
 
     if not PINECONE_API_KEY:
         raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")

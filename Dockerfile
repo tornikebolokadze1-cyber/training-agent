@@ -51,7 +51,7 @@ EXPOSE 5001
 
 # Health check using curl (lighter than Python)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:${PORT:-5001}/health || exit 1
+    CMD curl -sf http://localhost:5001/health || exit 1
 
 # Run the unified orchestrator (APScheduler + FastAPI)
 CMD ["python", "-m", "tools.app.orchestrator"]

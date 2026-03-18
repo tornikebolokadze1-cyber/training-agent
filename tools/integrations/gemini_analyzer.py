@@ -42,8 +42,8 @@ STATE_FAILED = "FAILED"
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
-FILE_POLL_INTERVAL = 10  # seconds
-FILE_POLL_TIMEOUT = 600  # 10 minutes max wait for processing
+FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
+FILE_POLL_TIMEOUT = 900  # 15 minutes max wait for processing (large videos)
 
 
 def _is_quota_error(error: Exception) -> bool:

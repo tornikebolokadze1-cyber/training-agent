@@ -50,13 +50,13 @@ class TestValidateCredentials:
             orch.validate_credentials()
 
     def test_missing_required_raises(self):
-        """EnvironmentError raised when a required credential is empty."""
+        """OSError raised when a required credential is empty."""
         creds = [
             ("ZOOM_ACCOUNT_ID", "", True),  # missing!
             ("GEMINI_API_KEY", "val", True),
         ]
         with patch.object(orch, "_CREDENTIALS", creds):
-            with pytest.raises(EnvironmentError, match="ZOOM_ACCOUNT_ID"):
+            with pytest.raises(OSError, match="ZOOM_ACCOUNT_ID"):
                 orch.validate_credentials()
 
     def test_missing_optional_does_not_raise(self):
@@ -77,7 +77,7 @@ class TestValidateCredentials:
             ("VAR_C", "ok", True),
         ]
         with patch.object(orch, "_CREDENTIALS", creds):
-            with pytest.raises(EnvironmentError) as exc_info:
+            with pytest.raises(OSError) as exc_info:
                 orch.validate_credentials()
             assert "VAR_A" in str(exc_info.value)
             assert "VAR_B" in str(exc_info.value)

@@ -207,6 +207,13 @@ _apscheduler_triggers_cron = _stub_module("apscheduler.triggers.cron")
 _apscheduler_triggers_cron.CronTrigger = MagicMock
 
 # ===================================================================
+# uvicorn (used by orchestrator.py and server.py)
+# ===================================================================
+_uvicorn = _stub_module("uvicorn")
+_uvicorn.Config = MagicMock
+_uvicorn.Server = MagicMock
+
+# ===================================================================
 # Internal module stubs — only whatsapp_assistant needs a NoOp stub
 # because its constructor validates API keys at module level (called
 # from server.py line 145).  All other internal modules import safely
@@ -230,3 +237,35 @@ class _IncomingMessage:
 _wa_assistant_mod = _stub_module("tools.services.whatsapp_assistant")
 _wa_assistant_mod.WhatsAppAssistant = _NoOpAssistant
 _wa_assistant_mod.IncomingMessage = _IncomingMessage
+
+
+# ===================================================================
+# Global cache-clearing fixture — prevents shared state bleed between
+# tests.  Clears all module-level caches that could cause flaky tests
+# if a previous test left dirty state.
+# ===================================================================
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_caches() -> None:  # type: ignore[misc]
+    """Reset all module-level caches before each test."""
+    yield
+    # Post-test cleanup: clear caches that might bleed between tests
+    for mod_name, attrs in [
+        ("tools.integrations.gdrive_manager", [
+            "_token_path_cache", "_drive_service_cache", "_docs_service_cache",
+        ]),
+        ("tools.integrations.knowledge_indexer", ["_pinecone_index_cache"]),
+        ("tools.integrations.zoom_manager", ["_token_cache"]),
+    ]:
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        for attr in attrs:
+            if hasattr(mod, attr):
+                val = getattr(mod, attr)
+                if isinstance(val, dict):
+                    val.clear()
+                else:
+                    setattr(mod, attr, None)

@@ -383,9 +383,13 @@ def extract_group_from_topic(topic: str) -> int | None:
     Returns:
         Group number (1 or 2) if found, None otherwise.
     """
+    if not isinstance(topic, str) or not topic.strip():
+        logger.warning("extract_group_from_topic called with invalid topic: %r", topic)
+        return None
     for group_num in GROUPS:
         if f"ჯგუფი #{group_num}" in topic:
             return group_num
+    logger.debug("No group marker found in topic: %s", topic[:80])
     return None
 
 
