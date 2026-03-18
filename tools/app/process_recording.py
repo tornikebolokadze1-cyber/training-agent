@@ -6,17 +6,17 @@ Use this when you need to:
 - Process a recording that was missed by the webhook
 
 Usage:
-    python -m tools.process_recording <video_file> --group 1 --lecture 2
-    python -m tools.process_recording <video_file> --group 2 --lecture 5 --skip-drive
+    python -m tools.app.process_recording <video_file> --group 1 --lecture 2
+    python -m tools.app.process_recording <video_file> --group 2 --lecture 5 --skip-drive
 """
 
 import argparse
 import logging
 from pathlib import Path
 
-from tools.config import GROUPS, get_lecture_folder_name
-from tools.gdrive_manager import ensure_folder, get_drive_service, upload_file
-from tools.transcribe_lecture import transcribe_and_index
+from tools.core.config import GROUPS, get_lecture_folder_name
+from tools.integrations.gdrive_manager import ensure_folder, get_drive_service, upload_file
+from tools.services.transcribe_lecture import transcribe_and_index
 
 logger = logging.getLogger(__name__)
 

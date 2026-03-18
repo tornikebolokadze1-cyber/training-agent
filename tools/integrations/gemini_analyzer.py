@@ -18,7 +18,7 @@ from google.genai import types
 
 import anthropic
 
-from tools.config import (
+from tools.core.config import (
     ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
@@ -33,7 +33,7 @@ from tools.config import (
     DEEP_ANALYSIS_PROMPT,
 )
 
-from tools.retry import safe_operation
+from tools.core.retry import safe_operation
 
 logger = logging.getLogger(__name__)
 
@@ -833,7 +833,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     if len(sys.argv) < 2:
-        print("Usage: python -m tools.gemini_analyzer <video_file_path>")
+        print("Usage: python -m tools.integrations.gemini_analyzer <video_file_path>")
         sys.exit(1)
 
     video_path = sys.argv[1]

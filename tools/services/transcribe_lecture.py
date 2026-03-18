@@ -4,7 +4,7 @@ Full pipeline: transcribe → analyze → upload analysis docs to Drive → noti
 Note: The recording video itself is uploaded by the caller (server.py or scheduler.py), not here.
 
 Usage:
-    python -m tools.transcribe_lecture <group_number> <lecture_number> <video_path>
+    python -m tools.services.transcribe_lecture <group_number> <lecture_number> <video_path>
 
 Resumes from existing transcript if found in .tmp/ (avoids re-transcription).
 """
@@ -15,12 +15,12 @@ import logging
 import sys
 from pathlib import Path
 
-from tools.config import GROUPS, TMP_DIR, get_drive_file_url, get_lecture_folder_name
-from tools.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
-from tools.gemini_analyzer import analyze_lecture
-from tools.knowledge_indexer import index_lecture_content
-from tools.retry import safe_operation
-from tools.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
+from tools.core.config import GROUPS, TMP_DIR, get_drive_file_url, get_lecture_folder_name
+from tools.integrations.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
+from tools.integrations.gemini_analyzer import analyze_lecture
+from tools.integrations.knowledge_indexer import index_lecture_content
+from tools.core.retry import safe_operation
+from tools.integrations.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def _upload_summary_to_drive(
 @safe_operation("Drive recording lookup", alert=False)
 def _find_recording_in_drive(group_number: int, lecture_number: int) -> str | None:
     """Find the video recording file ID in the lecture's Drive folder."""
-    from tools.gdrive_manager import list_files_in_folder
+    from tools.integrations.gdrive_manager import list_files_in_folder
 
     folder_id = _get_lecture_folder_id(group_number, lecture_number)
     if not folder_id:
@@ -277,7 +277,7 @@ def transcribe_and_index(
 
     # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
     try:
-        from tools.analytics import save_scores_from_analysis
+        from tools.services.analytics import save_scores_from_analysis
         if results.get("deep_analysis"):
             saved = save_scores_from_analysis(
                 group_number, lecture_number, results["deep_analysis"]
@@ -357,7 +357,7 @@ if __name__ == "__main__":
     )
 
     if len(sys.argv) < 4:
-        print("Usage: python -m tools.transcribe_lecture <group> <lecture> <video_path>")
+        print("Usage: python -m tools.services.transcribe_lecture <group> <lecture> <video_path>")
         sys.exit(1)
 
     try:

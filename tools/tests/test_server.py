@@ -34,9 +34,9 @@ import pytest
 import sys
 
 # Pop stubs for packages that test_server needs real implementations of.
-# Also pop tools.server so it reimports with real FastAPI/slowapi.
+# Also pop tools.app.server so it reimports with real FastAPI/slowapi.
 for _mod_name in list(sys.modules):
-    if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "tools.server")):
+    if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server")):
         sys.modules.pop(_mod_name, None)
 
 # Now re-import real packages
@@ -45,9 +45,9 @@ import httpx  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-import tools.whatsapp_sender as _wa_sender_mod  # noqa: E402
-import tools.server as srv  # noqa: E402
-from tools.server import (  # noqa: E402
+import tools.integrations.whatsapp_sender as _wa_sender_mod  # noqa: E402
+import tools.app.server as srv  # noqa: E402
+from tools.app.server import (  # noqa: E402
     _evict_stale_tasks,
     _processing_tasks,
     _task_key,
@@ -368,7 +368,7 @@ class TestZoomWebhookHMAC:
             "x-zm-request-timestamp": timestamp,
             "x-zm-signature": sig,
         }
-        with patch("tools.server.process_recording_task"):
+        with patch("tools.app.server.process_recording_task"):
             async with await _async_client() as client:
                 resp = await client.post(
                     "/zoom-webhook",
@@ -433,7 +433,7 @@ class TestZoomWebhookRecordingCompleted:
         """A valid recording.completed for Group 1 must return status=accepted."""
         body = _make_recording_body(topic="ჯგუფი #1 lecture")
         body_bytes, headers = self._signed_request(body)
-        with patch("tools.server.process_recording_task"):
+        with patch("tools.app.server.process_recording_task"):
             async with await _async_client() as client:
                 resp = await client.post(
                     "/zoom-webhook", content=body_bytes, headers=headers
@@ -447,7 +447,7 @@ class TestZoomWebhookRecordingCompleted:
         """A valid recording.completed for Group 2 must return status=accepted."""
         body = _make_recording_body(topic="ჯგუფი #2 lecture")
         body_bytes, headers = self._signed_request(body)
-        with patch("tools.server.process_recording_task"):
+        with patch("tools.app.server.process_recording_task"):
             async with await _async_client() as client:
                 resp = await client.post(
                     "/zoom-webhook", content=body_bytes, headers=headers
@@ -509,9 +509,9 @@ class TestZoomWebhookRecordingCompleted:
         body_bytes, headers = self._signed_request(body)
 
         # Manually inject the task key to simulate an already-running job
-        with patch("tools.server.get_lecture_number", return_value=1):
+        with patch("tools.app.server.get_lecture_number", return_value=1):
             _processing_tasks[_task_key(1, 1)] = datetime.now()
-            with patch("tools.server.process_recording_task"):
+            with patch("tools.app.server.process_recording_task"):
                 async with await _async_client() as client:
                     resp = await client.post(
                         "/zoom-webhook", content=body_bytes, headers=headers
@@ -537,7 +537,7 @@ _VALID_RECORDING_PAYLOAD = {
 class TestProcessRecordingEndpoint:
     async def test_valid_request_returns_accepted(self, patched_secrets):
         """A properly authenticated request starts processing and returns accepted."""
-        with patch("tools.server.process_recording_task"):
+        with patch("tools.app.server.process_recording_task"):
             async with await _async_client() as client:
                 resp = await client.post(
                     "/process-recording",
@@ -622,7 +622,7 @@ class TestProcessRecordingEndpoint:
 
     async def test_task_registered_in_tracking_dict(self, patched_secrets):
         """After a successful request the task key is added to _processing_tasks."""
-        with patch("tools.server.process_recording_task"):
+        with patch("tools.app.server.process_recording_task"):
             async with await _async_client() as client:
                 await client.post(
                     "/process-recording",
@@ -811,7 +811,7 @@ class TestProcessRecordingTask:
         key = _task_key(1, 3)
         _processing_tasks[key] = datetime.now()
 
-        with patch("tools.server._send_callback") as mock_cb:
+        with patch("tools.app.server._send_callback") as mock_cb:
             await srv.process_recording_task(payload)
             mock_cb.assert_called()
             cb_payload = mock_cb.call_args[0][0]
@@ -827,7 +827,7 @@ class TestProcessRecordingTask:
         key = _task_key(1, 3)
         _processing_tasks[key] = datetime.now()
 
-        with patch("tools.server._send_callback") as mock_cb:
+        with patch("tools.app.server._send_callback") as mock_cb:
             await srv.process_recording_task(payload)
             mock_cb.assert_called()
             cb_payload = mock_cb.call_args[0][0]
@@ -850,12 +850,12 @@ class TestProcessRecordingTask:
 
         with (
             patch.object(srv, "TMP_DIR", tmp_path),
-            patch("tools.server._download_recording", side_effect=fake_download),
-            patch("tools.server.get_drive_service", return_value=MagicMock()),
-            patch("tools.server.ensure_folder", return_value="lec_folder_id"),
-            patch("tools.server.upload_file", return_value="file_id_123"),
-            patch("tools.server.transcribe_and_index", return_value={"chunks": 5}),
-            patch("tools.server._send_callback") as mock_cb,
+            patch("tools.app.server._download_recording", side_effect=fake_download),
+            patch("tools.app.server.get_drive_service", return_value=MagicMock()),
+            patch("tools.app.server.ensure_folder", return_value="lec_folder_id"),
+            patch("tools.app.server.upload_file", return_value="file_id_123"),
+            patch("tools.app.server.transcribe_and_index", return_value={"chunks": 5}),
+            patch("tools.app.server._send_callback") as mock_cb,
         ):
             await srv.process_recording_task(payload)
             mock_cb.assert_called_once()
@@ -879,8 +879,8 @@ class TestProcessRecordingTask:
 
         with (
             patch.object(srv, "TMP_DIR", tmp_path),
-            patch("tools.server._download_recording", side_effect=failing_download),
-            patch("tools.server._send_callback") as mock_cb,
+            patch("tools.app.server._download_recording", side_effect=failing_download),
+            patch("tools.app.server._send_callback") as mock_cb,
         ):
             await srv.process_recording_task(payload)
             mock_cb.assert_called_once()
@@ -906,12 +906,12 @@ class TestProcessRecordingTask:
 
         with (
             patch.object(srv, "TMP_DIR", tmp_path),
-            patch("tools.server._download_recording", side_effect=fake_download),
-            patch("tools.server.get_drive_service", return_value=MagicMock()),
-            patch("tools.server.ensure_folder", return_value="fid"),
-            patch("tools.server.upload_file", return_value="uid"),
-            patch("tools.server.transcribe_and_index", return_value={"c": 1}),
-            patch("tools.server._send_callback"),
+            patch("tools.app.server._download_recording", side_effect=fake_download),
+            patch("tools.app.server.get_drive_service", return_value=MagicMock()),
+            patch("tools.app.server.ensure_folder", return_value="fid"),
+            patch("tools.app.server.upload_file", return_value="uid"),
+            patch("tools.app.server.transcribe_and_index", return_value={"c": 1}),
+            patch("tools.app.server._send_callback"),
         ):
             await srv.process_recording_task(payload)
 
@@ -956,7 +956,7 @@ class TestDownloadRecording:
         mock_client.__aenter__ = lambda self: async_return(mock_client)
         mock_client.__aexit__ = lambda self, *a: async_return(False)
 
-        with patch("tools.server.httpx.AsyncClient", return_value=mock_client):
+        with patch("tools.app.server.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(ValueError, match="untrusted host"):
                 await srv._download_recording("https://zoom.us/rec/test.mp4", "tok", dest)
 
@@ -987,7 +987,7 @@ class TestDownloadRecording:
         mock_client.__aenter__ = lambda self: async_return(mock_client)
         mock_client.__aexit__ = lambda self, *a: async_return(False)
 
-        with patch("tools.server.httpx.AsyncClient", return_value=mock_client):
+        with patch("tools.app.server.httpx.AsyncClient", return_value=mock_client):
             await srv._download_recording("https://zoom.us/rec/test.mp4", "tok", dest)
 
         assert dest.exists()
@@ -1021,7 +1021,7 @@ class TestDownloadRecording:
         mock_client.__aenter__ = lambda self: async_return(mock_client)
         mock_client.__aexit__ = lambda self, *a: async_return(False)
 
-        with patch("tools.server.httpx.AsyncClient", return_value=mock_client):
+        with patch("tools.app.server.httpx.AsyncClient", return_value=mock_client):
             await srv._download_recording("https://zoom.us/rec/test.mp4", "tok", dest)
 
         assert dest.read_bytes() == b"chunk1chunk2"
@@ -1067,7 +1067,7 @@ class TestSendCallback:
         with (
             patch.object(srv, "N8N_CALLBACK_URL", "https://n8n.example.com/webhook"),
             patch.object(srv, "WEBHOOK_SECRET", "my-secret"),
-            patch("tools.server.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.app.server.httpx.AsyncClient", return_value=mock_client),
         ):
             await srv._send_callback(self._make_cb_payload())
 
@@ -1101,7 +1101,7 @@ class TestSendCallback:
         with (
             patch.object(srv, "N8N_CALLBACK_URL", "https://n8n.example.com/webhook"),
             patch.object(srv, "WEBHOOK_SECRET", ""),
-            patch("tools.server.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.app.server.httpx.AsyncClient", return_value=mock_client),
             patch("asyncio.sleep", return_value=async_return(None)),
         ):
             await srv._send_callback(self._make_cb_payload())
@@ -1130,7 +1130,7 @@ class TestSendCallback:
         with (
             patch.object(srv, "N8N_CALLBACK_URL", "https://n8n.example.com/webhook"),
             patch.object(srv, "WEBHOOK_SECRET", ""),
-            patch("tools.server.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.app.server.httpx.AsyncClient", return_value=mock_client),
         ):
             await srv._send_callback(self._make_cb_payload())
 
@@ -1147,7 +1147,7 @@ class TestHandleAssistantMessage:
     """Tests for _handle_assistant_message background task."""
 
     def _make_message(self):
-        from tools.whatsapp_assistant import IncomingMessage
+        from tools.services.whatsapp_assistant import IncomingMessage
         return IncomingMessage(
             chat_id="995599000001@c.us",
             sender_id="995599000001@c.us",

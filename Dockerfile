@@ -37,7 +37,7 @@ COPY tools/ ./tools/
 COPY workflows/ ./workflows/
 
 # Create writable directories and set ownership
-RUN mkdir -p .tmp logs && chown -R agent:agent /app
+RUN mkdir -p .tmp logs data && chown -R agent:agent /app
 
 USER agent
 
@@ -54,4 +54,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:${PORT:-5001}/health || exit 1
 
 # Run the unified orchestrator (APScheduler + FastAPI)
-CMD ["python", "-m", "tools.orchestrator"]
+CMD ["python", "-m", "tools.app.orchestrator"]

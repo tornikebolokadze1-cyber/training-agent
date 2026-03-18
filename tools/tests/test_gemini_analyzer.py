@@ -25,7 +25,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.gemini_analyzer as ga
+import tools.integrations.gemini_analyzer as ga
 
 
 # ===========================================================================
@@ -47,7 +47,7 @@ class TestGetClientCaching:
     """_get_client must return the same instance on repeated calls for the
     same API key and must instantiate genai.Client exactly once per key.
 
-    We patch "tools.gemini_analyzer.genai.Client" via string path (create=True)
+    We patch "tools.integrations.gemini_analyzer.genai.Client" via string path (create=True)
     so the patch is applied to the exact name that _get_client calls, regardless
     of how the stub module was set up in a shared pytest session.
     """
@@ -61,7 +61,7 @@ class TestGetClientCaching:
 
         with patch.object(ga, "GEMINI_API_KEY_PAID", "paid-key-abc"), \
              patch.object(ga, "GEMINI_API_KEY", "free-key-xyz"), \
-             patch("tools.gemini_analyzer.genai.Client", mock_genai_client,
+             patch("tools.integrations.gemini_analyzer.genai.Client", mock_genai_client,
                    create=True):
 
             first = ga._get_client(use_free=False)
@@ -77,7 +77,7 @@ class TestGetClientCaching:
 
         with patch.object(ga, "GEMINI_API_KEY", "free-key-xyz"), \
              patch.object(ga, "GEMINI_API_KEY_PAID", ""), \
-             patch("tools.gemini_analyzer.genai.Client", mock_genai_client,
+             patch("tools.integrations.gemini_analyzer.genai.Client", mock_genai_client,
                    create=True):
 
             first = ga._get_client(use_free=True)
@@ -97,7 +97,7 @@ class TestGetClientCaching:
 
         with patch.object(ga, "GEMINI_API_KEY_PAID", "paid-key-abc"), \
              patch.object(ga, "GEMINI_API_KEY", "free-key-xyz"), \
-             patch("tools.gemini_analyzer.genai.Client", mock_genai_client,
+             patch("tools.integrations.gemini_analyzer.genai.Client", mock_genai_client,
                    create=True):
 
             result_paid = ga._get_client(use_free=False)
@@ -126,7 +126,7 @@ class TestGetAnthropicClientCaching:
     """_get_anthropic_client must return the same singleton instance on every
     call and must call anthropic.Anthropic() exactly once.
 
-    We patch "tools.gemini_analyzer.anthropic.Anthropic" via string path so
+    We patch "tools.integrations.gemini_analyzer.anthropic.Anthropic" via string path so
     the patch lands on the exact binding used inside the module, not on the
     shared stub object which may or may not be the same reference in a
     combined test session.
@@ -140,7 +140,7 @@ class TestGetAnthropicClientCaching:
         mock_constructor = MagicMock(return_value=fake_client)
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-anthropic-key"), \
-             patch("tools.gemini_analyzer.anthropic.Anthropic", mock_constructor,
+             patch("tools.integrations.gemini_analyzer.anthropic.Anthropic", mock_constructor,
                    create=True):
 
             first = ga._get_anthropic_client()
@@ -159,7 +159,7 @@ class TestGetAnthropicClientCaching:
         mock_constructor = MagicMock(return_value=fake_client)
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "my-secret-key"), \
-             patch("tools.gemini_analyzer.anthropic.Anthropic", mock_constructor,
+             patch("tools.integrations.gemini_analyzer.anthropic.Anthropic", mock_constructor,
                    create=True):
             ga._get_anthropic_client()
 
@@ -252,8 +252,8 @@ class TestAnalyzeLectureQualityGates:
         with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
              patch.object(ga, "_claude_reason_all",
                           side_effect=RuntimeError("Claude API error")), \
-             patch("tools.whatsapp_sender.alert_operator", mock_alert), \
-             patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
+             patch("tools.integrations.whatsapp_sender.alert_operator", mock_alert), \
+             patch("tools.integrations.gemini_analyzer.alert_operator", mock_alert, create=True):
             result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
         return result, mock_alert
 
@@ -270,8 +270,8 @@ class TestAnalyzeLectureQualityGates:
         with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
              patch.object(ga, "_claude_reason_all", return_value=claude_output), \
              patch.object(ga, "_gemini_write_georgian", side_effect=_write_side_effect), \
-             patch("tools.whatsapp_sender.alert_operator", mock_alert), \
-             patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
+             patch("tools.integrations.whatsapp_sender.alert_operator", mock_alert), \
+             patch("tools.integrations.gemini_analyzer.alert_operator", mock_alert, create=True):
             result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
         return result, mock_alert
 
@@ -318,8 +318,8 @@ class TestAnalyzeLectureQualityGates:
         with patch.object(ga, "transcribe_chunked_video", return_value=("transcript text", False)), \
              patch.object(ga, "_claude_reason_all", return_value=claude_output), \
              patch.object(ga, "_gemini_write_georgian", return_value="georgian text"), \
-             patch("tools.whatsapp_sender.alert_operator", mock_alert), \
-             patch("tools.gemini_analyzer.alert_operator", mock_alert, create=True):
+             patch("tools.integrations.whatsapp_sender.alert_operator", mock_alert), \
+             patch("tools.integrations.gemini_analyzer.alert_operator", mock_alert, create=True):
             result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
         assert result["summary"] == "georgian text"
         assert mock_alert.call_count == 0
@@ -364,8 +364,8 @@ class TestAnalyzeLectureDictStructure:
                           return_value=("transcript", False)), \
              patch.object(ga, "_claude_reason_all",
                           side_effect=RuntimeError("fail")), \
-             patch("tools.whatsapp_sender.alert_operator", MagicMock()), \
-             patch("tools.gemini_analyzer.alert_operator", MagicMock(), create=True):
+             patch("tools.integrations.whatsapp_sender.alert_operator", MagicMock()), \
+             patch("tools.integrations.gemini_analyzer.alert_operator", MagicMock(), create=True):
             result = ga.analyze_lecture(Path("/fake/lecture.mp4"))
 
         assert set(result.keys()) == self.EXPECTED_KEYS
@@ -440,7 +440,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "short.mp4"
         video.write_bytes(b"\x00" * 1000)
 
-        with patch("tools.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
             # ffprobe returns 30 minutes
             mock_run.return_value = MagicMock(returncode=0, stdout="1800.0\n", stderr="")
             result = ga.split_video_chunks(video)
@@ -461,7 +461,7 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)  # >100KB
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run):
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
             result = ga.split_video_chunks(video)
 
         assert len(result) == 3
@@ -472,7 +472,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "zero.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="0.0\n", stderr="")
             with pytest.raises(ValueError, match="zero or negative"):
                 ga.split_video_chunks(video)
@@ -481,7 +481,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "neg.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="-5.0\n", stderr="")
             with pytest.raises(ValueError, match="zero or negative"):
                 ga.split_video_chunks(video)
@@ -502,7 +502,7 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
             ga.split_video_chunks(video)
 
         # ffprobe call + ffmpeg for chunk1 and chunk2 only (chunk0 reused)
@@ -525,7 +525,7 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
             ga.split_video_chunks(video)
 
         # All 3 chunks should have ffmpeg calls (chunk0 was recreated)
@@ -536,7 +536,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "bad.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="No such file")
             with pytest.raises(RuntimeError, match="ffprobe failed"):
                 ga.split_video_chunks(video)
@@ -550,7 +550,7 @@ class TestSplitVideoChunks:
                 return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
             return MagicMock(returncode=1, stdout="", stderr="encoding error")
 
-        with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run):
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="ffmpeg chunk"):
                 ga.split_video_chunks(video)
 
@@ -665,7 +665,7 @@ class TestWaitForProcessing:
 
         with patch.object(ga, "FILE_POLL_TIMEOUT", 20), \
              patch.object(ga, "FILE_POLL_INTERVAL", 10), \
-             patch("tools.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"):
             with pytest.raises(TimeoutError, match="timed out"):
                 ga.wait_for_processing(client, "files/abc")
 
@@ -675,7 +675,7 @@ class TestWaitForProcessing:
 
         with patch.object(ga, "FILE_POLL_TIMEOUT", 600), \
              patch.object(ga, "FILE_POLL_INTERVAL", 1), \
-             patch("tools.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"):
             with pytest.raises(RuntimeError, match="Too many consecutive errors"):
                 ga.wait_for_processing(client, "files/abc")
 
@@ -691,7 +691,7 @@ class TestWaitForProcessing:
             file_info_active,
         ]
 
-        with patch("tools.gemini_analyzer.time.sleep"):
+        with patch("tools.integrations.gemini_analyzer.time.sleep"):
             result = ga.wait_for_processing(client, "files/abc")
 
         assert result is file_info_active
@@ -717,7 +717,7 @@ class TestGenerateWithRetry:
         client = MagicMock()
         client.models.generate_content.return_value = self._make_response("hello")
 
-        with patch("tools.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+        with patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             result = ga._generate_with_retry(
                 client, "model-x", ["content"], "test purpose"
             )
@@ -729,8 +729,8 @@ class TestGenerateWithRetry:
         client = MagicMock()
         client.models.generate_content.return_value = resp
 
-        with patch("tools.gemini_analyzer.time.sleep"), \
-             patch("tools.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+        with patch("tools.integrations.gemini_analyzer.time.sleep"), \
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test purpose"
@@ -742,8 +742,8 @@ class TestGenerateWithRetry:
         client = MagicMock()
         client.models.generate_content.return_value = resp
 
-        with patch("tools.gemini_analyzer.time.sleep"), \
-             patch("tools.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+        with patch("tools.integrations.gemini_analyzer.time.sleep"), \
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test purpose"
@@ -758,7 +758,7 @@ class TestGenerateWithRetry:
 
         with patch.object(ga, "_get_client", return_value=free_client), \
              patch.object(ga, "GEMINI_API_KEY", "free-key"), \
-             patch("tools.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             result = ga._generate_with_retry(
                 paid_client, "model-x", ["content"], "test",
                 use_free=False,
@@ -770,9 +770,9 @@ class TestGenerateWithRetry:
         client = MagicMock()
         client.models.generate_content.side_effect = Exception("server error")
 
-        with patch("tools.gemini_analyzer.time.sleep"), \
+        with patch("tools.integrations.gemini_analyzer.time.sleep"), \
              patch.object(ga, "GEMINI_API_KEY", ""), \
-             patch("tools.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test",
@@ -851,7 +851,7 @@ class TestClaudeReasonRateLimit:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.gemini_analyzer.time.sleep") as mock_sleep:
+             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep:
             result = ga._claude_reason("transcript", "prompt", "test")
 
         assert result == "analysis result"
@@ -864,7 +864,7 @@ class TestClaudeReasonRateLimit:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"):
             with pytest.raises(RuntimeError, match="rate limit"):
                 ga._claude_reason("transcript", "prompt", "test")
 
@@ -995,7 +995,7 @@ class TestGetClientPaidFallback:
 
         with patch.object(ga, "GEMINI_API_KEY_PAID", ""), \
              patch.object(ga, "GEMINI_API_KEY", "free-key-123"), \
-             patch("tools.gemini_analyzer.genai.Client", mock_genai_client, create=True):
+             patch("tools.integrations.gemini_analyzer.genai.Client", mock_genai_client, create=True):
             result = ga._get_client(use_free=False)
 
         assert result is fake_client
@@ -1007,7 +1007,7 @@ class TestGetClientPaidFallback:
 
         with patch.object(ga, "GEMINI_API_KEY_PAID", ""), \
              patch.object(ga, "GEMINI_API_KEY", "free-key-123"), \
-             patch("tools.gemini_analyzer.genai.Client", mock_genai_client, create=True):
+             patch("tools.integrations.gemini_analyzer.genai.Client", mock_genai_client, create=True):
             first = ga._get_client(use_free=False)
             second = ga._get_client(use_free=False)
 
@@ -1047,7 +1047,7 @@ class TestClaudeReasonGenericRetry:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.gemini_analyzer.time.sleep") as mock_sleep:
+             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep:
             result = ga._claude_reason("transcript", "prompt", "test")
 
         assert result == "result"
@@ -1059,7 +1059,7 @@ class TestClaudeReasonGenericRetry:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"):
             with pytest.raises(RuntimeError, match="failed after 5 attempts"):
                 ga._claude_reason("transcript", "prompt", "test")
 
@@ -1191,7 +1191,7 @@ class TestAnalyzeLectureAlertImport:
 
 
 def _selective_import_error(name, *args, **kwargs):
-    """Allow all imports except tools.whatsapp_sender."""
-    if name == "tools.whatsapp_sender":
+    """Allow all imports except tools.integrations.whatsapp_sender."""
+    if name == "tools.integrations.whatsapp_sender":
         raise ImportError("simulated import failure")
     return __builtins__.__import__(name, *args, **kwargs)  # type: ignore[attr-defined]

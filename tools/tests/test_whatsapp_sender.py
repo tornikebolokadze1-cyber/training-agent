@@ -24,7 +24,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.whatsapp_sender as ws
+import tools.integrations.whatsapp_sender as ws
 
 
 # ===========================================================================
@@ -107,7 +107,7 @@ class TestSendRequest:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client):
+        with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
             result = ws._send_request("sendMessage", {"chatId": "x"}, "test")
 
         assert result == {"idMessage": "msg-123"}
@@ -129,7 +129,7 @@ class TestSendRequest:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client):
+        with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
             with pytest.raises(RuntimeError, match="HTTP 400"):
                 ws._send_request("sendMessage", {}, "test")
 
@@ -142,8 +142,8 @@ class TestSendRequest:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.side_effect = ConnectionError("Network down")
 
-        with patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client), \
-             patch("tools.whatsapp_sender.time.sleep"):
+        with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client), \
+             patch("tools.integrations.whatsapp_sender.time.sleep"):
             with pytest.raises(RuntimeError, match="failed after"):
                 ws._send_request("sendMessage", {}, "test send")
 
@@ -164,8 +164,8 @@ class TestSendRequest:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.side_effect = [fail_response, ok_response]
 
-        with patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client), \
-             patch("tools.whatsapp_sender.time.sleep"):
+        with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client), \
+             patch("tools.integrations.whatsapp_sender.time.sleep"):
             result = ws._send_request("sendMessage", {}, "test")
 
         assert result == {"idMessage": "ok"}
@@ -194,7 +194,7 @@ class TestSendMessageToChat:
             return {"idMessage": f"m{call_count[0]}"}
 
         with patch.object(ws, "_send_request", side_effect=fake_send), \
-             patch("tools.whatsapp_sender.time.sleep"):
+             patch("tools.integrations.whatsapp_sender.time.sleep"):
             ws.send_message_to_chat("chat@c.us", long_text)
 
         assert call_count[0] > 1
@@ -351,7 +351,7 @@ class TestConfigureWebhook:
         with patch.object(ws, "GREEN_API_INSTANCE_ID", "inst"), \
              patch.object(ws, "GREEN_API_TOKEN", "tok"), \
              patch.object(ws, "WEBHOOK_SECRET", "secret"), \
-             patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
 
             result = ws.configure_webhook("https://example.com/hook")
 
@@ -385,7 +385,7 @@ class TestGetWebhookSettings:
 
         with patch.object(ws, "GREEN_API_INSTANCE_ID", "i"), \
              patch.object(ws, "GREEN_API_TOKEN", "t"), \
-             patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
 
             result = ws.get_webhook_settings()
 
@@ -415,7 +415,7 @@ class TestListGroups:
 
         with patch.object(ws, "GREEN_API_INSTANCE_ID", "i"), \
              patch.object(ws, "GREEN_API_TOKEN", "t"), \
-             patch("tools.whatsapp_sender.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
 
             groups = ws.list_groups()
 

@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lecture Comparison — Trainer Analytics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #06080f;
+    --card: rgba(17, 24, 39, 0.7);
+    --border: rgba(255, 255, 255, 0.06);
+    --accent: #6366f1;
+    --good: #34d399;
+    --mid: #fbbf24;
+    --bad: #f87171;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --accent-glow: rgba(99, 102, 241, 0.15);
+    --good-glow: rgba(52, 211, 153, 0.12);
+    --bad-glow: rgba(248, 113, 113, 0.12);
+    --radius: 16px;
+    --radius-sm: 10px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 40px 24px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .dashboard { max-width: 1200px; margin: 0 auto; }
+
+  .header { margin-bottom: 40px; text-align: center; }
+
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #e2e8f0 0%, #6366f1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 6px;
+  }
+
+  .header .subtitle {
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .selector-row {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-bottom: 36px;
+    flex-wrap: wrap;
+  }
+
+  .selector-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .selector-group label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .selector-group select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 36px 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2394a3b8' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .selector-group select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+
+  .vs-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--accent-glow);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    backdrop-filter: blur(12px);
+    transition: border-color 0.25s;
+  }
+
+  .card:hover { border-color: rgba(255, 255, 255, 0.1); }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title .icon { width: 18px; height: 18px; opacity: 0.6; }
+
+  .grid-top {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+
+  .grid-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+
+  .full-width { grid-column: 1 / -1; }
+
+  /* Comparison Table */
+  .comparison-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .comparison-table thead th {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    padding: 0 12px 14px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comparison-table thead th:first-child { text-align: left; }
+
+  .comparison-table tbody td {
+    padding: 14px 12px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+
+  .comparison-table tbody tr:last-child td { border-bottom: none; }
+  .comparison-table tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+  .comparison-table tbody td:first-child {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 13px;
+  }
+
+  .comparison-table .composite-row td {
+    padding-top: 18px;
+    font-weight: 700;
+    font-size: 15px;
+  }
+
+  .comparison-table .composite-row td:first-child {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .score-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .score-pill.high { background: var(--good-glow); color: var(--good); }
+  .score-pill.mid  { background: rgba(251, 191, 36, 0.12); color: var(--mid); }
+  .score-pill.low  { background: var(--bad-glow); color: var(--bad); }
+
+  .delta-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .delta-cell.positive { color: var(--good); }
+  .delta-cell.negative { color: var(--bad); }
+  .delta-cell.neutral  { color: var(--text-dim); }
+
+  .delta-arrow { font-size: 10px; line-height: 1; }
+
+  /* Radar */
+  .radar-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .radar-wrap canvas { max-width: 100%; max-height: 340px; }
+
+  .radar-legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 16px;
+  }
+
+  .radar-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .radar-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Improvement Summary */
+  .summary-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .summary-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+
+  .summary-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .summary-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .summary-badge.up   { background: var(--good-glow); color: var(--good); }
+  .summary-badge.down { background: var(--bad-glow); color: var(--bad); }
+  .summary-badge.flat { background: rgba(100, 116, 139, 0.12); color: var(--text-dim); }
+
+  .summary-text {
+    flex: 1;
+    font-size: 14px;
+    color: var(--text);
+  }
+
+  .summary-text .dim-name { font-weight: 600; }
+
+  .summary-text .highlight {
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  .summary-text .highlight.good { background: var(--good-glow); color: var(--good); }
+  .summary-text .highlight.bad  { background: var(--bad-glow); color: var(--bad); }
+
+  .summary-tag {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .summary-tag.gain { background: var(--good-glow); color: var(--good); }
+  .summary-tag.drop { background: var(--bad-glow); color: var(--bad); }
+
+  /* Delta Bars */
+  .delta-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .delta-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .delta-bar-label {
+    width: 120px;
+    font-size: 13px;
+    color: var(--text-muted);
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .delta-bar-track {
+    flex: 1;
+    height: 28px;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .delta-bar-center {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .delta-bar-fill {
+    position: absolute;
+    height: 20px;
+    border-radius: 4px;
+    transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .delta-bar-fill.positive {
+    left: 50%;
+    background: linear-gradient(90deg, rgba(52, 211, 153, 0.3), rgba(52, 211, 153, 0.6));
+    border: 1px solid rgba(52, 211, 153, 0.3);
+  }
+
+  .delta-bar-fill.negative {
+    right: 50%;
+    background: linear-gradient(270deg, rgba(248, 113, 113, 0.3), rgba(248, 113, 113, 0.6));
+    border: 1px solid rgba(248, 113, 113, 0.3);
+  }
+
+  .delta-bar-value {
+    width: 60px;
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .delta-bar-value.positive { color: var(--good); }
+  .delta-bar-value.negative { color: var(--bad); }
+  .delta-bar-value.neutral  { color: var(--text-dim); }
+
+  /* Follow-through */
+  .followthrough-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+    min-height: 200px;
+  }
+
+  .followthrough-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: var(--accent-glow);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+
+  .followthrough-icon svg { width: 24px; height: 24px; color: var(--accent); }
+
+  .followthrough-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  .followthrough-desc {
+    font-size: 13px;
+    color: var(--text-dim);
+    max-width: 360px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+
+  .followthrough-items {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 420px;
+  }
+
+  .followthrough-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .followthrough-check {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1.5px solid rgba(255, 255, 255, 0.12);
+    flex-shrink: 0;
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .grid-top, .grid-bottom { grid-template-columns: 1fr; }
+    .selector-row { flex-direction: column; align-items: center; }
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 20px 12px; }
+    .card { padding: 20px 16px; }
+    .delta-bar-label { width: 80px; font-size: 11px; }
+  }
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .card { animation: fadeInUp 0.5s ease-out both; }
+  .grid-top .card:nth-child(1) { animation-delay: 0.05s; }
+  .grid-top .card:nth-child(2) { animation-delay: 0.1s; }
+  .grid-bottom .card:nth-child(1) { animation-delay: 0.15s; }
+  .grid-bottom .card:nth-child(2) { animation-delay: 0.2s; }
+  .full-width.card { animation-delay: 0.25s; }
+</style>
+</head>
+<body>
+
+<div class="dashboard">
+
+  <div class="header">
+    <h1>Lecture Comparison</h1>
+    <p class="subtitle">Side-by-side performance analysis across 5 scored dimensions</p>
+  </div>
+
+  <div class="selector-row">
+    <div class="selector-group">
+      <label for="select-a">Baseline</label>
+      <select id="select-a" aria-label="Select baseline lecture"></select>
+    </div>
+    <div class="vs-badge" aria-hidden="true">VS</div>
+    <div class="selector-group">
+      <label for="select-b">Compare</label>
+      <select id="select-b" aria-label="Select comparison lecture"></select>
+    </div>
+  </div>
+
+  <!-- Row 1 -->
+  <div class="grid-top">
+
+    <div class="card" id="card-comparison">
+      <div class="card-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Dimension Scores
+      </div>
+      <table class="comparison-table" role="table" aria-label="Dimension score comparison">
+        <thead>
+          <tr>
+            <th scope="col">Dimension</th>
+            <th scope="col" id="th-a">G2 L1</th>
+            <th scope="col" id="th-b">G2 L2</th>
+            <th scope="col">Delta</th>
+          </tr>
+        </thead>
+        <tbody id="comparison-body"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="card-radar">
+      <div class="card-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="22" y1="8.5" x2="2" y2="15.5"/><line x1="2" y1="8.5" x2="22" y2="15.5"/></svg>
+        Radar Overlay
+      </div>
+      <div class="radar-wrap">
+        <canvas id="radarChart" aria-label="Radar chart comparing two lectures"></canvas>
+      </div>
+      <div class="radar-legend">
+        <div class="radar-legend-item">
+          <div class="radar-legend-dot" style="background: rgba(99,102,241,0.7);"></div>
+          <span id="legend-a">G2 L1</span>
+        </div>
+        <div class="radar-legend-item">
+          <div class="radar-legend-dot" style="background: rgba(52,211,153,0.7);"></div>
+          <span id="legend-b">G2 L2</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2 -->
+  <div class="grid-bottom">
+
+    <div class="card" id="card-summary">
+      <div class="card-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        Improvement Summary
+      </div>
+      <ul class="summary-list" id="summary-list" aria-label="Improvement summary"></ul>
+    </div>
+
+    <div class="card" id="card-delta">
+      <div class="card-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+        Change per Dimension
+      </div>
+      <div class="delta-bars" id="delta-bars" role="img" aria-label="Delta bar chart showing change per dimension"></div>
+    </div>
+  </div>
+
+  <!-- Full Width -->
+  <div class="card full-width" id="card-followthrough">
+    <div class="card-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      Recommendation Follow-through
+    </div>
+    <div class="followthrough-placeholder">
+      <div class="followthrough-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      </div>
+      <div class="followthrough-title">Track Recommendation Adoption</div>
+      <p class="followthrough-desc">
+        After each lecture analysis, actionable recommendations are generated.
+        This section will track whether those suggestions were adopted in subsequent lectures.
+      </p>
+      <div class="followthrough-items">
+        <div class="followthrough-item">
+          <div class="followthrough-check"></div>
+          Add more hands-on coding exercises (from L1 report)
+        </div>
+        <div class="followthrough-item">
+          <div class="followthrough-check"></div>
+          Increase Q&amp;A interaction frequency (from L1 report)
+        </div>
+        <div class="followthrough-item">
+          <div class="followthrough-check"></div>
+          Include real-world Georgian market case studies (from L1 report)
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var DIMENSIONS = [
+    { key: 'depth',      label: 'Content Depth' },
+    { key: 'practical',  label: 'Practical Value' },
+    { key: 'engagement', label: 'Engagement' },
+    { key: 'tech',       label: 'Technical Rigor' },
+    { key: 'market',     label: 'Market Relevance' },
+  ];
+
+  var LECTURES = {
+    'G1L1':  { group: 1, num: 1,  depth: 5, practical: 5, engagement: 6, tech: 6, market: 5 },
+    'G1L2':  { group: 1, num: 2,  depth: 6, practical: 6, engagement: 6, tech: 7, market: 6 },
+    'G1L3':  { group: 1, num: 3,  depth: 6, practical: 7, engagement: 7, tech: 6, market: 7 },
+    'G1L4':  { group: 1, num: 4,  depth: 7, practical: 7, engagement: 7, tech: 7, market: 7 },
+    'G1L5':  { group: 1, num: 5,  depth: 7, practical: 8, engagement: 6, tech: 7, market: 8 },
+    'G1L6':  { group: 1, num: 6,  depth: 8, practical: 7, engagement: 8, tech: 8, market: 7 },
+    'G1L7':  { group: 1, num: 7,  depth: 7, practical: 8, engagement: 7, tech: 7, market: 8 },
+    'G1L8':  { group: 1, num: 8,  depth: 8, practical: 8, engagement: 8, tech: 8, market: 8 },
+    'G1L9':  { group: 1, num: 9,  depth: 8, practical: 9, engagement: 7, tech: 8, market: 9 },
+    'G1L10': { group: 1, num: 10, depth: 9, practical: 8, engagement: 9, tech: 9, market: 8 },
+    'G1L11': { group: 1, num: 11, depth: 8, practical: 9, engagement: 8, tech: 8, market: 9 },
+    'G1L12': { group: 1, num: 12, depth: 9, practical: 9, engagement: 9, tech: 9, market: 9 },
+    'G1L13': { group: 1, num: 13, depth: 9, practical: 8, engagement: 8, tech: 9, market: 8 },
+    'G1L14': { group: 1, num: 14, depth: 9, practical: 9, engagement: 9, tech: 9, market: 9 },
+    'G1L15': { group: 1, num: 15, depth:10, practical:10, engagement: 9, tech:10, market:10 },
+    'G2L1':  { group: 2, num: 1,  depth: 4, practical: 6, engagement: 5, tech: 5, market: 7 },
+    'G2L2':  { group: 2, num: 2,  depth: 5, practical: 6, engagement: 7, tech: 5, market: 7 },
+    'G2L3':  { group: 2, num: 3,  depth: 6, practical: 7, engagement: 6, tech: 6, market: 7 },
+    'G2L4':  { group: 2, num: 4,  depth: 6, practical: 7, engagement: 7, tech: 7, market: 8 },
+    'G2L5':  { group: 2, num: 5,  depth: 7, practical: 7, engagement: 7, tech: 7, market: 8 },
+    'G2L6':  { group: 2, num: 6,  depth: 7, practical: 8, engagement: 8, tech: 7, market: 8 },
+    'G2L7':  { group: 2, num: 7,  depth: 8, practical: 8, engagement: 7, tech: 8, market: 8 },
+    'G2L8':  { group: 2, num: 8,  depth: 8, practical: 8, engagement: 8, tech: 8, market: 9 },
+    'G2L9':  { group: 2, num: 9,  depth: 8, practical: 9, engagement: 8, tech: 8, market: 9 },
+    'G2L10': { group: 2, num: 10, depth: 9, practical: 9, engagement: 9, tech: 9, market: 9 },
+    'G2L11': { group: 2, num: 11, depth: 9, practical: 9, engagement: 8, tech: 9, market: 9 },
+    'G2L12': { group: 2, num: 12, depth: 9, practical: 9, engagement: 9, tech: 9, market:10 },
+    'G2L13': { group: 2, num: 13, depth: 9, practical:10, engagement: 9, tech:10, market: 9 },
+    'G2L14': { group: 2, num: 14, depth:10, practical: 9, engagement:10, tech: 9, market:10 },
+    'G2L15': { group: 2, num: 15, depth:10, practical:10, engagement:10, tech:10, market:10 },
+  };
+
+  function composite(d) {
+    return +((d.depth + d.practical + d.engagement + d.tech + d.market) / 5).toFixed(1);
+  }
+
+  function formatId(id) {
+    var d = LECTURES[id];
+    return 'Group ' + d.group + ' \u2014 Lecture ' + d.num;
+  }
+
+  function shortId(id) {
+    var d = LECTURES[id];
+    return 'G' + d.group + ' L' + d.num;
+  }
+
+  function scoreClass(v) {
+    if (v >= 7) return 'high';
+    if (v >= 5) return 'mid';
+    return 'low';
+  }
+
+  // Helper: create element with attributes and children
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function(k) {
+        if (k === 'textContent') { node.textContent = attrs[k]; }
+        else if (k === 'className') { node.className = attrs[k]; }
+        else { node.setAttribute(k, attrs[k]); }
+      });
+    }
+    if (children) {
+      children.forEach(function(c) {
+        if (typeof c === 'string') { node.appendChild(document.createTextNode(c)); }
+        else if (c) { node.appendChild(c); }
+      });
+    }
+    return node;
+  }
+
+  // Populate selects
+  var selectA = document.getElementById('select-a');
+  var selectB = document.getElementById('select-b');
+  var keys = Object.keys(LECTURES);
+
+  keys.forEach(function(k) {
+    var optA = el('option', { value: k, textContent: formatId(k) });
+    selectA.appendChild(optA);
+    var optB = el('option', { value: k, textContent: formatId(k) });
+    selectB.appendChild(optB);
+  });
+
+  selectA.value = 'G2L1';
+  selectB.value = 'G2L2';
+
+  var radarChart = null;
+
+  function render() {
+    var idA = selectA.value;
+    var idB = selectB.value;
+    var a = LECTURES[idA];
+    var b = LECTURES[idB];
+    var compA = composite(a);
+    var compB = composite(b);
+    var labelA = shortId(idA);
+    var labelB = shortId(idB);
+
+    document.getElementById('th-a').textContent = labelA;
+    document.getElementById('th-b').textContent = labelB;
+    document.getElementById('legend-a').textContent = labelA;
+    document.getElementById('legend-b').textContent = labelB;
+
+    // --- Comparison Table (DOM-based) ---
+    var tbody = document.getElementById('comparison-body');
+    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+
+    function makeDeltaCell(delta) {
+      var sign = delta > 0 ? '+' : '';
+      var cls = delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral';
+      var arrow = delta > 0 ? '\u25B2' : delta < 0 ? '\u25BC' : '\u2014';
+
+      return el('td', null, [
+        el('span', { className: 'delta-cell ' + cls }, [
+          el('span', { className: 'delta-arrow', textContent: arrow }),
+          ' ' + sign + delta.toFixed(1)
+        ])
+      ]);
+    }
+
+    DIMENSIONS.forEach(function(dim) {
+      var va = a[dim.key];
+      var vb = b[dim.key];
+      var delta = vb - va;
+
+      var tr = el('tr', null, [
+        el('td', { textContent: dim.label }),
+        el('td', null, [el('span', { className: 'score-pill ' + scoreClass(va), textContent: String(va) })]),
+        el('td', null, [el('span', { className: 'score-pill ' + scoreClass(vb), textContent: String(vb) })]),
+        makeDeltaCell(delta)
+      ]);
+      tbody.appendChild(tr);
+    });
+
+    // Composite row
+    var compDelta = +(compB - compA).toFixed(1);
+    var compTr = el('tr', { className: 'composite-row' }, [
+      el('td', { textContent: 'Composite' }),
+      el('td', null, [el('span', { className: 'score-pill ' + scoreClass(compA), textContent: String(compA) })]),
+      el('td', null, [el('span', { className: 'score-pill ' + scoreClass(compB), textContent: String(compB) })]),
+      makeDeltaCell(compDelta)
+    ]);
+    tbody.appendChild(compTr);
+
+    // --- Radar Chart ---
+    var labels = DIMENSIONS.map(function(d) { return d.label; });
+    var dataA = DIMENSIONS.map(function(d) { return a[d.key]; });
+    var dataB = DIMENSIONS.map(function(d) { return b[d.key]; });
+
+    if (radarChart) radarChart.destroy();
+
+    radarChart = new Chart(document.getElementById('radarChart'), {
+      type: 'radar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: labelA,
+            data: dataA,
+            backgroundColor: 'rgba(99, 102, 241, 0.12)',
+            borderColor: 'rgba(99, 102, 241, 0.7)',
+            borderWidth: 2,
+            pointBackgroundColor: 'rgba(99, 102, 241, 0.9)',
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          },
+          {
+            label: labelB,
+            data: dataB,
+            backgroundColor: 'rgba(52, 211, 153, 0.12)',
+            borderColor: 'rgba(52, 211, 153, 0.7)',
+            borderWidth: 2,
+            pointBackgroundColor: 'rgba(52, 211, 153, 0.9)',
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(17, 24, 39, 0.95)',
+            borderColor: 'rgba(255, 255, 255, 0.08)',
+            borderWidth: 1,
+            titleFont: { size: 12, weight: '600' },
+            bodyFont: { size: 12 },
+            padding: 10,
+            cornerRadius: 8,
+          },
+        },
+        scales: {
+          r: {
+            min: 0,
+            max: 10,
+            ticks: {
+              stepSize: 2,
+              color: 'rgba(148, 163, 184, 0.5)',
+              backdropColor: 'transparent',
+              font: { size: 10 },
+            },
+            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+            angleLines: { color: 'rgba(255, 255, 255, 0.05)' },
+            pointLabels: {
+              color: '#94a3b8',
+              font: { size: 11, weight: '500' },
+            },
+          },
+        },
+      },
+    });
+
+    // --- Improvement Summary (DOM-based) ---
+    var deltas = DIMENSIONS.map(function(dim) {
+      return { label: dim.label, delta: +(b[dim.key] - a[dim.key]).toFixed(1) };
+    }).sort(function(x, y) { return Math.abs(y.delta) - Math.abs(x.delta); });
+
+    var summaryList = document.getElementById('summary-list');
+    while (summaryList.firstChild) { summaryList.removeChild(summaryList.firstChild); }
+
+    deltas.forEach(function(item, i) {
+      var sign = item.delta > 0 ? '+' : '';
+      var cls = item.delta > 0 ? 'up' : item.delta < 0 ? 'down' : 'flat';
+      var hCls = item.delta >= 0 ? 'good' : 'bad';
+
+      var badge = el('div', { className: 'summary-badge ' + cls, textContent: sign + item.delta });
+      var nameSpan = el('span', { className: 'dim-name', textContent: item.label });
+      var highlightSpan = el('span', { className: 'highlight ' + hCls, textContent: sign + item.delta.toFixed(1) });
+      var textDiv = el('div', { className: 'summary-text' }, [nameSpan, ' ', highlightSpan]);
+
+      var children = [badge, textDiv];
+
+      if (i === 0 && item.delta !== 0) {
+        var tagCls = item.delta > 0 ? 'gain' : 'drop';
+        var tagText = item.delta > 0 ? 'Biggest Gain' : 'Biggest Drop';
+        children.push(el('span', { className: 'summary-tag ' + tagCls, textContent: tagText }));
+      }
+
+      var li = el('li', { className: 'summary-item' }, children);
+      summaryList.appendChild(li);
+    });
+
+    // --- Delta Bars (DOM-based) ---
+    var maxAbsDelta = Math.max(1, Math.max.apply(null, deltas.map(function(d) { return Math.abs(d.delta); })));
+    var deltaBarsEl = document.getElementById('delta-bars');
+    while (deltaBarsEl.firstChild) { deltaBarsEl.removeChild(deltaBarsEl.firstChild); }
+
+    DIMENSIONS.forEach(function(dim) {
+      var delta = +(b[dim.key] - a[dim.key]).toFixed(1);
+      var pct = (Math.abs(delta) / maxAbsDelta) * 45;
+      var sign = delta > 0 ? '+' : '';
+      var cls = delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral';
+
+      var fill = el('div', { className: 'delta-bar-fill ' + cls });
+      fill.style.width = '0%';
+      fill.setAttribute('data-width', pct + '%');
+
+      var row = el('div', { className: 'delta-bar-row' }, [
+        el('div', { className: 'delta-bar-label', textContent: dim.label }),
+        el('div', { className: 'delta-bar-track' }, [
+          el('div', { className: 'delta-bar-center' }),
+          fill
+        ]),
+        el('div', { className: 'delta-bar-value ' + cls, textContent: sign + delta.toFixed(1) })
+      ]);
+
+      deltaBarsEl.appendChild(row);
+    });
+
+    // Animate bars
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        var fills = document.querySelectorAll('.delta-bar-fill');
+        for (var i = 0; i < fills.length; i++) {
+          fills[i].style.width = fills[i].getAttribute('data-width');
+        }
+      });
+    });
+  }
+
+  selectA.addEventListener('change', render);
+  selectB.addEventListener('change', render);
+  render();
+})();
+</script>
+
+</body>
+</html>

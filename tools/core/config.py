@@ -312,8 +312,8 @@ TMP_DIR.mkdir(exist_ok=True)
 GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-pro"  # Multimodal transcription (video chunked to fit 1M token limit)
 GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest for Georgian text writing
 
-# Prompt templates moved to tools/prompts.py — re-exported for backward compatibility
-from tools.prompts import (  # noqa: F401, E402
+# Prompt templates moved to tools/core/prompts.py — re-exported for backward compatibility
+from tools.core.prompts import (  # noqa: F401, E402
     TRANSCRIPTION_PROMPT,
     TRANSCRIPTION_CONTINUATION_PROMPT,
     SUMMARIZATION_PROMPT,

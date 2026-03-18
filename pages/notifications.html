@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trainer Analytics — Notifications</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+  :root{
+    --bg:#06080f;
+    --card:rgba(17,24,39,0.7);
+    --card-solid:#111827;
+    --accent:#6366f1;
+    --good:#34d399;
+    --mid:#fbbf24;
+    --bad:#f87171;
+    --text:#f1f5f9;
+    --text-dim:#94a3b8;
+    --border:rgba(99,102,241,0.15);
+    --radius:12px;
+  }
+
+  body{
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    min-height:100vh;
+    overflow-x:hidden;
+    line-height:1.5;
+  }
+
+  /* ── Layout ── */
+  .app-layout{
+    display:flex;
+    min-height:100vh;
+  }
+  .main-content{
+    flex:1;
+    padding:48px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:24px;
+  }
+  .main-content h1{
+    font-size:28px;
+    font-weight:700;
+    letter-spacing:-0.5px;
+    margin-bottom:8px;
+  }
+  .main-content p.subtitle{
+    color:var(--text-dim);
+    font-size:14px;
+    margin-bottom:24px;
+  }
+
+  /* ── Demo Trigger Buttons ── */
+  .demo-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:14px;
+    width:100%;
+    max-width:800px;
+  }
+  .demo-btn{
+    position:relative;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:14px 18px;
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    background:var(--card);
+    color:var(--text);
+    font-size:13px;
+    font-weight:500;
+    cursor:pointer;
+    transition:all 0.2s ease;
+    backdrop-filter:blur(12px);
+    text-align:left;
+    line-height:1.4;
+  }
+  .demo-btn:hover{
+    border-color:var(--accent);
+    transform:translateY(-1px);
+    box-shadow:0 4px 20px rgba(99,102,241,0.15);
+  }
+  .demo-btn:active{transform:translateY(0)}
+  .demo-btn .icon{
+    font-size:20px;
+    flex-shrink:0;
+    width:32px;
+    height:32px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:8px;
+  }
+  .demo-btn.warning .icon{background:rgba(251,191,36,0.12);color:var(--mid)}
+  .demo-btn.celebration .icon{background:rgba(52,211,153,0.12);color:var(--good)}
+  .demo-btn.progress .icon{background:rgba(99,102,241,0.12);color:var(--accent)}
+  .demo-btn.danger .icon{background:rgba(248,113,113,0.12);color:var(--bad)}
+  .demo-btn.info .icon{background:rgba(99,102,241,0.12);color:var(--accent)}
+  .demo-btn.all .icon{background:rgba(241,245,249,0.06);color:var(--text-dim)}
+
+  /* ── Toast Container ── */
+  #toast-container{
+    position:fixed;
+    top:20px;
+    right:20px;
+    z-index:9999;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    pointer-events:none;
+    max-height:calc(100vh - 40px);
+    overflow:hidden;
+  }
+
+  /* ── Toast Base ── */
+  .toast{
+    pointer-events:auto;
+    position:relative;
+    display:flex;
+    gap:14px;
+    align-items:flex-start;
+    padding:16px 18px;
+    min-width:380px;
+    max-width:440px;
+    border-radius:var(--radius);
+    background:var(--card-solid);
+    border:1px solid var(--border);
+    backdrop-filter:blur(16px);
+    box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.03);
+    opacity:0;
+    transform:translateX(120%);
+    animation:slideIn 0.4s cubic-bezier(0.16,1,0.3,1) forwards;
+    overflow:hidden;
+  }
+  .toast.dismissing{
+    animation:slideOut 0.35s cubic-bezier(0.55,0,1,0.45) forwards;
+  }
+
+  @keyframes slideIn{
+    to{opacity:1;transform:translateX(0)}
+  }
+  @keyframes slideOut{
+    from{opacity:1;transform:translateX(0)}
+    to{opacity:0;transform:translateX(120%)}
+  }
+
+  /* Progress bar (auto-dismiss timer) */
+  .toast::after{
+    content:'';
+    position:absolute;
+    bottom:0;left:0;
+    height:3px;
+    border-radius:0 0 var(--radius) var(--radius);
+    animation:shrink var(--duration,5s) linear forwards;
+  }
+  .toast:hover::after{animation-play-state:paused}
+
+  @keyframes shrink{
+    from{width:100%}to{width:0%}
+  }
+
+  /* Type-specific left border + progress bar color */
+  .toast.warning{border-left:3px solid var(--mid)}
+  .toast.warning::after{background:var(--mid)}
+
+  .toast.celebration{border-left:3px solid var(--good)}
+  .toast.celebration::after{background:var(--good)}
+
+  .toast.progress{border-left:3px solid var(--accent)}
+  .toast.progress::after{background:var(--accent)}
+
+  .toast.danger{border-left:3px solid var(--bad)}
+  .toast.danger::after{background:var(--bad)}
+
+  .toast.info{border-left:3px solid var(--accent)}
+  .toast.info::after{background:var(--accent)}
+
+  /* Toast icon */
+  .toast-icon{
+    width:36px;height:36px;
+    border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:18px;
+    flex-shrink:0;
+    margin-top:1px;
+  }
+  .toast.warning .toast-icon{background:rgba(251,191,36,0.1);color:var(--mid)}
+  .toast.celebration .toast-icon{background:rgba(52,211,153,0.1);color:var(--good)}
+  .toast.progress .toast-icon{background:rgba(99,102,241,0.1);color:var(--accent)}
+  .toast.danger .toast-icon{background:rgba(248,113,113,0.1);color:var(--bad)}
+  .toast.info .toast-icon{background:rgba(99,102,241,0.1);color:var(--accent)}
+
+  /* Toast body */
+  .toast-body{flex:1;min-width:0}
+  .toast-title{
+    font-size:13px;
+    font-weight:600;
+    margin-bottom:3px;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  .toast-title .badge{
+    font-size:10px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.5px;
+    padding:2px 6px;
+    border-radius:4px;
+  }
+  .toast.warning .badge{background:rgba(251,191,36,0.15);color:var(--mid)}
+  .toast.celebration .badge{background:rgba(52,211,153,0.15);color:var(--good)}
+  .toast.progress .badge{background:rgba(99,102,241,0.15);color:var(--accent)}
+  .toast.danger .badge{background:rgba(248,113,113,0.15);color:var(--bad)}
+  .toast.info .badge{background:rgba(99,102,241,0.15);color:var(--accent)}
+
+  .toast-msg{
+    font-size:12.5px;
+    color:var(--text-dim);
+    line-height:1.5;
+  }
+  .toast-time{
+    font-size:11px;
+    color:rgba(148,163,184,0.5);
+    margin-top:4px;
+  }
+
+  /* Close button */
+  .toast-close{
+    position:absolute;
+    top:10px;right:10px;
+    width:24px;height:24px;
+    border:none;
+    background:rgba(241,245,249,0.05);
+    color:var(--text-dim);
+    border-radius:6px;
+    cursor:pointer;
+    font-size:14px;
+    display:flex;align-items:center;justify-content:center;
+    transition:all 0.15s ease;
+    opacity:0;
+  }
+  .toast:hover .toast-close{opacity:1}
+  .toast-close:hover{
+    background:rgba(241,245,249,0.1);
+    color:var(--text);
+  }
+
+  /* ── Confetti canvas ── */
+  .confetti-canvas{
+    position:absolute;
+    top:0;left:0;
+    width:100%;height:100%;
+    pointer-events:none;
+    z-index:1;
+  }
+
+  /* Celebration shimmer */
+  .toast.celebration{
+    background:linear-gradient(135deg,rgba(17,24,39,0.95),rgba(17,24,39,0.85));
+    overflow:hidden;
+  }
+  .toast.celebration::before{
+    content:'';
+    position:absolute;
+    top:-50%;left:-50%;
+    width:200%;height:200%;
+    background:conic-gradient(from 0deg,transparent,rgba(52,211,153,0.04),transparent,rgba(99,102,241,0.04),transparent);
+    animation:shimmerRotate 6s linear infinite;
+    z-index:0;
+  }
+  @keyframes shimmerRotate{to{transform:rotate(360deg)}}
+  .toast.celebration>*{position:relative;z-index:2}
+
+  /* Danger pulse */
+  .toast.danger{
+    animation:slideIn 0.4s cubic-bezier(0.16,1,0.3,1) forwards,dangerPulse 2s ease-in-out 0.4s 2;
+  }
+  @keyframes dangerPulse{
+    0%,100%{box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 0 0 rgba(248,113,113,0)}
+    50%{box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 0 4px rgba(248,113,113,0.15)}
+  }
+
+  /* Progress bar inside milestone toast */
+  .milestone-bar{
+    margin-top:8px;
+    height:6px;
+    border-radius:3px;
+    background:rgba(99,102,241,0.12);
+    overflow:hidden;
+  }
+  .milestone-fill{
+    height:100%;
+    border-radius:3px;
+    background:linear-gradient(90deg,var(--accent),#818cf8);
+    transition:width 0.8s cubic-bezier(0.16,1,0.3,1);
+  }
+
+  /* ── Activity Feed Sidebar ── */
+  .activity-sidebar{
+    width:360px;
+    min-width:360px;
+    border-left:1px solid var(--border);
+    background:rgba(6,8,15,0.6);
+    backdrop-filter:blur(20px);
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+    position:sticky;
+    top:0;
+  }
+
+  .sidebar-header{
+    padding:24px 20px 16px;
+    border-bottom:1px solid var(--border);
+  }
+  .sidebar-header h2{
+    font-size:15px;
+    font-weight:600;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .sidebar-header h2 .pulse{
+    width:8px;height:8px;
+    background:var(--good);
+    border-radius:50%;
+    display:inline-block;
+    animation:livePulse 2s ease-in-out infinite;
+  }
+  @keyframes livePulse{
+    0%,100%{opacity:1;transform:scale(1)}
+    50%{opacity:0.5;transform:scale(0.8)}
+  }
+  .sidebar-header .count{
+    font-size:12px;
+    color:var(--text-dim);
+    margin-top:4px;
+  }
+
+  .sidebar-filters{
+    display:flex;
+    gap:6px;
+    padding:12px 20px;
+    border-bottom:1px solid var(--border);
+    overflow-x:auto;
+  }
+  .filter-btn{
+    padding:5px 12px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    background:transparent;
+    color:var(--text-dim);
+    font-size:11px;
+    font-weight:500;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:all 0.15s ease;
+  }
+  .filter-btn:hover{border-color:var(--accent);color:var(--text)}
+  .filter-btn.active{
+    background:rgba(99,102,241,0.12);
+    border-color:var(--accent);
+    color:var(--accent);
+  }
+
+  .feed-list{
+    flex:1;
+    overflow-y:auto;
+    padding:8px 0;
+  }
+  .feed-list::-webkit-scrollbar{width:4px}
+  .feed-list::-webkit-scrollbar-track{background:transparent}
+  .feed-list::-webkit-scrollbar-thumb{background:rgba(99,102,241,0.2);border-radius:2px}
+
+  /* Feed item */
+  .feed-item{
+    display:flex;
+    gap:12px;
+    padding:14px 20px;
+    border-bottom:1px solid rgba(99,102,241,0.06);
+    transition:background 0.15s ease;
+    cursor:default;
+    animation:feedIn 0.3s ease-out;
+    position:relative;
+  }
+  .feed-item:hover{background:rgba(99,102,241,0.03)}
+
+  @keyframes feedIn{
+    from{opacity:0;transform:translateY(-8px)}
+    to{opacity:1;transform:translateY(0)}
+  }
+
+  .feed-item.unread{background:rgba(99,102,241,0.04)}
+  .feed-item.unread::before{
+    content:'';
+    position:absolute;
+    left:8px;
+    top:50%;
+    transform:translateY(-50%);
+    width:4px;height:4px;
+    border-radius:50%;
+    background:var(--accent);
+  }
+
+  .feed-icon{
+    width:32px;height:32px;
+    border-radius:8px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:14px;
+    flex-shrink:0;
+    margin-top:1px;
+  }
+  .feed-icon.warning{background:rgba(251,191,36,0.1);color:var(--mid)}
+  .feed-icon.celebration{background:rgba(52,211,153,0.1);color:var(--good)}
+  .feed-icon.progress{background:rgba(99,102,241,0.1);color:var(--accent)}
+  .feed-icon.danger{background:rgba(248,113,113,0.1);color:var(--bad)}
+  .feed-icon.info{background:rgba(99,102,241,0.1);color:var(--accent)}
+
+  .feed-body{flex:1;min-width:0}
+  .feed-title{
+    font-size:12.5px;
+    font-weight:500;
+    line-height:1.4;
+    margin-bottom:2px;
+  }
+  .feed-desc{
+    font-size:11.5px;
+    color:var(--text-dim);
+    line-height:1.4;
+  }
+  .feed-meta{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:6px;
+  }
+  .feed-tag{
+    font-size:10px;
+    font-weight:500;
+    padding:2px 6px;
+    border-radius:4px;
+    text-transform:uppercase;
+    letter-spacing:0.3px;
+  }
+  .feed-tag.warning{background:rgba(251,191,36,0.1);color:var(--mid)}
+  .feed-tag.celebration{background:rgba(52,211,153,0.1);color:var(--good)}
+  .feed-tag.progress{background:rgba(99,102,241,0.1);color:var(--accent)}
+  .feed-tag.danger{background:rgba(248,113,113,0.1);color:var(--bad)}
+  .feed-tag.info{background:rgba(99,102,241,0.1);color:var(--accent)}
+
+  .feed-time{
+    font-size:10.5px;
+    color:rgba(148,163,184,0.45);
+  }
+
+  /* Empty state */
+  .feed-empty{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    padding:60px 20px;
+    color:var(--text-dim);
+    text-align:center;
+  }
+  .feed-empty .empty-icon{
+    font-size:40px;
+    margin-bottom:12px;
+    opacity:0.3;
+  }
+  .feed-empty p{font-size:13px}
+
+  /* ── Responsive ── */
+  @media(max-width:900px){
+    .activity-sidebar{
+      position:fixed;
+      right:-360px;
+      top:0;
+      z-index:8888;
+      transition:right 0.3s ease;
+      box-shadow:-8px 0 32px rgba(0,0,0,0.4);
+    }
+    .activity-sidebar.open{right:0}
+    .sidebar-toggle{display:flex !important}
+  }
+
+  .sidebar-toggle{
+    display:none;
+    position:fixed;
+    bottom:20px;right:20px;
+    z-index:8887;
+    width:48px;height:48px;
+    border-radius:14px;
+    border:1px solid var(--border);
+    background:var(--card-solid);
+    color:var(--text);
+    font-size:18px;
+    cursor:pointer;
+    align-items:center;justify-content:center;
+    box-shadow:0 4px 20px rgba(0,0,0,0.4);
+    transition:all 0.2s ease;
+  }
+  .sidebar-toggle:hover{
+    border-color:var(--accent);
+    transform:translateY(-2px);
+  }
+  .sidebar-toggle .notif-dot{
+    position:absolute;
+    top:-3px;right:-3px;
+    width:12px;height:12px;
+    border-radius:50%;
+    background:var(--bad);
+    border:2px solid var(--bg);
+    display:none;
+  }
+  .sidebar-toggle .notif-dot.visible{display:block}
+</style>
+</head>
+<body>
+
+<div class="app-layout">
+  <div class="main-content">
+    <div style="text-align:center;max-width:800px;width:100%">
+      <h1>Notification System</h1>
+      <p class="subtitle">Click any card below to trigger a notification toast. Alerts stack, auto-dismiss, and log to the activity feed.</p>
+    </div>
+
+    <div class="demo-grid" id="demoGrid"></div>
+  </div>
+
+  <aside class="activity-sidebar" id="activitySidebar">
+    <div class="sidebar-header">
+      <h2><span class="pulse"></span> Activity Feed</h2>
+      <div class="count" id="feedCount">0 events today</div>
+    </div>
+    <div class="sidebar-filters" id="sidebarFilters"></div>
+    <div class="feed-list" id="feedList"></div>
+  </aside>
+</div>
+
+<button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle activity feed">
+  <span class="notif-dot" id="notifDot"></span>
+</button>
+
+<div id="toast-container"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ── Constants ──
+  var ICONS = {
+    warning:     '\u26A0\uFE0F',
+    celebration: '\u2728',
+    progress:    '\uD83D\uDCCA',
+    danger:      '\uD83D\uDEA8',
+    info:        '\u2139\uFE0F'
+  };
+
+  var LABELS = {
+    warning:     'Warning',
+    celebration: 'Achievement',
+    progress:    'Milestone',
+    danger:      'Critical',
+    info:        'Info'
+  };
+
+  // ── Utility: create element with attributes and children ──
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function(key) {
+        if (key === 'className') { node.className = attrs[key]; }
+        else if (key === 'textContent') { node.textContent = attrs[key]; }
+        else if (key.indexOf('on') === 0) { node.addEventListener(key.slice(2).toLowerCase(), attrs[key]); }
+        else if (key === 'style' && typeof attrs[key] === 'object') {
+          Object.keys(attrs[key]).forEach(function(s) { node.style[s] = attrs[key][s]; });
+        }
+        else { node.setAttribute(key, attrs[key]); }
+      });
+    }
+    if (children) {
+      (Array.isArray(children) ? children : [children]).forEach(function(c) {
+        if (typeof c === 'string') { node.appendChild(document.createTextNode(c)); }
+        else if (c) { node.appendChild(c); }
+      });
+    }
+    return node;
+  }
+
+  // ── Build demo buttons ──
+  var demoButtons = [
+    { cls: 'warning',     icon: '\u26A0',  label: 'Score Alert',         handler: function() { Notify.scoreAlert(); } },
+    { cls: 'celebration', icon: '\u2605',   label: 'Achievement Unlocked', handler: function() { Notify.achievement(); } },
+    { cls: 'progress',    icon: '\u25B6',   label: 'Milestone Alert',     handler: function() { Notify.milestone(); } },
+    { cls: 'danger',      icon: '\u26A0',   label: 'Regression Warning',  handler: function() { Notify.regression(); } },
+    { cls: 'info',        icon: '\u2139',   label: 'New Data',            handler: function() { Notify.newData(); } },
+    { cls: 'all',         icon: '\u2699',   label: 'Fire All (stacked)',  handler: function() { Notify.demoAll(); } }
+  ];
+
+  var demoGrid = document.getElementById('demoGrid');
+  demoButtons.forEach(function(b) {
+    var iconSpan = el('span', { className: 'icon', textContent: b.icon });
+    var btn = el('button', { className: 'demo-btn ' + b.cls, onClick: b.handler }, [iconSpan, b.label]);
+    demoGrid.appendChild(btn);
+  });
+
+  // ── Build filter buttons ──
+  var filters = [
+    { key: 'all',         label: 'All' },
+    { key: 'warning',     label: 'Warnings' },
+    { key: 'celebration', label: 'Achievements' },
+    { key: 'progress',    label: 'Progress' },
+    { key: 'danger',      label: 'Alerts' },
+    { key: 'info',        label: 'Info' }
+  ];
+
+  var filtersContainer = document.getElementById('sidebarFilters');
+  filters.forEach(function(f) {
+    var btn = el('button', {
+      className: 'filter-btn' + (f.key === 'all' ? ' active' : ''),
+      textContent: f.label,
+      onClick: function() { Feed.filter(f.key, btn); }
+    });
+    btn.dataset.filter = f.key;
+    filtersContainer.appendChild(btn);
+  });
+
+  // ── Mobile sidebar toggle ──
+  var sidebarToggle = document.getElementById('sidebarToggle');
+  sidebarToggle.insertBefore(document.createTextNode('\uD83D\uDD14'), sidebarToggle.firstChild);
+  sidebarToggle.addEventListener('click', function() {
+    var sidebar = document.getElementById('activitySidebar');
+    sidebar.classList.toggle('open');
+    document.getElementById('notifDot').classList.remove('visible');
+  });
+
+  // ── Toast System ──
+  var Notify = {
+    container: document.getElementById('toast-container'),
+
+    show: function(opts) {
+      var type = opts.type;
+      var title = opts.title;
+      var message = opts.message;
+      var duration = opts.duration || 5000;
+      var progress = opts.progress;
+
+      var toast = el('div', { className: 'toast ' + type });
+      toast.style.setProperty('--duration', duration + 'ms');
+
+      var now = new Date();
+      var timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+      // Icon
+      var iconDiv = el('div', { className: 'toast-icon', textContent: ICONS[type] });
+
+      // Body
+      var bodyDiv = el('div', { className: 'toast-body' });
+
+      var titleDiv = el('div', { className: 'toast-title' }, [
+        document.createTextNode(title + ' '),
+        el('span', { className: 'badge', textContent: LABELS[type] })
+      ]);
+      bodyDiv.appendChild(titleDiv);
+
+      var msgDiv = el('div', { className: 'toast-msg', textContent: message });
+      bodyDiv.appendChild(msgDiv);
+
+      // Milestone progress bar
+      if (type === 'progress' && progress !== undefined) {
+        var fillDiv = el('div', { className: 'milestone-fill', style: { width: '0%' } });
+        fillDiv.dataset.target = progress;
+        var barDiv = el('div', { className: 'milestone-bar' }, [fillDiv]);
+        bodyDiv.appendChild(barDiv);
+      }
+
+      var timeDiv = el('div', { className: 'toast-time', textContent: timeStr });
+      bodyDiv.appendChild(timeDiv);
+
+      // Close button
+      var closeBtn = el('button', {
+        className: 'toast-close',
+        'aria-label': 'Close notification',
+        textContent: '\u00D7',
+        onClick: function() { Notify.dismiss(toast); }
+      });
+
+      toast.appendChild(iconDiv);
+      toast.appendChild(bodyDiv);
+      toast.appendChild(closeBtn);
+
+      // Celebration confetti
+      if (type === 'celebration') {
+        var canvas = el('canvas', { className: 'confetti-canvas' });
+        toast.appendChild(canvas);
+        requestAnimationFrame(function() { Notify.runConfetti(canvas); });
+      }
+
+      this.container.appendChild(toast);
+
+      // Animate milestone bar fill
+      if (type === 'progress' && progress !== undefined) {
+        var fill = toast.querySelector('.milestone-fill');
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() { fill.style.width = progress + '%'; });
+        });
+      }
+
+      // Auto-dismiss timer (pauses on hover)
+      var timer;
+      var startTimer = function() {
+        timer = setTimeout(function() { Notify.dismiss(toast); }, duration);
+      };
+      toast.addEventListener('mouseenter', function() { clearTimeout(timer); });
+      toast.addEventListener('mouseleave', startTimer);
+      startTimer();
+
+      // Log to activity feed
+      Feed.add({ type: type, title: title, message: message, time: now });
+
+      return toast;
+    },
+
+    dismiss: function(toast) {
+      if (!toast || toast.classList.contains('dismissing')) return;
+      toast.classList.add('dismissing');
+      toast.addEventListener('animationend', function() { toast.remove(); });
+    },
+
+    runConfetti: function(canvas) {
+      var ctx = canvas.getContext('2d');
+      var W = canvas.width = canvas.offsetWidth;
+      var H = canvas.height = canvas.offsetHeight;
+      var colors = ['#34d399', '#6366f1', '#fbbf24', '#f87171', '#818cf8', '#a78bfa'];
+      var particles = [];
+      for (var i = 0; i < 40; i++) {
+        particles.push({
+          x: Math.random() * W,
+          y: Math.random() * -H,
+          w: 3 + Math.random() * 4,
+          h: 2 + Math.random() * 3,
+          vx: (Math.random() - 0.5) * 2,
+          vy: 1 + Math.random() * 2,
+          rot: Math.random() * 360,
+          rotV: (Math.random() - 0.5) * 10,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          opacity: 0.9
+        });
+      }
+      var frame = 0;
+      var maxFrames = 90;
+      function draw() {
+        if (frame > maxFrames) return;
+        ctx.clearRect(0, 0, W, H);
+        particles.forEach(function(p) {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.rot += p.rotV;
+          p.opacity = Math.max(0, p.opacity - 0.008);
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot * Math.PI / 180);
+          ctx.globalAlpha = p.opacity;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+          ctx.restore();
+        });
+        frame++;
+        requestAnimationFrame(draw);
+      }
+      draw();
+    },
+
+    // ── Preset alerts ──
+    scoreAlert: function() {
+      this.show({
+        type: 'warning',
+        title: 'Score Alert',
+        message: 'Engagement dropped 2 points in last lecture. Review Q&A participation metrics.'
+      });
+    },
+    achievement: function() {
+      this.show({
+        type: 'celebration',
+        title: 'Achievement Unlocked',
+        message: 'Rising Star badge earned! Consistent improvement across 3 consecutive lectures.',
+        duration: 6000
+      });
+    },
+    milestone: function() {
+      this.show({
+        type: 'progress',
+        title: 'Milestone Reached',
+        message: '5/15 lectures completed \u2014 one third done!',
+        progress: 33,
+        duration: 6000
+      });
+    },
+    regression: function() {
+      this.show({
+        type: 'danger',
+        title: 'Regression Warning',
+        message: 'Technical Accuracy has declined for 2 consecutive lectures. Immediate review recommended.',
+        duration: 7000
+      });
+    },
+    newData: function() {
+      this.show({
+        type: 'info',
+        title: 'New Data Available',
+        message: 'G1L1 analysis complete \u2014 dashboard updated with latest metrics.'
+      });
+    },
+    demoAll: function() {
+      var self = this;
+      self.scoreAlert();
+      setTimeout(function() { self.achievement(); }, 400);
+      setTimeout(function() { self.milestone(); }, 800);
+      setTimeout(function() { self.regression(); }, 1200);
+      setTimeout(function() { self.newData(); }, 1600);
+    }
+  };
+
+  // ── Activity Feed ──
+  var Feed = {
+    items: [],
+    activeFilter: 'all',
+
+    add: function(data) {
+      var item = { type: data.type, title: data.title, message: data.message, time: data.time, id: Date.now() + Math.random() };
+      this.items.unshift(item);
+      this.render();
+      this.updateCount();
+      var dot = document.getElementById('notifDot');
+      if (dot) dot.classList.add('visible');
+    },
+
+    filter: function(type, btn) {
+      this.activeFilter = type;
+      document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      this.render();
+    },
+
+    render: function() {
+      var list = document.getElementById('feedList');
+      var self = this;
+      var filtered = this.activeFilter === 'all'
+        ? this.items
+        : this.items.filter(function(i) { return i.type === self.activeFilter; });
+
+      // Clear existing children
+      while (list.firstChild) { list.removeChild(list.firstChild); }
+
+      if (filtered.length === 0) {
+        var emptyDiv = el('div', { className: 'feed-empty' }, [
+          el('div', { className: 'empty-icon', textContent: '\uD83D\uDD14' }),
+          el('p', {}, [
+            document.createTextNode('No activity yet.'),
+            el('br'),
+            document.createTextNode('Trigger a notification to see events here.')
+          ])
+        ]);
+        list.appendChild(emptyDiv);
+        return;
+      }
+
+      filtered.forEach(function(item, idx) {
+        var timeAgo = self.timeAgo(item.time);
+        var timeStr = item.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        var feedItem = el('div', { className: 'feed-item' + (idx === 0 ? ' unread' : '') });
+        feedItem.dataset.type = item.type;
+
+        var iconDiv = el('div', { className: 'feed-icon ' + item.type, textContent: ICONS[item.type] });
+
+        var bodyDiv = el('div', { className: 'feed-body' }, [
+          el('div', { className: 'feed-title', textContent: item.title }),
+          el('div', { className: 'feed-desc', textContent: item.message }),
+          el('div', { className: 'feed-meta' }, [
+            el('span', { className: 'feed-tag ' + item.type, textContent: LABELS[item.type] }),
+            el('span', { className: 'feed-time', title: timeStr, textContent: timeAgo })
+          ])
+        ]);
+
+        feedItem.appendChild(iconDiv);
+        feedItem.appendChild(bodyDiv);
+        list.appendChild(feedItem);
+      });
+    },
+
+    updateCount: function() {
+      var countEl = document.getElementById('feedCount');
+      var n = this.items.length;
+      countEl.textContent = n + ' event' + (n !== 1 ? 's' : '') + ' today';
+    },
+
+    timeAgo: function(date) {
+      var seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (seconds < 5) return 'just now';
+      if (seconds < 60) return seconds + 's ago';
+      var mins = Math.floor(seconds / 60);
+      if (mins < 60) return mins + 'm ago';
+      var hrs = Math.floor(mins / 60);
+      return hrs + 'h ago';
+    }
+  };
+
+  // Expose for button handlers
+  window.Notify = Notify;
+  window.Feed = Feed;
+
+  // Seed initial feed items
+  setTimeout(function() {
+    Feed.add({ type: 'info', title: 'System Online', message: 'Dashboard connected to analytics pipeline.', time: new Date(Date.now() - 3600000) });
+    Feed.add({ type: 'progress', title: 'Course Started', message: 'Group 1 schedule initialized with 15 lectures.', time: new Date(Date.now() - 7200000) });
+  }, 300);
+
+})();
+</script>
+</body>
+</html>

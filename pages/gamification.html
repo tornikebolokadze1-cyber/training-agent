@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trainer Analytics — Gamification Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* ─── Reset & Base ─── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #06080f;
+  --card: rgba(17, 24, 39, 0.7);
+  --card-border: rgba(99, 102, 241, 0.12);
+  --card-border-hover: rgba(99, 102, 241, 0.3);
+  --accent: #6366f1;
+  --accent-glow: rgba(99, 102, 241, 0.25);
+  --good: #34d399;
+  --mid: #fbbf24;
+  --bad: #f87171;
+  --text: #f1f5f9;
+  --text-dim: #94a3b8;
+  --text-muted: #475569;
+  --surface: rgba(30, 36, 52, 0.6);
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100vh;
+  padding: 32px;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -20%, rgba(99, 102, 241, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(52, 211, 153, 0.04), transparent),
+    var(--bg);
+}
+
+/* ─── Layout ─── */
+.gf-dashboard {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.gf-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.gf-header h1 {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gf-header .gf-subtitle {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-top: 2px;
+}
+
+.gf-group-selector {
+  display: flex;
+  gap: 6px;
+}
+
+.gf-group-btn {
+  padding: 7px 18px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(12px);
+}
+
+.gf-group-btn:hover {
+  border-color: var(--card-border-hover);
+  color: var(--text);
+}
+
+.gf-group-btn.active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.08));
+  border-color: var(--accent);
+  color: var(--text);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+/* ─── Top Row: Level + Streak + Next Goal ─── */
+.gf-top-row {
+  display: grid;
+  grid-template-columns: 240px 200px 1fr;
+  gap: 20px;
+}
+
+/* ─── Card Base ─── */
+.gf-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 22px;
+  backdrop-filter: blur(16px);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.gf-card:hover {
+  border-color: var(--card-border-hover);
+}
+
+.gf-card-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+/* ─── Level Badge ─── */
+.gf-level-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.gf-level-ring {
+  width: 100px;
+  height: 100px;
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.gf-level-ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.gf-level-ring .ring-bg {
+  fill: none;
+  stroke: rgba(99, 102, 241, 0.1);
+  stroke-width: 4;
+}
+
+.gf-level-ring .ring-fg {
+  fill: none;
+  stroke: url(#levelGradient);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 264;
+  stroke-dashoffset: 264;
+  transition: stroke-dashoffset 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.gf-level-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.gf-level-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.gf-level-score {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.gf-level-range {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ─── Streak Counter ─── */
+.gf-streak-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.gf-streak-flames {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  margin-bottom: 10px;
+  height: 60px;
+}
+
+.gf-streak-flame {
+  width: 18px;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  background: linear-gradient(to top, var(--bad), var(--mid));
+  opacity: 0.15;
+  transition: all 0.4s ease;
+}
+
+.gf-streak-flame.active {
+  opacity: 1;
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.4);
+  animation: flicker 2s ease-in-out infinite alternate;
+}
+
+@keyframes flicker {
+  0% { transform: scaleY(1) scaleX(1); }
+  50% { transform: scaleY(1.06) scaleX(0.96); }
+  100% { transform: scaleY(0.95) scaleX(1.03); }
+}
+
+.gf-streak-number {
+  font-size: 2.2rem;
+  font-weight: 900;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--mid), var(--bad));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gf-streak-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.gf-streak-zero .gf-streak-number {
+  background: linear-gradient(135deg, var(--text-muted), var(--text-muted));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* ─── Next Goal Card ─── */
+.gf-next-goal-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.gf-next-goal-content {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.gf-next-goal-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(99, 102, 241, 0.05));
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  flex-shrink: 0;
+  animation: goalPulse 3s ease-in-out infinite;
+}
+
+@keyframes goalPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.15); }
+  50% { box-shadow: 0 0 20px 4px rgba(99, 102, 241, 0.1); }
+}
+
+.gf-next-goal-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.gf-next-goal-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.gf-next-goal-desc {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.gf-next-goal-bar-wrap {
+  width: 100%;
+  height: 6px;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gf-next-goal-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #818cf8);
+  border-radius: 3px;
+  transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.gf-next-goal-bar::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3));
+  border-radius: 3px;
+}
+
+.gf-next-goal-pct {
+  font-size: 0.72rem;
+  color: var(--accent);
+  font-weight: 600;
+  margin-top: 5px;
+  text-align: right;
+}
+
+/* ─── Progress Timeline ─── */
+.gf-timeline-card {
+  padding: 22px 28px;
+}
+
+.gf-timeline-track {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  position: relative;
+  padding: 8px 0;
+}
+
+.gf-timeline-dot-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+.gf-timeline-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  transition: all 0.3s ease;
+  position: relative;
+  cursor: default;
+}
+
+.gf-timeline-dot.completed {
+  border-color: transparent;
+  color: var(--bg);
+  font-weight: 800;
+}
+
+.gf-timeline-dot.completed.score-good {
+  background: var(--good);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.3);
+}
+
+.gf-timeline-dot.completed.score-mid {
+  background: var(--mid);
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.3);
+}
+
+.gf-timeline-dot.completed.score-bad {
+  background: var(--bad);
+  box-shadow: 0 0 12px rgba(248, 113, 113, 0.3);
+}
+
+.gf-timeline-dot.current {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: currentPulse 2s ease-in-out infinite;
+}
+
+@keyframes currentPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+}
+
+.gf-timeline-score {
+  font-size: 0.62rem;
+  font-weight: 600;
+  margin-top: 6px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.gf-timeline-dot-wrap:hover .gf-timeline-score {
+  opacity: 1;
+}
+
+.gf-timeline-dot-wrap:hover .gf-timeline-dot.completed {
+  transform: scale(1.15);
+}
+
+.gf-timeline-line {
+  position: absolute;
+  top: 50%;
+  left: 24px;
+  right: 24px;
+  height: 2px;
+  background: rgba(71, 85, 105, 0.3);
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+.gf-timeline-line-fill {
+  position: absolute;
+  top: 50%;
+  left: 24px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+  transform: translateY(-50%);
+  z-index: 0;
+  transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 1px;
+}
+
+/* ─── Achievements Grid ─── */
+.gf-achievements-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+}
+
+.gf-badge {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 20px 14px;
+  text-align: center;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+  cursor: default;
+}
+
+.gf-badge::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.gf-badge:hover::before {
+  opacity: 1;
+}
+
+.gf-badge.earned {
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.gf-badge.earned:hover {
+  border-color: var(--accent);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 30px rgba(99, 102, 241, 0.15);
+}
+
+.gf-badge.locked {
+  opacity: 0.4;
+}
+
+.gf-badge.locked:hover {
+  opacity: 0.6;
+}
+
+.gf-badge-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  position: relative;
+  z-index: 1;
+  transition: transform 0.3s ease;
+}
+
+.gf-badge.earned .gf-badge-icon {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.05));
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.gf-badge.locked .gf-badge-icon {
+  background: var(--surface);
+  filter: grayscale(1);
+}
+
+.gf-badge.earned:hover .gf-badge-icon {
+  transform: scale(1.1);
+}
+
+.gf-badge-name {
+  font-size: 0.76rem;
+  font-weight: 700;
+  position: relative;
+  z-index: 1;
+  margin-bottom: 3px;
+}
+
+.gf-badge-desc {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  position: relative;
+  z-index: 1;
+  line-height: 1.4;
+}
+
+.gf-badge.locked .gf-badge-name,
+.gf-badge.locked .gf-badge-desc {
+  color: var(--text-muted);
+}
+
+.gf-badge-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--good);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: var(--bg);
+  font-weight: 900;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+  z-index: 2;
+}
+
+.gf-badge-lock {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  z-index: 2;
+}
+
+/* ─── Stats Summary ─── */
+.gf-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.gf-stat {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  backdrop-filter: blur(16px);
+}
+
+.gf-stat-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.gf-stat-value.color-accent { color: var(--accent); }
+.gf-stat-value.color-good { color: var(--good); }
+.gf-stat-value.color-mid { color: var(--mid); }
+
+.gf-stat-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 900px) {
+  .gf-top-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .gf-top-row .gf-next-goal-card {
+    grid-column: 1 / -1;
+  }
+  .gf-achievements-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  body { padding: 16px; }
+  .gf-top-row {
+    grid-template-columns: 1fr;
+  }
+  .gf-achievements-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .gf-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .gf-timeline-dot {
+    width: 22px;
+    height: 22px;
+    font-size: 0.55rem;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="gf-dashboard" id="gfDashboard">
+
+  <!-- Header -->
+  <div class="gf-header">
+    <div>
+      <h1>Trainer Performance</h1>
+      <div class="gf-subtitle">Gamification &amp; achievement tracking across lecture sessions</div>
+    </div>
+    <div class="gf-group-selector">
+      <button class="gf-group-btn active" data-group="1">Group #1</button>
+      <button class="gf-group-btn" data-group="2">Group #2</button>
+    </div>
+  </div>
+
+  <!-- Top Row: Level + Streak + Next Goal -->
+  <div class="gf-top-row">
+
+    <!-- Level Badge -->
+    <div class="gf-card gf-level-card" id="gfLevel">
+      <div class="gf-card-label">Trainer Level</div>
+      <div class="gf-level-ring">
+        <svg viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id="levelGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#34d399"/>
+            </linearGradient>
+          </defs>
+          <circle class="ring-bg" cx="50" cy="50" r="42"/>
+          <circle class="ring-fg" id="levelRing" cx="50" cy="50" r="42"/>
+        </svg>
+        <div class="gf-level-icon" id="levelIcon"></div>
+      </div>
+      <div class="gf-level-name" id="levelName">--</div>
+      <div class="gf-level-score" id="levelScore">Composite: --</div>
+      <div class="gf-level-range" id="levelRange"></div>
+    </div>
+
+    <!-- Streak Counter -->
+    <div class="gf-card gf-streak-card" id="gfStreak">
+      <div class="gf-card-label">Improvement Streak</div>
+      <div class="gf-streak-flames" id="streakFlames"></div>
+      <div class="gf-streak-number" id="streakNumber">0</div>
+      <div class="gf-streak-label">consecutive improvements</div>
+    </div>
+
+    <!-- Next Goal -->
+    <div class="gf-card gf-next-goal-card" id="gfNextGoal">
+      <div class="gf-card-label">Next Achievement</div>
+      <div class="gf-next-goal-content">
+        <div class="gf-next-goal-icon" id="nextGoalIcon"></div>
+        <div class="gf-next-goal-info">
+          <div class="gf-next-goal-name" id="nextGoalName">--</div>
+          <div class="gf-next-goal-desc" id="nextGoalDesc">--</div>
+          <div class="gf-next-goal-bar-wrap">
+            <div class="gf-next-goal-bar" id="nextGoalBar" style="width: 0%"></div>
+          </div>
+          <div class="gf-next-goal-pct" id="nextGoalPct">0%</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Progress Timeline -->
+  <div class="gf-card gf-timeline-card">
+    <div class="gf-card-label">Lecture Progress Timeline</div>
+    <div class="gf-timeline-track" id="gfTimeline">
+      <div class="gf-timeline-line"></div>
+      <div class="gf-timeline-line-fill" id="timelineFill"></div>
+    </div>
+  </div>
+
+  <!-- Achievements Grid -->
+  <div>
+    <div class="gf-card-label" style="padding: 0 4px 10px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #475569;">
+      Achievements &mdash; <span id="earnedCount">0</span> / 10 Unlocked
+    </div>
+    <div class="gf-achievements-grid" id="gfAchievements"></div>
+  </div>
+
+  <!-- Stats Summary -->
+  <div class="gf-stats-row" id="gfStats"></div>
+
+</div>
+
+<script>
+/**
+ * Gamification Engine for Trainer Analytics Dashboard
+ * --------------------------------------------------
+ * Self-contained: sample data, achievement evaluation,
+ * streak calculation, level determination, and DOM rendering.
+ *
+ * All content inserted into the DOM comes from hardcoded constants
+ * (achievement definitions, icons, labels). No user-supplied input
+ * is rendered, so DOM construction via element creation is safe.
+ */
+(function () {
+  'use strict';
+
+  /* ===================================================
+     CONFIGURATION
+     =================================================== */
+
+  var DIMENSIONS = ['clarity', 'engagement', 'depth', 'pacing', 'interaction'];
+  var TOTAL_LECTURES = 15;
+
+  var LEVELS = [
+    { name: 'Beginner',    min: 0, max: 5,  icon: '\u{1F331}', color: '#94a3b8' },
+    { name: 'Developing',  min: 5, max: 6,  icon: '\u{1F33F}', color: '#fbbf24' },
+    { name: 'Proficient',  min: 6, max: 7,  icon: '\u2B50',    color: '#6366f1' },
+    { name: 'Advanced',    min: 7, max: 8,  icon: '\u{1F525}', color: '#818cf8' },
+    { name: 'Master',      min: 8, max: 10, icon: '\u{1F451}', color: '#34d399' },
+  ];
+
+  var ACHIEVEMENTS = [
+    {
+      id: 'first_lecture',
+      name: 'First Lecture',
+      desc: 'Complete your first lecture session',
+      icon: '\u{1F3AC}',
+      check: function (d) { return d.lectures.length >= 1; },
+      progress: function (d) { return Math.min(d.lectures.length / 1, 1); },
+    },
+    {
+      id: 'rising_star',
+      name: 'Rising Star',
+      desc: '2+ consecutive lectures with improving composite',
+      icon: '\u{1F31F}',
+      check: function (d) { return calcStreak(d.lectures) >= 2; },
+      progress: function (d) { return Math.min(calcStreak(d.lectures) / 2, 1); },
+    },
+    {
+      id: 'engagement_master',
+      name: 'Engagement Master',
+      desc: 'Achieve engagement score above 8 in any lecture',
+      icon: '\u{1F3AF}',
+      check: function (d) { return d.lectures.some(function (l) { return l.engagement > 8; }); },
+      progress: function (d) {
+        var best = Math.max.apply(null, d.lectures.map(function (l) { return l.engagement; }).concat([0]));
+        return Math.min(best / 8.01, 1);
+      },
+    },
+    {
+      id: 'perfect_balance',
+      name: 'Perfect Balance',
+      desc: 'All 5 dimensions within 1 point of each other',
+      icon: '\u2696\uFE0F',
+      check: function (d) {
+        return d.lectures.some(function (l) {
+          var vals = DIMENSIONS.map(function (k) { return l[k]; });
+          return Math.max.apply(null, vals) - Math.min.apply(null, vals) <= 1;
+        });
+      },
+      progress: function (d) {
+        if (d.lectures.length === 0) return 0;
+        var best = Math.min.apply(null, d.lectures.map(function (l) {
+          var vals = DIMENSIONS.map(function (k) { return l[k]; });
+          return Math.max.apply(null, vals) - Math.min.apply(null, vals);
+        }));
+        return Math.min(1 / Math.max(best, 0.1), 1);
+      },
+    },
+    {
+      id: 'target_hit',
+      name: 'Target Hit',
+      desc: 'Reach composite score of 7.0 or higher',
+      icon: '\u{1F3C6}',
+      check: function (d) { return d.lectures.some(function (l) { return composite(l) >= 7; }); },
+      progress: function (d) {
+        var best = Math.max.apply(null, d.lectures.map(function (l) { return composite(l); }).concat([0]));
+        return Math.min(best / 7, 1);
+      },
+    },
+    {
+      id: 'marathon',
+      name: 'Marathon Runner',
+      desc: 'Complete 5 lectures in the course',
+      icon: '\u{1F3C3}',
+      check: function (d) { return d.lectures.length >= 5; },
+      progress: function (d) { return Math.min(d.lectures.length / 5, 1); },
+    },
+    {
+      id: 'consistency_king',
+      name: 'Consistency King',
+      desc: 'Standard deviation below 1.0 across all dimensions',
+      icon: '\u{1F4CA}',
+      check: function (d) {
+        return d.lectures.some(function (l) {
+          var vals = DIMENSIONS.map(function (k) { return l[k]; });
+          return stdDev(vals) < 1;
+        });
+      },
+      progress: function (d) {
+        if (d.lectures.length === 0) return 0;
+        var best = Math.min.apply(null, d.lectures.map(function (l) {
+          return stdDev(DIMENSIONS.map(function (k) { return l[k]; }));
+        }));
+        return Math.min(1 / Math.max(best, 0.1), 1);
+      },
+    },
+    {
+      id: 'top_marks',
+      name: 'Top Marks',
+      desc: 'Score a perfect 10 in any dimension',
+      icon: '\u{1F4AF}',
+      check: function (d) {
+        return d.lectures.some(function (l) {
+          return DIMENSIONS.some(function (k) { return l[k] >= 10; });
+        });
+      },
+      progress: function (d) {
+        var best = Math.max.apply(null, d.lectures.flatMap(function (l) {
+          return DIMENSIONS.map(function (k) { return l[k]; });
+        }).concat([0]));
+        return Math.min(best / 10, 1);
+      },
+    },
+    {
+      id: 'full_house',
+      name: 'Full House',
+      desc: 'All 5 dimensions at 7+ in a single lecture',
+      icon: '\u{1F0CF}',
+      check: function (d) {
+        return d.lectures.some(function (l) {
+          return DIMENSIONS.every(function (k) { return l[k] >= 7; });
+        });
+      },
+      progress: function (d) {
+        if (d.lectures.length === 0) return 0;
+        var best = Math.max.apply(null, d.lectures.map(function (l) {
+          return DIMENSIONS.filter(function (k) { return l[k] >= 7; }).length;
+        }));
+        return Math.min(best / 5, 1);
+      },
+    },
+    {
+      id: 'course_complete',
+      name: 'Course Complete',
+      desc: 'Finish all 15 lectures in the course',
+      icon: '\u{1F393}',
+      check: function (d) { return d.lectures.length >= TOTAL_LECTURES; },
+      progress: function (d) { return Math.min(d.lectures.length / TOTAL_LECTURES, 1); },
+    },
+  ];
+
+  /* ===================================================
+     SAMPLE DATA (replace with real API data)
+     =================================================== */
+
+  var SAMPLE_DATA = {
+    1: {
+      lectures: [
+        { num: 1,  clarity: 6.2, engagement: 5.8, depth: 6.0, pacing: 7.0, interaction: 5.5 },
+        { num: 2,  clarity: 6.5, engagement: 6.2, depth: 6.5, pacing: 7.1, interaction: 6.0 },
+        { num: 3,  clarity: 7.0, engagement: 6.8, depth: 7.0, pacing: 7.2, interaction: 6.5 },
+        { num: 4,  clarity: 6.8, engagement: 7.5, depth: 7.2, pacing: 6.8, interaction: 7.0 },
+        { num: 5,  clarity: 7.5, engagement: 7.8, depth: 7.5, pacing: 7.5, interaction: 7.2 },
+        { num: 6,  clarity: 7.8, engagement: 8.2, depth: 7.8, pacing: 7.6, interaction: 7.5 },
+        { num: 7,  clarity: 7.5, engagement: 7.9, depth: 8.0, pacing: 7.8, interaction: 7.8 },
+        { num: 8,  clarity: 8.0, engagement: 8.5, depth: 8.2, pacing: 8.0, interaction: 8.0 },
+      ],
+    },
+    2: {
+      lectures: [
+        { num: 1,  clarity: 5.5, engagement: 5.0, depth: 5.8, pacing: 6.0, interaction: 5.2 },
+        { num: 2,  clarity: 5.8, engagement: 5.5, depth: 6.0, pacing: 6.2, interaction: 5.5 },
+        { num: 3,  clarity: 6.2, engagement: 6.0, depth: 6.5, pacing: 6.5, interaction: 6.0 },
+        { num: 4,  clarity: 6.5, engagement: 6.8, depth: 6.8, pacing: 6.5, interaction: 6.2 },
+        { num: 5,  clarity: 6.8, engagement: 7.0, depth: 7.0, pacing: 7.0, interaction: 6.8 },
+      ],
+    },
+  };
+
+  /* ===================================================
+     UTILITY FUNCTIONS
+     =================================================== */
+
+  function composite(lecture) {
+    var sum = DIMENSIONS.reduce(function (s, k) { return s + lecture[k]; }, 0);
+    return +(sum / DIMENSIONS.length).toFixed(2);
+  }
+
+  function stdDev(values) {
+    var mean = values.reduce(function (s, v) { return s + v; }, 0) / values.length;
+    var variance = values.reduce(function (s, v) { return s + (v - mean) * (v - mean); }, 0) / values.length;
+    return Math.sqrt(variance);
+  }
+
+  function calcStreak(lectures) {
+    if (lectures.length < 2) return 0;
+    var streak = 0;
+    for (var i = lectures.length - 1; i >= 1; i--) {
+      if (composite(lectures[i]) > composite(lectures[i - 1])) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+
+  function getLevel(score) {
+    for (var i = LEVELS.length - 1; i >= 0; i--) {
+      if (score >= LEVELS[i].min) return LEVELS[i];
+    }
+    return LEVELS[0];
+  }
+
+  function scoreColor(score) {
+    if (score >= 7) return 'good';
+    if (score >= 5) return 'mid';
+    return 'bad';
+  }
+
+  /** Create a DOM element safely (no innerHTML with dynamic data). */
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (key) {
+        if (key === 'className') node.className = attrs[key];
+        else if (key === 'textContent') node.textContent = attrs[key];
+        else if (key.indexOf('data-') === 0) node.setAttribute(key, attrs[key]);
+        else node.setAttribute(key, attrs[key]);
+      });
+    }
+    if (children) {
+      children.forEach(function (child) {
+        if (typeof child === 'string') node.appendChild(document.createTextNode(child));
+        else if (child) node.appendChild(child);
+      });
+    }
+    return node;
+  }
+
+  /* ===================================================
+     RENDERING
+     =================================================== */
+
+  function renderAll(groupId) {
+    var data = SAMPLE_DATA[groupId];
+    if (!data) return;
+
+    var lectures = data.lectures;
+    var latestComposite = lectures.length > 0 ? composite(lectures[lectures.length - 1]) : 0;
+    var avgComposite = lectures.length > 0
+      ? +(lectures.reduce(function (s, l) { return s + composite(l); }, 0) / lectures.length).toFixed(2)
+      : 0;
+    var streak = calcStreak(lectures);
+
+    renderLevel(latestComposite);
+    renderStreak(streak);
+    renderTimeline(lectures);
+    renderAchievements(data);
+    renderNextGoal(data);
+    renderStats(data, avgComposite, streak);
+  }
+
+  function renderLevel(score) {
+    var level = getLevel(score);
+    var levelIdx = LEVELS.indexOf(level);
+    var rangeSize = level.max - level.min;
+    var progressInLevel = Math.min((score - level.min) / rangeSize, 1);
+
+    document.getElementById('levelIcon').textContent = level.icon;
+    document.getElementById('levelName').textContent = level.name;
+    document.getElementById('levelName').style.color = level.color;
+    document.getElementById('levelScore').textContent = 'Composite: ' + score.toFixed(1);
+    document.getElementById('levelRange').textContent =
+      levelIdx < LEVELS.length - 1
+        ? 'Next: ' + LEVELS[levelIdx + 1].name + ' (' + level.max.toFixed(0) + '+)'
+        : 'Maximum level reached';
+
+    var circumference = 2 * Math.PI * 42;
+    var ring = document.getElementById('levelRing');
+    requestAnimationFrame(function () {
+      ring.style.strokeDashoffset = circumference * (1 - progressInLevel);
+    });
+  }
+
+  function renderStreak(streak) {
+    var container = document.getElementById('streakFlames');
+    var maxFlames = 7;
+    container.textContent = '';
+
+    var card = document.getElementById('gfStreak');
+    if (streak === 0) card.classList.add('gf-streak-zero');
+    else card.classList.remove('gf-streak-zero');
+
+    for (var i = 0; i < maxFlames; i++) {
+      var flame = el('div', {
+        className: 'gf-streak-flame' + (i < streak ? ' active' : ''),
+      });
+      var height = 20 + (i < streak ? (i + 1) * 6 : 8);
+      flame.style.height = height + 'px';
+      if (i < streak) {
+        flame.style.animationDelay = (i * 0.15) + 's';
+      }
+      container.appendChild(flame);
+    }
+
+    document.getElementById('streakNumber').textContent = streak;
+  }
+
+  function renderTimeline(lectures) {
+    var track = document.getElementById('gfTimeline');
+    var lineFill = document.getElementById('timelineFill');
+
+    // Remove old dots, keep the line elements
+    var oldDots = track.querySelectorAll('.gf-timeline-dot-wrap');
+    for (var d = 0; d < oldDots.length; d++) oldDots[d].remove();
+
+    var currentLecture = lectures.length + 1;
+
+    for (var i = 1; i <= TOTAL_LECTURES; i++) {
+      var wrap = el('div', { className: 'gf-timeline-dot-wrap' });
+      var dot = el('div', { className: 'gf-timeline-dot', textContent: String(i) });
+      var scoreLbl = el('div', { className: 'gf-timeline-score' });
+
+      if (i <= lectures.length) {
+        var lec = lectures[i - 1];
+        var cs = composite(lec);
+        dot.className += ' completed score-' + scoreColor(cs);
+        scoreLbl.textContent = cs.toFixed(1);
+      } else if (i === currentLecture && i <= TOTAL_LECTURES) {
+        dot.className += ' current';
+        scoreLbl.textContent = 'Next';
+      }
+
+      wrap.appendChild(dot);
+      wrap.appendChild(scoreLbl);
+      track.appendChild(wrap);
+    }
+
+    // Animate fill line
+    var pct = lectures.length > 0
+      ? ((lectures.length - 1) / (TOTAL_LECTURES - 1)) * 100
+      : 0;
+    requestAnimationFrame(function () {
+      lineFill.style.width = 'calc(' + pct + '% - 24px)';
+    });
+  }
+
+  function renderAchievements(data) {
+    var grid = document.getElementById('gfAchievements');
+    grid.textContent = '';
+    var earnedTotal = 0;
+
+    ACHIEVEMENTS.forEach(function (ach, idx) {
+      var earned = ach.check(data);
+      if (earned) earnedTotal++;
+
+      var badge = el('div', { className: 'gf-badge ' + (earned ? 'earned' : 'locked') });
+
+      // Status indicator (check or lock)
+      var indicator;
+      if (earned) {
+        indicator = el('div', { className: 'gf-badge-check', textContent: '\u2713' });
+      } else {
+        indicator = el('div', { className: 'gf-badge-lock', textContent: '\u{1F512}' });
+      }
+      badge.appendChild(indicator);
+
+      // Icon
+      badge.appendChild(el('div', { className: 'gf-badge-icon', textContent: ach.icon }));
+      // Name
+      badge.appendChild(el('div', { className: 'gf-badge-name', textContent: ach.name }));
+      // Description
+      badge.appendChild(el('div', { className: 'gf-badge-desc', textContent: ach.desc }));
+
+      grid.appendChild(badge);
+    });
+
+    document.getElementById('earnedCount').textContent = earnedTotal;
+  }
+
+  function renderNextGoal(data) {
+    // Find the first unearned achievement with highest progress
+    var best = null;
+    var bestProgress = -1;
+
+    ACHIEVEMENTS.forEach(function (ach) {
+      if (!ach.check(data)) {
+        var prog = ach.progress(data);
+        if (prog > bestProgress) {
+          bestProgress = prog;
+          best = ach;
+        }
+      }
+    });
+
+    if (!best) {
+      document.getElementById('nextGoalIcon').textContent = '\u{1F389}';
+      document.getElementById('nextGoalName').textContent = 'All Achieved!';
+      document.getElementById('nextGoalDesc').textContent = 'Every achievement has been unlocked. Outstanding work.';
+      document.getElementById('nextGoalBar').style.width = '100%';
+      document.getElementById('nextGoalPct').textContent = '100%';
+      return;
+    }
+
+    var pct = Math.round(bestProgress * 100);
+    document.getElementById('nextGoalIcon').textContent = best.icon;
+    document.getElementById('nextGoalName').textContent = best.name;
+    document.getElementById('nextGoalDesc').textContent = best.desc;
+    document.getElementById('nextGoalPct').textContent = pct + '% complete';
+
+    requestAnimationFrame(function () {
+      document.getElementById('nextGoalBar').style.width = pct + '%';
+    });
+  }
+
+  function renderStats(data, avgComposite, streak) {
+    var container = document.getElementById('gfStats');
+    container.textContent = '';
+
+    var lectures = data.lectures;
+    var earned = ACHIEVEMENTS.filter(function (a) { return a.check(data); }).length;
+
+    var bestDim = { dim: '--', val: 0 };
+    if (lectures.length > 0) {
+      DIMENSIONS.forEach(function (dim) {
+        var avg = lectures.reduce(function (s, l) { return s + l[dim]; }, 0) / lectures.length;
+        if (avg > bestDim.val) bestDim = { dim: dim, val: avg };
+      });
+    }
+
+    var stats = [
+      { value: lectures.length + '/' + TOTAL_LECTURES, label: 'Lectures Completed', cls: 'color-accent' },
+      { value: avgComposite.toFixed(1), label: 'Average Composite', cls: 'color-good' },
+      { value: earned + '/10', label: 'Achievements Earned', cls: 'color-mid' },
+      {
+        value: bestDim.dim.charAt(0).toUpperCase() + bestDim.dim.slice(1),
+        label: 'Strongest Dimension (' + bestDim.val.toFixed(1) + ')',
+        cls: 'color-accent',
+      },
+    ];
+
+    stats.forEach(function (s) {
+      var stat = el('div', { className: 'gf-stat' }, [
+        el('div', { className: 'gf-stat-value ' + s.cls, textContent: s.value }),
+        el('div', { className: 'gf-stat-label', textContent: s.label }),
+      ]);
+      container.appendChild(stat);
+    });
+  }
+
+  /* ===================================================
+     GROUP SWITCHING
+     =================================================== */
+
+  document.querySelectorAll('.gf-group-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.gf-group-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      renderAll(parseInt(btn.getAttribute('data-group'), 10));
+    });
+  });
+
+  /* ===================================================
+     PUBLIC API -- for integration with real data
+     =================================================== */
+
+  /**
+   * Update the dashboard with real lecture data.
+   *
+   * @param {number} groupId - 1 or 2
+   * @param {Array} lectures - Array of objects, each with:
+   *   { num, clarity, engagement, depth, pacing, interaction }
+   *   where each dimension is a score from 1-10.
+   *
+   * Example:
+   *   window.GamificationDashboard.update(1, [
+   *     { num: 1, clarity: 7.2, engagement: 6.8, depth: 7.0, pacing: 7.5, interaction: 6.5 },
+   *     ...
+   *   ]);
+   */
+  window.GamificationDashboard = {
+    update: function (groupId, lectures) {
+      SAMPLE_DATA[groupId] = { lectures: lectures };
+      var activeBtn = document.querySelector('.gf-group-btn.active');
+      if (activeBtn && parseInt(activeBtn.getAttribute('data-group'), 10) === groupId) {
+        renderAll(groupId);
+      }
+    },
+  };
+
+  /* ===================================================
+     INITIAL RENDER
+     =================================================== */
+
+  renderAll(1);
+
+})();
+</script>
+
+</body>
+</html>

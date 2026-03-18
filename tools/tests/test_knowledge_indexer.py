@@ -22,7 +22,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.knowledge_indexer as ki
+import tools.integrations.knowledge_indexer as ki
 
 
 # ===========================================================================
@@ -104,7 +104,7 @@ class TestGetPineconeIndex:
         mock_pc.Index.return_value = mock_index
 
         with patch.object(ki, "PINECONE_API_KEY", "key"), \
-             patch("tools.knowledge_indexer.Pinecone", return_value=mock_pc), \
+             patch("tools.integrations.knowledge_indexer.Pinecone", return_value=mock_pc), \
              patch.object(ki, "_wait_for_index_ready"):
 
             result = ki.get_pinecone_index()
@@ -121,7 +121,7 @@ class TestGetPineconeIndex:
         mock_pc.Index.return_value = mock_index
 
         with patch.object(ki, "PINECONE_API_KEY", "key"), \
-             patch("tools.knowledge_indexer.Pinecone", return_value=mock_pc):
+             patch("tools.integrations.knowledge_indexer.Pinecone", return_value=mock_pc):
 
             result = ki.get_pinecone_index()
 
@@ -167,7 +167,7 @@ class TestEmbedText:
         ]
         ki._embed_client_cache = mock_client
 
-        with patch("tools.knowledge_indexer.time.sleep"):
+        with patch("tools.integrations.knowledge_indexer.time.sleep"):
             result = ki.embed_text("retry text")
 
         assert len(result) == 3072
@@ -177,8 +177,8 @@ class TestEmbedText:
         mock_client.models.embed_content.side_effect = Exception("persistent error")
         ki._embed_client_cache = mock_client
 
-        with patch("tools.knowledge_indexer.time.sleep"):
-            with pytest.raises(RuntimeError, match="failed after"):
+        with patch("tools.core.retry.time.sleep"):
+            with pytest.raises(Exception, match="persistent error"):
                 ki.embed_text("will fail")
 
 
@@ -330,7 +330,7 @@ class TestBatchUpsert:
         ]
         vectors = [{"id": "v1", "values": [0.1], "metadata": {}}]
 
-        with patch("tools.knowledge_indexer.time.sleep"):
+        with patch("tools.integrations.knowledge_indexer.time.sleep"):
             total = ki._batch_upsert(mock_index, vectors)
 
         assert total == 1

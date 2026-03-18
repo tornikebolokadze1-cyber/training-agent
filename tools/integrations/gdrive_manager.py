@@ -12,7 +12,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
-from tools.config import (
+from tools.core.config import (
     GROUPS,
     IS_RAILWAY,
     LECTURE_FOLDER_IDS,
@@ -79,7 +79,7 @@ def _get_credentials() -> Credentials:
             if IS_RAILWAY:
                 raise RuntimeError(
                     "Google OAuth refresh_token is invalid or missing. "
-                    "Re-authorize locally: python -m tools.gdrive_manager, "
+                    "Re-authorize locally: python -m tools.integrations.gdrive_manager, "
                     "then update GOOGLE_TOKEN_JSON_B64 in Railway with: "
                     "base64 -i token.json | tr -d '\\n'"
                 )
@@ -88,7 +88,7 @@ def _get_credentials() -> Credentials:
                 raise RuntimeError(
                     "OAuth token expired and cannot be refreshed. "
                     "Run the application locally with a browser to re-authorize: "
-                    "python -m tools.gdrive_manager"
+                    "python -m tools.integrations.gdrive_manager"
                 )
             credentials_path = get_google_credentials_path()
             flow = InstalledAppFlow.from_client_secrets_file(
@@ -403,7 +403,7 @@ def restrict_to_owner(file_or_folder_id: str) -> None:
             except Exception as e:
                 logger.warning("Failed to remove permission %s: %s", perm["id"], e)
                 try:
-                    from tools.whatsapp_sender import alert_operator
+                    from tools.integrations.whatsapp_sender import alert_operator
                     alert_operator(
                         f"Drive permission removal FAILED for {file_or_folder_id}: {e}"
                     )

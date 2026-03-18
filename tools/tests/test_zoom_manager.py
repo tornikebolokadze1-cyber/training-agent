@@ -24,7 +24,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.zoom_manager as zm
+import tools.integrations.zoom_manager as zm
 
 
 # ===========================================================================
@@ -101,7 +101,7 @@ class TestGetAccessToken:
         with patch.object(zm, "ZOOM_ACCOUNT_ID", "acc"), \
              patch.object(zm, "ZOOM_CLIENT_ID", "cid"), \
              patch.object(zm, "ZOOM_CLIENT_SECRET", "secret"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             token = zm.get_access_token()
 
         assert token == "new-token"
@@ -119,8 +119,8 @@ class TestGetAccessToken:
         with patch.object(zm, "ZOOM_ACCOUNT_ID", "acc"), \
              patch.object(zm, "ZOOM_CLIENT_ID", "cid"), \
              patch.object(zm, "ZOOM_CLIENT_SECRET", "secret"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client), \
-             patch("tools.zoom_manager.time.sleep"):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client), \
+             patch("tools.integrations.zoom_manager.time.sleep"):
             with pytest.raises(zm.ZoomAuthError, match="Failed to obtain"):
                 zm.get_access_token()
 
@@ -147,7 +147,7 @@ class TestZoomRequest:
         mock_client.request.return_value = mock_response
 
         with patch.object(zm, "get_access_token", return_value="tok"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             result = zm._zoom_request("GET", "/test")
 
         assert result == {"data": "ok"}
@@ -162,7 +162,7 @@ class TestZoomRequest:
         mock_client.request.return_value = mock_response
 
         with patch.object(zm, "get_access_token", return_value="tok"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             result = zm._zoom_request("DELETE", "/test")
 
         assert result == {}
@@ -185,8 +185,8 @@ class TestZoomRequest:
         mock_client.request.side_effect = [resp_401, resp_200]
 
         with patch.object(zm, "get_access_token", return_value="fresh-tok"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client), \
-             patch("tools.zoom_manager.time.sleep"):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client), \
+             patch("tools.integrations.zoom_manager.time.sleep"):
             result = zm._zoom_request("GET", "/test")
 
         assert result == {"ok": True}
@@ -204,8 +204,8 @@ class TestZoomRequest:
         mock_client.request.return_value = mock_response
 
         with patch.object(zm, "get_access_token", return_value="tok"), \
-             patch("tools.zoom_manager.httpx.Client", return_value=mock_client), \
-             patch("tools.zoom_manager.time.sleep"):
+             patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client), \
+             patch("tools.integrations.zoom_manager.time.sleep"):
             with pytest.raises(zm.ZoomAPIError) as exc_info:
                 zm._zoom_request("GET", "/meetings/bad-id")
 
@@ -300,7 +300,7 @@ class TestDownloadRecording:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.stream.return_value = mock_response
 
-        with patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+        with patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             result = zm.download_recording(
                 "https://zoom.us/recording/dl", "token", dest
             )
@@ -322,7 +322,7 @@ class TestDownloadRecording:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.stream.return_value = mock_response
 
-        with patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+        with patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             with pytest.raises(zm.ZoomDownloadError, match="403"):
                 zm.download_recording("https://zoom.us/dl", "tok", dest)
 
@@ -341,7 +341,7 @@ class TestDownloadRecording:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.stream.return_value = mock_response
 
-        with patch("tools.zoom_manager.httpx.Client", return_value=mock_client):
+        with patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
             result = zm.download_recording("https://zoom/dl", "tok", dest)
 
         assert result.exists()

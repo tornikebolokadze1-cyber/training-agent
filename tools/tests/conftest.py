@@ -9,7 +9,7 @@ touching real API endpoints.
 - Every attribute used by ANY test file must be declared here.
 - The _stub_module helper FORCE-registers stubs (overwriting any real
   module that was imported earlier, e.g. by the root conftest).
-- test_whatsapp_assistant.py pops the tools.whatsapp_assistant stub
+- test_whatsapp_assistant.py pops the tools.services.whatsapp_assistant stub
   and imports the real module — that is expected and safe.
 """
 
@@ -120,6 +120,9 @@ _httpx = _stub_module("httpx")
 _httpx.Client = MagicMock
 _httpx.AsyncClient = MagicMock
 _httpx.Timeout = MagicMock
+_httpx.TransportError = type("TransportError", (Exception,), {})
+_httpx.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
+_httpx.TimeoutException = type("TimeoutException", (_httpx.TransportError,), {})
 
 # ===================================================================
 # fastapi — including middleware and responses submodules
@@ -224,6 +227,6 @@ class _IncomingMessage:
             setattr(self, k, v)
 
 
-_wa_assistant_mod = _stub_module("tools.whatsapp_assistant")
+_wa_assistant_mod = _stub_module("tools.services.whatsapp_assistant")
 _wa_assistant_mod.WhatsAppAssistant = _NoOpAssistant
 _wa_assistant_mod.IncomingMessage = _IncomingMessage

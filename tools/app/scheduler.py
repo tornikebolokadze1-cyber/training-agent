@@ -23,7 +23,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from tools.config import (
+from tools.core.config import (
     GROUPS,
     TBILISI_TZ,
     TMP_DIR,
@@ -31,7 +31,7 @@ from tools.config import (
     get_lecture_folder_name,
     get_lecture_number,
 )
-from tools.whatsapp_sender import alert_operator
+from tools.integrations.whatsapp_sender import alert_operator
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,9 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 
 
 def _import_zoom_manager():
-    """Lazy-import tools.zoom_manager; raises ImportError with a clear message."""
+    """Lazy-import tools.integrations.zoom_manager; raises ImportError with a clear message."""
     try:
-        import tools.zoom_manager as zm
+        import tools.integrations.zoom_manager as zm
         return zm
     except ImportError as exc:
         raise ImportError(
@@ -95,7 +95,7 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
         timeout expires before any recording appears.
 
     Raises:
-        ImportError: If ``tools.zoom_manager`` is not yet implemented.
+        ImportError: If ``tools.integrations.zoom_manager`` is not yet implemented.
     """
     zm = _import_zoom_manager()
 
@@ -271,8 +271,8 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
-    from tools.gdrive_manager import ensure_folder, get_drive_service, upload_file
-    from tools.transcribe_lecture import transcribe_and_index
+    from tools.integrations.gdrive_manager import ensure_folder, get_drive_service, upload_file
+    from tools.services.transcribe_lecture import transcribe_and_index
 
     group = GROUPS[group_number]
     lecture_folder_name = get_lecture_folder_name(lecture_number)
@@ -384,7 +384,7 @@ def _run_post_meeting_pipeline(
         # CRITICAL: Always remove the dedup key so other paths (recording.completed,
         # manual-trigger, scheduler fallback) are not permanently blocked.
         try:
-            from tools.server import _processing_tasks, _task_key
+            from tools.app.server import _processing_tasks, _task_key
             key = _task_key(group_number, lecture_number)
             _processing_tasks.pop(key, None)
             logger.info("[post] Dedup key %s removed from _processing_tasks", key)
@@ -482,7 +482,7 @@ async def pre_meeting_job(group_number: int) -> None:
 
     # ---- WhatsApp reminder --------------------------------------------------
     try:
-        from tools.whatsapp_sender import send_group_reminder
+        from tools.integrations.whatsapp_sender import send_group_reminder
 
         await loop.run_in_executor(
             None,
@@ -550,7 +550,7 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     # Evict stale tasks first (mirrors server.py behavior) so a crashed
     # pipeline from >4 hours ago doesn't permanently block the fallback.
     try:
-        from tools.server import _processing_tasks, _task_key, _evict_stale_tasks
+        from tools.app.server import _processing_tasks, _task_key, _evict_stale_tasks
         _evict_stale_tasks()
         key = _task_key(group_number, lecture_number)
         if key in _processing_tasks:
@@ -799,7 +799,7 @@ async def _async_main() -> None:
 
 
 def main() -> None:
-    """Synchronous entry point for ``python -m tools.scheduler``."""
+    """Synchronous entry point for ``python -m tools.app.scheduler``."""
     asyncio.run(_async_main())
 
 

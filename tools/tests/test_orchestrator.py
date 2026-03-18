@@ -23,14 +23,14 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Pop fastapi/slowapi/pydantic stubs so orchestrator can import real ones.
-# orchestrator.py imports from tools.server which needs real FastAPI.
+# orchestrator.py imports from tools.app.server which needs real FastAPI.
 # ---------------------------------------------------------------------------
 for _mod_name in list(sys.modules):
     if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "uvicorn",
-                             "tools.server", "tools.orchestrator")):
+                             "tools.app.server", "tools.app.orchestrator")):
         sys.modules.pop(_mod_name, None)
 
-import tools.orchestrator as orch  # noqa: E402
+import tools.app.orchestrator as orch  # noqa: E402
 
 
 # ===========================================================================
@@ -98,7 +98,7 @@ class TestCleanupStaleTmpFiles:
         import os
         os.utime(old_file, (old_mtime, old_mtime))
 
-        with patch("tools.config.TMP_DIR", tmp_path):
+        with patch("tools.core.config.TMP_DIR", tmp_path):
             orch._cleanup_stale_tmp_files()
 
         assert not old_file.exists()
@@ -108,14 +108,14 @@ class TestCleanupStaleTmpFiles:
         fresh_file.write_bytes(b"\x00" * 10)
         # mtime is now — fresh
 
-        with patch("tools.config.TMP_DIR", tmp_path):
+        with patch("tools.core.config.TMP_DIR", tmp_path):
             orch._cleanup_stale_tmp_files()
 
         assert fresh_file.exists()
 
     def test_handles_missing_directory_gracefully(self, tmp_path):
         nonexistent = tmp_path / "nonexistent_dir"
-        with patch("tools.config.TMP_DIR", nonexistent):
+        with patch("tools.core.config.TMP_DIR", nonexistent):
             # Should not raise even if dir doesn't exist
             # (glob on nonexistent returns empty)
             orch._cleanup_stale_tmp_files()
@@ -169,7 +169,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", None):
+             patch("tools.app.scheduler._scheduler_ref", None):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -190,7 +190,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", None):
+             patch("tools.app.scheduler._scheduler_ref", None):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -209,7 +209,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", None):
+             patch("tools.app.scheduler._scheduler_ref", None):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -245,7 +245,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", mock_scheduler):
+             patch("tools.app.scheduler._scheduler_ref", mock_scheduler):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -271,7 +271,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", mock_scheduler):
+             patch("tools.app.scheduler._scheduler_ref", mock_scheduler):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -288,7 +288,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret") as mock_verify, \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", None):
+             patch("tools.app.scheduler._scheduler_ref", None):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -322,7 +322,7 @@ class TestStatusEndpoint:
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
-             patch("tools.scheduler._scheduler_ref", mock_scheduler):
+             patch("tools.app.scheduler._scheduler_ref", mock_scheduler):
             mock_app.state = mock_state
             mock_app.title = "test"
             mock_app.version = "0.1"
@@ -423,7 +423,7 @@ class TestConfigureLogging:
         env = os.environ.copy()
         env.pop("RAILWAY_ENVIRONMENT", None)
         with patch.dict("os.environ", env, clear=True), \
-             patch("tools.orchestrator.PROJECT_ROOT", tmp_path):
+             patch("tools.app.orchestrator.PROJECT_ROOT", tmp_path):
             orch._configure_logging()
 
         root = logging.getLogger()
@@ -520,7 +520,7 @@ class TestAsyncStart:
         mock_server_instance = MagicMock()
         mock_server_instance.serve = _noop_serve
 
-        with patch("tools.scheduler.start_scheduler", return_value=mock_scheduler) as mock_start, \
+        with patch("tools.app.scheduler.start_scheduler", return_value=mock_scheduler) as mock_start, \
              patch("uvicorn.Config"), \
              patch("uvicorn.Server", return_value=mock_server_instance):
             self._run(orch._async_start())
@@ -538,7 +538,7 @@ class TestAsyncStart:
         mock_server_instance = MagicMock()
         mock_server_instance.serve = _raise_serve
 
-        with patch("tools.scheduler.start_scheduler", return_value=mock_scheduler), \
+        with patch("tools.app.scheduler.start_scheduler", return_value=mock_scheduler), \
              patch("uvicorn.Config"), \
              patch("uvicorn.Server", return_value=mock_server_instance), \
              pytest.raises(RuntimeError, match="server error"):

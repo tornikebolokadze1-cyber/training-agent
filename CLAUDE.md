@@ -27,20 +27,19 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 ### Python Tools (`tools/`)
 | Tool | Purpose |
 |------|---------|
-| `config.py` | Shared config: groups, schedules, folder IDs, Gemini/Claude prompts |
-| `gdrive_manager.py` | Google Drive: folder creation, resumable upload, Doc creation |
-| `gemini_analyzer.py` | Multi-model pipeline: Gemini transcription → Claude reasoning → Gemini writing |
-| `transcribe_lecture.py` | Main analysis pipeline (single source of truth for all entry points) |
-| `knowledge_indexer.py` | Pinecone RAG: chunk, embed, upsert lecture content for assistant |
-| `whatsapp_sender.py` | WhatsApp messaging via Green API (group + private) |
-| `whatsapp_assistant.py` | AI assistant "მრჩეველი": Claude reasoning + Gemini Georgian response |
-| `manychat_sender.py` | Legacy ManyChat API (deprecated — replaced by Green API) |
-| `process_recording.py` | CLI tool: manual recording processing and testing |
-| `server.py` | FastAPI webhook server (receives n8n calls + WhatsApp messages) |
-| `scheduler.py` | APScheduler: cron jobs for pre/post meeting automation |
-| `zoom_manager.py` | Zoom S2S OAuth: meeting creation, recording download |
-| `orchestrator.py` | Unified entry point: APScheduler + FastAPI on single loop |
-| `email_sender.py` | Gmail OAuth2 (backup — Zoom handles invitations directly) |
+| `core/config.py` | Shared config: groups, schedules, folder IDs, Gemini/Claude prompts |
+| `integrations/gdrive_manager.py` | Google Drive: folder creation, resumable upload, Doc creation |
+| `integrations/gemini_analyzer.py` | Multi-model pipeline: Gemini transcription → Claude reasoning → Gemini writing |
+| `services/transcribe_lecture.py` | Main analysis pipeline (single source of truth for all entry points) |
+| `integrations/knowledge_indexer.py` | Pinecone RAG: chunk, embed, upsert lecture content for assistant |
+| `integrations/whatsapp_sender.py` | WhatsApp messaging via Green API (group + private) |
+| `services/whatsapp_assistant.py` | AI assistant "მრჩეველი": Claude reasoning + Gemini Georgian response |
+| `services/analytics.py` | Course analytics and reporting |
+| `app/process_recording.py` | CLI tool: manual recording processing and testing |
+| `app/server.py` | FastAPI webhook server (receives n8n calls + WhatsApp messages) |
+| `app/scheduler.py` | APScheduler: cron jobs for pre/post meeting automation |
+| `integrations/zoom_manager.py` | Zoom S2S OAuth: meeting creation, recording download |
+| `app/orchestrator.py` | Unified entry point: APScheduler + FastAPI on single loop |
 
 ### n8n Workflows
 1. **Pre-Meeting Reminders** — 18:00 trigger → email + WhatsApp Zoom link
@@ -82,7 +81,7 @@ pip install -r requirements.txt
 python -m tools.gdrive_manager
 
 # Start the full system (scheduler + webhook server)
-python -m tools.orchestrator       # or: ./start.sh
+python -m tools.app.orchestrator    # or: ./start.sh
 
 # Run tests
 pip install -r requirements-dev.txt
@@ -91,7 +90,7 @@ pytest tools/tests/test_core.py -v
 
 ## Deployment (Railway)
 - **Platform**: Railway PaaS with Docker (multi-stage build)
-- **Entry point**: `python -m tools.orchestrator` (Dockerfile CMD)
+- **Entry point**: `python -m tools.app.orchestrator` (Dockerfile CMD)
 - **Config files**: `Dockerfile`, `railway.toml`, `.dockerignore`
 - **Credentials on Railway**: base64-encode JSON files into env vars (`GOOGLE_CREDENTIALS_JSON_B64`, etc.)
 - **Deploy**: `git push` to `main` triggers GitHub Actions → Railway CLI deploy

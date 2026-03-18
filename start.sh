@@ -234,7 +234,7 @@ info "PID file: $PID_FILE"
 cd "$PROJECT_ROOT"
 
 # Tee stdout+stderr to the log file while keeping console output
-"$VENV_PYTHON" -m tools.orchestrator 2>&1 | tee -a "$LOG_FILE" &
+"$VENV_PYTHON" -m tools.app.orchestrator 2>&1 | tee -a "$LOG_FILE" &
 SERVER_PID=$!
 
 echo "$SERVER_PID" > "$PID_FILE"

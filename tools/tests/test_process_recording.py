@@ -18,7 +18,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.process_recording as pr
+import tools.app.process_recording as pr
 
 
 # ===========================================================================

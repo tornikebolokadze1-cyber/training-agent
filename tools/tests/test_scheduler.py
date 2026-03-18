@@ -30,7 +30,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.scheduler as sched
+import tools.app.scheduler as sched
 
 
 # ===========================================================================
@@ -65,7 +65,7 @@ class TestTbilisiTimezone:
 def _make_zoom_manager(get_meeting_recordings_side_effect=None,
                        get_meeting_recordings_return=None) -> types.ModuleType:
     """Return a fake zoom_manager module for injection into _import_zoom_manager."""
-    zm = types.ModuleType("tools.zoom_manager")
+    zm = types.ModuleType("tools.integrations.zoom_manager")
     mock_fn = MagicMock()
     if get_meeting_recordings_side_effect is not None:
         mock_fn.side_effect = get_meeting_recordings_side_effect
@@ -92,7 +92,7 @@ class TestCheckRecordingReadyAuthError:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             result = sched.check_recording_ready("mtg-123")
 
         return result, zm.get_meeting_recordings, alert_mock
@@ -133,7 +133,7 @@ class TestCheckRecordingReadyAuthError:
         alert_mock = MagicMock()
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             sched.check_recording_ready("meeting-XYZ-789")
 
         alert_call_args = alert_mock.call_args[0][0]
@@ -170,7 +170,7 @@ class TestCheckRecordingReadyTransientError:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             result = sched.check_recording_ready("mtg-retry")
 
         assert len(result) == 1
@@ -192,7 +192,7 @@ class TestCheckRecordingReadyTransientError:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             sched.check_recording_ready("mtg-no-alert")
 
         alert_mock.assert_not_called()
@@ -212,7 +212,7 @@ class TestCheckRecordingReadyTransientError:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", MagicMock()), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             result = sched.check_recording_ready("mtg-multi-retry")
 
         assert calls[0] >= 2
@@ -238,7 +238,7 @@ class TestCheckRecordingReadyTransientError:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", MagicMock()), \
-             patch("tools.scheduler.time.sleep"):
+             patch("tools.app.scheduler.time.sleep"):
             result = sched.check_recording_ready("mtg-empty")
 
         assert result is not None
@@ -255,7 +255,7 @@ class TestPreMeetingJobWhatsAppAlert:
 
     def _run_pre_meeting_job(self, group_number: int, whatsapp_error: Exception):
         """Run pre_meeting_job in an event loop with mocked dependencies."""
-        from tools.config import TBILISI_TZ
+        from tools.core.config import TBILISI_TZ
 
         # A fixed datetime on a Tuesday (group 1 meeting day) so lecture_number > 0
         # weekday=1 (Tuesday), date 2026-03-17
@@ -284,23 +284,23 @@ class TestPreMeetingJobWhatsAppAlert:
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(side_effect=fake_run_in_executor)
 
-        with patch("tools.scheduler.datetime") as mock_dt, \
+        with patch("tools.app.scheduler.datetime") as mock_dt, \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "alert_operator", alert_mock), \
              patch.object(sched, "_get_running_scheduler", return_value=fake_scheduler), \
              patch.object(sched, "_schedule_post_meeting"), \
-             patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+             patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
 
             # Make datetime.now() return our fixed time
             mock_dt.now.return_value = now_tbilisi
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
 
             # Patch send_group_reminder to raise the given error
-            with patch("tools.whatsapp_sender.send_group_reminder",
+            with patch("tools.integrations.whatsapp_sender.send_group_reminder",
                        side_effect=whatsapp_error, create=True):
 
                 # Also patch the import inside pre_meeting_job
-                import tools.whatsapp_sender as ws
+                import tools.integrations.whatsapp_sender as ws
                 original = getattr(ws, "send_group_reminder", None)
                 ws.send_group_reminder = MagicMock(side_effect=whatsapp_error)
 
@@ -316,8 +316,8 @@ class TestPreMeetingJobWhatsAppAlert:
 
     def test_whatsapp_failure_calls_alert_operator(self):
         """Any exception from send_group_reminder must trigger alert_operator."""
-        import tools.whatsapp_sender as ws
-        from tools.scheduler import TBILISI_TZ
+        import tools.integrations.whatsapp_sender as ws
+        from tools.app.scheduler import TBILISI_TZ
 
         now_tbilisi = datetime(2026, 3, 17, 19, 0, 0, tzinfo=TBILISI_TZ)
         fake_meeting_info = {"join_url": "https://zoom.us/j/123", "id": "99999"}
@@ -339,12 +339,12 @@ class TestPreMeetingJobWhatsAppAlert:
         mock_loop.run_in_executor = AsyncMock(side_effect=fake_executor)
 
         try:
-            with patch("tools.scheduler.datetime") as mock_dt, \
+            with patch("tools.app.scheduler.datetime") as mock_dt, \
                  patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
                  patch.object(sched, "alert_operator", alert_mock), \
                  patch.object(sched, "_get_running_scheduler", return_value=fake_scheduler), \
                  patch.object(sched, "_schedule_post_meeting"), \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
 
                 mock_dt.now.return_value = now_tbilisi
                 mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -359,8 +359,8 @@ class TestPreMeetingJobWhatsAppAlert:
 
     def test_whatsapp_failure_alert_mentions_group_number(self):
         """The alert message should mention the failing group for operator triage."""
-        import tools.whatsapp_sender as ws
-        from tools.scheduler import TBILISI_TZ
+        import tools.integrations.whatsapp_sender as ws
+        from tools.app.scheduler import TBILISI_TZ
 
         now_tbilisi = datetime(2026, 3, 17, 19, 0, 0, tzinfo=TBILISI_TZ)
         fake_meeting_info = {"join_url": "https://zoom.us/j/456", "id": "77777"}
@@ -381,12 +381,12 @@ class TestPreMeetingJobWhatsAppAlert:
         mock_loop.run_in_executor = AsyncMock(side_effect=fake_executor)
 
         try:
-            with patch("tools.scheduler.datetime") as mock_dt, \
+            with patch("tools.app.scheduler.datetime") as mock_dt, \
                  patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
                  patch.object(sched, "alert_operator", alert_mock), \
                  patch.object(sched, "_get_running_scheduler", return_value=fake_scheduler), \
                  patch.object(sched, "_schedule_post_meeting"), \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
 
                 mock_dt.now.return_value = now_tbilisi
                 mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -401,8 +401,8 @@ class TestPreMeetingJobWhatsAppAlert:
 
     def test_whatsapp_success_does_not_call_alert_operator(self):
         """A successful WhatsApp reminder must not trigger any operator alert."""
-        import tools.whatsapp_sender as ws
-        from tools.scheduler import TBILISI_TZ
+        import tools.integrations.whatsapp_sender as ws
+        from tools.app.scheduler import TBILISI_TZ
 
         now_tbilisi = datetime(2026, 3, 17, 19, 0, 0, tzinfo=TBILISI_TZ)
         fake_meeting_info = {"join_url": "https://zoom.us/j/789", "id": "55555"}
@@ -423,12 +423,12 @@ class TestPreMeetingJobWhatsAppAlert:
         mock_loop.run_in_executor = AsyncMock(side_effect=fake_executor)
 
         try:
-            with patch("tools.scheduler.datetime") as mock_dt, \
+            with patch("tools.app.scheduler.datetime") as mock_dt, \
                  patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
                  patch.object(sched, "alert_operator", alert_mock), \
                  patch.object(sched, "_get_running_scheduler", return_value=fake_scheduler), \
                  patch.object(sched, "_schedule_post_meeting"), \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
 
                 mock_dt.now.return_value = now_tbilisi
                 mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -473,39 +473,39 @@ class TestImportZoomManager:
         """_import_zoom_manager returns the zoom_manager module successfully."""
         import sys
         # If the real module exists, just verify it imports
-        if "tools.zoom_manager" in sys.modules:
+        if "tools.integrations.zoom_manager" in sys.modules:
             result = sched._import_zoom_manager()
             assert hasattr(result, "get_meeting_recordings") or hasattr(result, "__name__")
         else:
-            fake_zm = types.ModuleType("tools.zoom_manager")
+            fake_zm = types.ModuleType("tools.integrations.zoom_manager")
             fake_zm.get_meeting_recordings = MagicMock()
-            sys.modules["tools.zoom_manager"] = fake_zm
+            sys.modules["tools.integrations.zoom_manager"] = fake_zm
             try:
                 result = sched._import_zoom_manager()
                 assert result is fake_zm
             finally:
-                del sys.modules["tools.zoom_manager"]
+                del sys.modules["tools.integrations.zoom_manager"]
 
     def test_import_error_raises_with_clear_message(self):
         import sys
-        # Temporarily replace tools.zoom_manager with a module that raises on import
-        saved = sys.modules.pop("tools.zoom_manager", None)
+        # Temporarily replace tools.integrations.zoom_manager with a module that raises on import
+        saved = sys.modules.pop("tools.integrations.zoom_manager", None)
         # Also block re-import by making importlib fail
         original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
         def blocking_import(name, *args, **kwargs):
-            if name == "tools.zoom_manager":
-                raise ImportError("No module named 'tools.zoom_manager'")
+            if name == "tools.integrations.zoom_manager":
+                raise ImportError("No module named 'tools.integrations.zoom_manager'")
             return original_import(name, *args, **kwargs)
 
         try:
-            sys.modules.pop("tools.zoom_manager", None)
+            sys.modules.pop("tools.integrations.zoom_manager", None)
             with patch("builtins.__import__", side_effect=blocking_import):
                 with pytest.raises(ImportError, match="tools/zoom_manager.py is not yet created"):
                     sched._import_zoom_manager()
         finally:
             if saved is not None:
-                sys.modules["tools.zoom_manager"] = saved
+                sys.modules["tools.integrations.zoom_manager"] = saved
 
 
 # ===========================================================================
@@ -521,7 +521,7 @@ class TestCheckRecordingReadyTimeout:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"), \
+             patch("tools.app.scheduler.time.sleep"), \
              patch.object(sched, "RECORDING_INITIAL_DELAY", 0), \
              patch.object(sched, "RECORDING_POLL_INTERVAL", 1), \
              patch.object(sched, "RECORDING_POLL_TIMEOUT", 0):
@@ -536,7 +536,7 @@ class TestCheckRecordingReadyTimeout:
 
         with patch.object(sched, "_import_zoom_manager", return_value=zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.scheduler.time.sleep"), \
+             patch("tools.app.scheduler.time.sleep"), \
              patch.object(sched, "RECORDING_INITIAL_DELAY", 0), \
              patch.object(sched, "RECORDING_POLL_INTERVAL", 1), \
              patch.object(sched, "RECORDING_POLL_TIMEOUT", 0):
@@ -592,10 +592,10 @@ class TestRunPostMeetingPipeline:
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
-             patch("tools.gdrive_manager.get_drive_service", return_value=MagicMock()), \
-             patch("tools.gdrive_manager.ensure_folder", return_value="lec-folder"), \
-             patch("tools.gdrive_manager.upload_file", mock_upload), \
-             patch("tools.transcribe_lecture.transcribe_and_index", mock_tai):
+             patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
+             patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
+             patch("tools.integrations.gdrive_manager.upload_file", mock_upload), \
+             patch("tools.services.transcribe_lecture.transcribe_and_index", mock_tai):
             sched._run_post_meeting_pipeline(1, 3, "mtg-ok")
 
         mock_tai.assert_called_once()
@@ -618,10 +618,10 @@ class TestRunPostMeetingPipeline:
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("tools.gdrive_manager.get_drive_service", return_value=MagicMock()), \
-             patch("tools.gdrive_manager.ensure_folder", return_value="lec-folder"), \
-             patch("tools.gdrive_manager.upload_file", MagicMock()), \
-             patch("tools.transcribe_lecture.transcribe_and_index", side_effect=RuntimeError("Gemini down")):
+             patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
+             patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
+             patch("tools.integrations.gdrive_manager.upload_file", MagicMock()), \
+             patch("tools.services.transcribe_lecture.transcribe_and_index", side_effect=RuntimeError("Gemini down")):
             sched._run_post_meeting_pipeline(1, 3, "mtg-fail")
 
         alert_mock.assert_called_once()
@@ -640,7 +640,7 @@ class TestPreMeetingJobEdgeCases:
 
         with patch.object(sched, "get_lecture_number", return_value=0), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
-             patch("tools.scheduler.datetime") as mock_dt:
+             patch("tools.app.scheduler.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
             asyncio.run(sched.pre_meeting_job(1))
 
@@ -653,7 +653,7 @@ class TestPreMeetingJobEdgeCases:
         with patch.object(sched, "get_lecture_number", return_value=999), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "TOTAL_LECTURES", 15), \
-             patch("tools.scheduler.datetime") as mock_dt:
+             patch("tools.app.scheduler.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
             asyncio.run(sched.pre_meeting_job(2))
 
@@ -661,7 +661,7 @@ class TestPreMeetingJobEdgeCases:
 
     def test_zoom_import_error_continues_with_placeholder(self):
         """If zoom_manager is not available, job continues with placeholder."""
-        import tools.whatsapp_sender as ws
+        import tools.integrations.whatsapp_sender as ws
         ws.send_group_reminder = MagicMock(return_value=None)
 
         async def fake_executor(executor, fn, *args):
@@ -676,8 +676,8 @@ class TestPreMeetingJobEdgeCases:
             with patch.object(sched, "get_lecture_number", return_value=3), \
                  patch.object(sched, "_import_zoom_manager", side_effect=ImportError("no zoom")), \
                  patch.object(sched, "alert_operator", MagicMock()), \
-                 patch("tools.scheduler.datetime") as mock_dt, \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.datetime") as mock_dt, \
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
                 mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
                 asyncio.run(sched.pre_meeting_job(1))
         finally:
@@ -686,7 +686,7 @@ class TestPreMeetingJobEdgeCases:
 
     def test_zoom_creation_error_alerts_and_continues(self):
         """If create_meeting raises non-ImportError, operator is alerted."""
-        import tools.whatsapp_sender as ws
+        import tools.integrations.whatsapp_sender as ws
         ws.send_group_reminder = MagicMock(return_value=None)
         alert_mock = MagicMock()
 
@@ -705,8 +705,8 @@ class TestPreMeetingJobEdgeCases:
             with patch.object(sched, "get_lecture_number", return_value=3), \
                  patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
                  patch.object(sched, "alert_operator", alert_mock), \
-                 patch("tools.scheduler.datetime") as mock_dt, \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.datetime") as mock_dt, \
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
                 mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
                 asyncio.run(sched.pre_meeting_job(1))
         finally:
@@ -718,7 +718,7 @@ class TestPreMeetingJobEdgeCases:
 
     def test_no_meeting_id_skips_post_meeting_scheduling(self):
         """If Zoom fails (no ID), post-meeting job is NOT scheduled."""
-        import tools.whatsapp_sender as ws
+        import tools.integrations.whatsapp_sender as ws
         ws.send_group_reminder = MagicMock(return_value=None)
 
         async def fake_executor(executor, fn, *args):
@@ -734,8 +734,8 @@ class TestPreMeetingJobEdgeCases:
                  patch.object(sched, "_import_zoom_manager", side_effect=ImportError("nope")), \
                  patch.object(sched, "alert_operator", MagicMock()), \
                  patch.object(sched, "_schedule_post_meeting") as mock_spm, \
-                 patch("tools.scheduler.datetime") as mock_dt, \
-                 patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+                 patch("tools.app.scheduler.datetime") as mock_dt, \
+                 patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
                 mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
                 asyncio.run(sched.pre_meeting_job(1))
         finally:
@@ -756,7 +756,7 @@ class TestPostMeetingJob:
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(return_value=None)
 
-        with patch("tools.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+        with patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
             asyncio.run(sched.post_meeting_job(1, 5, "mtg-123"))
 
         mock_loop.run_in_executor.assert_called_once()
@@ -800,7 +800,7 @@ class TestSchedulePostMeeting:
     def test_adds_job_to_scheduler(self):
         fake_scheduler = MagicMock()
 
-        with patch("tools.scheduler.datetime") as mock_dt:
+        with patch("tools.app.scheduler.datetime") as mock_dt:
             now = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
             mock_dt.now.return_value = now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -822,7 +822,7 @@ class TestSchedulePostMeeting:
         """If fire_at_hour is already past, reschedules to future."""
         fake_scheduler = MagicMock()
 
-        with patch("tools.scheduler.datetime") as mock_dt:
+        with patch("tools.app.scheduler.datetime") as mock_dt:
             now = datetime(2026, 3, 17, 23, 0, 0, tzinfo=sched.TBILISI_TZ)
             mock_dt.now.return_value = now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -850,7 +850,7 @@ class TestStartScheduler:
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
 
-        with patch("tools.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
+        with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             result = sched.start_scheduler()
 
         assert result is mock_scheduler_instance
@@ -860,7 +860,7 @@ class TestStartScheduler:
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
 
-        with patch("tools.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
+        with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
         assert mock_scheduler_instance.add_job.call_count == 4
@@ -871,7 +871,7 @@ class TestStartScheduler:
         original = sched._scheduler_ref
 
         try:
-            with patch("tools.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
+            with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
                 sched.start_scheduler()
             assert sched._scheduler_ref is mock_scheduler_instance
         finally:
@@ -881,7 +881,7 @@ class TestStartScheduler:
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
 
-        with patch("tools.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
+        with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
         job_ids = [call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list]

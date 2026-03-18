@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from tools.config import (
+from tools.core.config import (
     GROUPS,
     TBILISI_TZ,
     TMP_DIR,

@@ -23,7 +23,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from tools.config import (
+from tools.core.config import (
     GROUPS,
     IS_RAILWAY,
     MINIMUM_LECTURE_DURATION_MINUTES,
@@ -39,16 +39,16 @@ from tools.config import (
     get_lecture_folder_name,
     get_lecture_number,
 )
-from tools.gdrive_manager import (
+from tools.integrations.gdrive_manager import (
     ensure_folder,
     get_drive_service,
     upload_file,
 )
-from tools.transcribe_lecture import transcribe_and_index
-from tools.whatsapp_sender import alert_operator
+from tools.services.transcribe_lecture import transcribe_and_index
+from tools.integrations.whatsapp_sender import alert_operator
 
 try:
-    from tools.whatsapp_assistant import WhatsAppAssistant, IncomingMessage
+    from tools.services.whatsapp_assistant import WhatsAppAssistant, IncomingMessage
     _assistant_available = True
 except ImportError:
     _assistant_available = False
@@ -705,7 +705,7 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     )
 
     # Run post-meeting pipeline in background, clean up dedup key on completion
-    from tools.scheduler import _run_post_meeting_pipeline
+    from tools.app.scheduler import _run_post_meeting_pipeline
 
     def _run_and_cleanup() -> None:
         try:
@@ -856,7 +856,7 @@ async def trigger_pre_meeting(
     if group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
-    from tools.scheduler import pre_meeting_job
+    from tools.app.scheduler import pre_meeting_job
     import asyncio
     asyncio.ensure_future(pre_meeting_job(group_number=group))
 
@@ -877,7 +877,7 @@ async def _manual_pipeline_task(
     drive_file_id: str,
 ) -> None:
     """Background task: download from Drive → run full analysis pipeline."""
-    from tools.gdrive_manager import download_file
+    from tools.integrations.gdrive_manager import download_file
 
     local_path = None
     try:
@@ -996,7 +996,7 @@ async def analytics_dashboard(
     now = _time.monotonic()
     if _dashboard_cache and (now - _dashboard_cache[0]) < 300:
         return HTMLResponse(content=_dashboard_cache[1])
-    from tools.analytics import get_dashboard_data, render_dashboard_html, sync_from_pinecone
+    from tools.services.analytics import get_dashboard_data, render_dashboard_html, sync_from_pinecone
     await asyncio.to_thread(sync_from_pinecone)
     data = await asyncio.to_thread(get_dashboard_data)
     html = render_dashboard_html(data)
@@ -1019,7 +1019,7 @@ async def api_scores(
     if group is not None and group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
-    from tools.analytics import get_all_scores
+    from tools.services.analytics import get_all_scores
     rows = await asyncio.to_thread(get_all_scores, group)
     return {"scores": rows, "total": len(rows)}
 
@@ -1039,7 +1039,7 @@ async def api_stats(
     if group is not None and group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
-    from tools.analytics import get_dashboard_data
+    from tools.services.analytics import get_dashboard_data
     data = await asyncio.to_thread(get_dashboard_data)
 
     if group is not None:
@@ -1079,7 +1079,7 @@ async def api_backfill_scores(
     already-indexed lectures.
     """
     verify_webhook_secret(authorization)
-    from tools.analytics import backfill_from_tmp
+    from tools.services.analytics import backfill_from_tmp
     result = await asyncio.to_thread(backfill_from_tmp)
     logger.info("Manual score backfill triggered: %s", result)
     return {"status": "ok", **result}

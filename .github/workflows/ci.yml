@@ -43,7 +43,7 @@ jobs:
       - name: Syntax check all tools/*.py files
         run: |
           echo "Running syntax check on tools/ modules..."
-          for f in tools/*.py; do
+          find tools -name "*.py" -not -path "*/tests/*" -not -name "__init__.py" | while read f; do
             echo "Checking $f"
             python -m py_compile "$f"
           done
@@ -159,4 +159,4 @@ jobs:
             -e ZOOM_CLIENT_SECRET=test \
             -e GREEN_API_INSTANCE_ID=test \
             -e GREEN_API_TOKEN=test \
-            training-agent:ci python -c "import tools.server; print('Import OK')"
+            training-agent:ci python -c "import tools.app.server; print('Import OK')"

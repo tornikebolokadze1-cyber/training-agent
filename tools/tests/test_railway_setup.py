@@ -17,7 +17,7 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.railway_setup as rs
+import tools.core.railway_setup as rs
 
 
 # ===========================================================================

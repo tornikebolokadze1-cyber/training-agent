@@ -24,11 +24,11 @@ from unittest.mock import MagicMock, patch
 # Module stubs are set up in tools/tests/conftest.py.
 # Pop the NoOp stub so we can import the REAL whatsapp_assistant module.
 # ---------------------------------------------------------------------------
-sys.modules.pop("tools.whatsapp_assistant", None)
+sys.modules.pop("tools.services.whatsapp_assistant", None)
 
-from tools.whatsapp_assistant import IncomingMessage, WhatsAppAssistant  # noqa: E402
+from tools.services.whatsapp_assistant import IncomingMessage, WhatsAppAssistant  # noqa: E402
 import anthropic as _anthropic_real  # noqa: E402
-import tools.whatsapp_sender as _ws_mod  # noqa: E402
+import tools.integrations.whatsapp_sender as _ws_mod  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -383,21 +383,21 @@ class TestBuildGroupChatMap:
     """_build_group_chat_map builds chat-ID → group-number mapping."""
 
     def test_maps_both_groups(self):
-        import tools.whatsapp_assistant as wa_mod
+        import tools.services.whatsapp_assistant as wa_mod
         with patch.object(wa_mod, "WHATSAPP_GROUP1_ID", "group1@g.us"), \
              patch.object(wa_mod, "WHATSAPP_GROUP2_ID", "group2@g.us"):
             result = wa_mod._build_group_chat_map()
         assert result == {"group1@g.us": 1, "group2@g.us": 2}
 
     def test_skips_empty_ids(self):
-        import tools.whatsapp_assistant as wa_mod
+        import tools.services.whatsapp_assistant as wa_mod
         with patch.object(wa_mod, "WHATSAPP_GROUP1_ID", ""), \
              patch.object(wa_mod, "WHATSAPP_GROUP2_ID", "g2@g.us"):
             result = wa_mod._build_group_chat_map()
         assert result == {"g2@g.us": 2}
 
     def test_empty_when_no_ids(self):
-        import tools.whatsapp_assistant as wa_mod
+        import tools.services.whatsapp_assistant as wa_mod
         with patch.object(wa_mod, "WHATSAPP_GROUP1_ID", ""), \
              patch.object(wa_mod, "WHATSAPP_GROUP2_ID", ""):
             result = wa_mod._build_group_chat_map()
@@ -573,11 +573,11 @@ class TestRetrieveContext:
 
     def test_returns_empty_on_no_results(self):
         assistant = _make_assistant()
-        with patch("tools.whatsapp_assistant.query_knowledge",
+        with patch("tools.services.whatsapp_assistant.query_knowledge",
                     return_value=[], create=True):
             # Use the lazy import path
             with patch.dict("sys.modules", {
-                "tools.knowledge_indexer": MagicMock(query_knowledge=MagicMock(return_value=[]))
+                "tools.integrations.knowledge_indexer": MagicMock(query_knowledge=MagicMock(return_value=[]))
             }):
                 result = assistant._retrieve_context("test query", 1)
         assert result == ""
@@ -591,7 +591,7 @@ class TestRetrieveContext:
             }
         ]
         with patch.dict("sys.modules", {
-            "tools.knowledge_indexer": MagicMock(
+            "tools.integrations.knowledge_indexer": MagicMock(
                 query_knowledge=MagicMock(return_value=fake_results)
             )
         }):
@@ -602,7 +602,7 @@ class TestRetrieveContext:
     def test_handles_exception_gracefully(self):
         assistant = _make_assistant()
         with patch.dict("sys.modules", {
-            "tools.knowledge_indexer": MagicMock(
+            "tools.integrations.knowledge_indexer": MagicMock(
                 query_knowledge=MagicMock(side_effect=Exception("Pinecone down"))
             )
         }):
@@ -701,7 +701,7 @@ class TestHandleMessage:
         msg = _make_message(text="random chat")
 
         with patch.dict("sys.modules", {
-            "tools.knowledge_indexer": MagicMock(
+            "tools.integrations.knowledge_indexer": MagicMock(
                 query_knowledge=MagicMock(return_value=[])
             )
         }):
@@ -711,7 +711,7 @@ class TestHandleMessage:
 
     def test_full_pipeline_sends_response(self):
         import asyncio
-        from tools import whatsapp_assistant as wa_mod
+        from tools.services import whatsapp_assistant as wa_mod
         assistant = _make_assistant()
 
         # Claude decides to respond
@@ -728,7 +728,7 @@ class TestHandleMessage:
 
         # Patch send_message_to_chat at the import location in whatsapp_assistant
         with patch.dict("sys.modules", {
-            "tools.knowledge_indexer": MagicMock(
+            "tools.integrations.knowledge_indexer": MagicMock(
                 query_knowledge=MagicMock(return_value=[])
             )
         }), patch.object(wa_mod, "send_message_to_chat") as mock_send:
@@ -752,7 +752,7 @@ class TestHandleMessage:
     def test_direct_mention_bypasses_cooldown(self):
         import asyncio
         import time
-        from tools import whatsapp_assistant as wa_mod
+        from tools.services import whatsapp_assistant as wa_mod
         assistant = _make_assistant()
         assistant._last_passive_response["chat-001@g.us"] = time.time()
 
@@ -767,7 +767,7 @@ class TestHandleMessage:
         msg = _make_message(text="მრჩეველო, help", chat_id="chat-001@g.us")
 
         with patch.dict("sys.modules", {
-            "tools.knowledge_indexer": MagicMock(
+            "tools.integrations.knowledge_indexer": MagicMock(
                 query_knowledge=MagicMock(return_value=[])
             )
         }), patch.object(wa_mod, "send_message_to_chat"):

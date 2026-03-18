@@ -28,7 +28,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.config as cfg
+import tools.core.config as cfg
 
 
 # ===========================================================================
@@ -180,7 +180,7 @@ class TestMaterializeCredentialFileCaching:
             return real_write(*args, **kwargs)
 
         with patch.dict(os.environ, {env_key: b64_value}), \
-             patch("tools.config.tempfile.NamedTemporaryFile", side_effect=counting_ntf):
+             patch("tools.core.config.tempfile.NamedTemporaryFile", side_effect=counting_ntf):
             cfg._materialize_credential_file(env_key, tmp_path / "fallback.json")
             cfg._materialize_credential_file(env_key, tmp_path / "fallback.json")
 
@@ -341,7 +341,7 @@ class TestLoadAttendees:
 
         with patch.dict(os.environ, {}, clear=False), \
              patch.object(cfg, "_decode_b64_env", return_value=None), \
-             patch("tools.config.Path") as mock_path:
+             patch("tools.core.config.Path") as mock_path:
             mock_path.return_value.parent.parent.__truediv__ = lambda s, n: attendees_file
             # Simpler: just patch the file check
             result = cfg._load_attendees()

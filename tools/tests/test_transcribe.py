@@ -22,22 +22,22 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.transcribe_lecture as tl
+import tools.services.transcribe_lecture as tl
 
 
 # ===========================================================================
 # Helpers
 # ===========================================================================
 
-_PATCH_ALERT = "tools.transcribe_lecture.alert_operator"
-_PATCH_SEND_GROUP = "tools.transcribe_lecture.send_group_upload_notification"
-_PATCH_SEND_PRIVATE = "tools.transcribe_lecture.send_private_report"
-_PATCH_CREATE_DOC = "tools.transcribe_lecture.create_google_doc"
-_PATCH_ENSURE_FOLDER = "tools.transcribe_lecture.ensure_folder"
-_PATCH_GET_SERVICE = "tools.transcribe_lecture.get_drive_service"
-_PATCH_INDEX = "tools.transcribe_lecture.index_lecture_content"
-_PATCH_ANALYZE = "tools.transcribe_lecture.analyze_lecture"
-_PATCH_GET_FOLDER_ID = "tools.transcribe_lecture._get_lecture_folder_id"
+_PATCH_ALERT = "tools.integrations.whatsapp_sender.alert_operator"
+_PATCH_SEND_GROUP = "tools.services.transcribe_lecture.send_group_upload_notification"
+_PATCH_SEND_PRIVATE = "tools.services.transcribe_lecture.send_private_report"
+_PATCH_CREATE_DOC = "tools.services.transcribe_lecture.create_google_doc"
+_PATCH_ENSURE_FOLDER = "tools.services.transcribe_lecture.ensure_folder"
+_PATCH_GET_SERVICE = "tools.services.transcribe_lecture.get_drive_service"
+_PATCH_INDEX = "tools.services.transcribe_lecture.index_lecture_content"
+_PATCH_ANALYZE = "tools.services.transcribe_lecture.analyze_lecture"
+_PATCH_GET_FOLDER_ID = "tools.services.transcribe_lecture._get_lecture_folder_id"
 
 
 # ===========================================================================
@@ -247,11 +247,11 @@ class TestPineconeIndexingFailure:
             patch(_PATCH_ANALYZE, return_value=self._make_results()),
             patch(_PATCH_INDEX, side_effect=RuntimeError("Pinecone unavailable")),
             patch(_PATCH_ALERT) as mock_alert,
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
         ):
             counts = tl.transcribe_and_index(1, 2, video)
 
@@ -273,11 +273,11 @@ class TestPineconeIndexingFailure:
             patch(_PATCH_ANALYZE, return_value=self._make_results()),
             patch(_PATCH_INDEX, side_effect=ValueError("dimension mismatch")),
             patch(_PATCH_ALERT, side_effect=capture_alert),
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
             tl.transcribe_and_index(1, 3, video)
 
@@ -308,11 +308,11 @@ class TestQualityGate:
             patch(_PATCH_ANALYZE, return_value=results),
             patch(_PATCH_INDEX, return_value=5),
             patch(_PATCH_ALERT) as mock_alert,
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
             tl.transcribe_and_index(1, 1, video)
 
@@ -337,11 +337,11 @@ class TestQualityGate:
             patch(_PATCH_ANALYZE, return_value=results),
             patch(_PATCH_INDEX, return_value=0),
             patch(_PATCH_ALERT) as mock_alert,
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value=None),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
             tl.transcribe_and_index(1, 1, video)
 
@@ -367,11 +367,11 @@ class TestQualityGate:
             patch(_PATCH_ANALYZE, return_value=results),
             patch(_PATCH_INDEX, return_value=10),
             patch(_PATCH_ALERT, side_effect=capture_alert),
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
         ):
             tl.transcribe_and_index(1, 2, video)
 
@@ -411,15 +411,15 @@ class TestTranscriptResumeThreshold:
             }
 
         with (
-            patch("tools.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
             patch(_PATCH_ANALYZE, side_effect=capture_analyze),
             patch(_PATCH_INDEX, return_value=5),
             patch(_PATCH_ALERT),
-            patch("tools.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
-            patch("tools.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
             tl.transcribe_and_index(1, 1, video)
 

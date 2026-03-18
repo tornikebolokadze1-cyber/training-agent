@@ -19,8 +19,8 @@ from typing import Any
 
 import httpx
 
-from tools.retry import retry_with_backoff
-from tools.config import (
+from tools.core.retry import retry_with_backoff
+from tools.core.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     WEBHOOK_SECRET,

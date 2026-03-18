@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import anthropic
 from google import genai
 
-from tools.config import (
+from tools.core.config import (
     ANTHROPIC_API_KEY,
     ASSISTANT_CLAUDE_MODEL,
     ASSISTANT_COOLDOWN_SECONDS,
@@ -37,7 +37,7 @@ from tools.config import (
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
 )
-from tools.whatsapp_sender import send_message_to_chat
+from tools.integrations.whatsapp_sender import send_message_to_chat
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +286,7 @@ class WhatsAppAssistant:
             Formatted context string, or an empty string on failure.
         """
         try:
-            from tools.knowledge_indexer import query_knowledge  # lazy import
+            from tools.integrations.knowledge_indexer import query_knowledge  # lazy import
 
             results = query_knowledge(query, group_number=group_number, top_k=4)
 
@@ -417,7 +417,7 @@ class WhatsAppAssistant:
             logger.error("Claude API error in _decide_and_reason: %s", exc)
             if is_direct:
                 try:
-                    from tools.whatsapp_sender import alert_operator
+                    from tools.integrations.whatsapp_sender import alert_operator
                     alert_operator(f"Claude API error for direct mention from {message.sender_name}: {exc}")
                 except Exception as alert_err:
                     logger.error("alert_operator also failed: %s", alert_err)
@@ -426,7 +426,7 @@ class WhatsAppAssistant:
             logger.error("Unexpected error in _decide_and_reason: %s", exc)
             if is_direct:
                 try:
-                    from tools.whatsapp_sender import alert_operator
+                    from tools.integrations.whatsapp_sender import alert_operator
                     alert_operator(f"Assistant reasoning error for direct mention: {exc}")
                 except Exception as alert_err:
                     logger.error("alert_operator also failed: %s", alert_err)
@@ -654,7 +654,7 @@ if __name__ == "__main__":
         )
         print("Example:")
         print(
-            "  python -m tools.whatsapp_assistant --live "
+            "  python -m tools.services.whatsapp_assistant --live "
             "'120363XXX@g.us' '995599000001@c.us' 'TestUser' 'მრჩეველო, რა არის LLM?'"
         )
         sys.exit(0)

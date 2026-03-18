@@ -29,7 +29,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
-import tools.gdrive_manager as gdrive
+import tools.integrations.gdrive_manager as gdrive
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class TestGetTokenPathCaching:
         fake_token = tmp_path / "token.json"
         fake_token.write_text("{}", encoding="utf-8")
 
-        with patch("tools.gdrive_manager._materialize_credential_file", return_value=fake_token) as mock_mat:
+        with patch("tools.integrations.gdrive_manager._materialize_credential_file", return_value=fake_token) as mock_mat:
             result = gdrive._get_token_path()
 
         mock_mat.assert_called_once_with("GOOGLE_TOKEN_JSON_B64", gdrive.TOKEN_PATH)
@@ -87,7 +87,7 @@ class TestGetTokenPathCaching:
         fake_token = tmp_path / "token.json"
         fake_token.write_text("{}", encoding="utf-8")
 
-        with patch("tools.gdrive_manager._materialize_credential_file", return_value=fake_token) as mock_mat:
+        with patch("tools.integrations.gdrive_manager._materialize_credential_file", return_value=fake_token) as mock_mat:
             first = gdrive._get_token_path()
             second = gdrive._get_token_path()
 
@@ -123,12 +123,12 @@ class TestRestrictToOwnerAlerts:
 
         mock_alert = MagicMock()
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.whatsapp_sender.alert_operator", mock_alert):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.whatsapp_sender.alert_operator", mock_alert):
                 # Import happens lazily inside the except block; patch the module path
                 with patch.dict(
                     sys.modules,
-                    {"tools.whatsapp_sender": types.SimpleNamespace(alert_operator=mock_alert)},
+                    {"tools.integrations.whatsapp_sender": types.SimpleNamespace(alert_operator=mock_alert)},
                 ):
                     gdrive.restrict_to_owner("file-id-123")
 
@@ -143,10 +143,10 @@ class TestRestrictToOwnerAlerts:
         svc = self._build_permissions_service(permissions)
         mock_alert = MagicMock()
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             with patch.dict(
                 sys.modules,
-                {"tools.whatsapp_sender": types.SimpleNamespace(alert_operator=mock_alert)},
+                {"tools.integrations.whatsapp_sender": types.SimpleNamespace(alert_operator=mock_alert)},
             ):
                 gdrive.restrict_to_owner("file-id-ok")
 
@@ -158,7 +158,7 @@ class TestRestrictToOwnerAlerts:
         ]
         svc = self._build_permissions_service(permissions)
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             gdrive.restrict_to_owner("any-id")
 
         svc.permissions.return_value.delete.assert_not_called()
@@ -219,8 +219,8 @@ class TestCreateGoogleDoc:
             create_response={"id": "doc-id-new", "webViewLink": "https://docs.google.com/..."},
         )
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaIoBaseUpload"):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaIoBaseUpload"):
                 doc_id = gdrive.create_google_doc("ლექცია შეჯამება", "content text", "folder-id")
 
         assert doc_id == "doc-id-new"
@@ -234,8 +234,8 @@ class TestCreateGoogleDoc:
             list_response={"files": [{"id": "existing-doc-id"}]},
         )
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaIoBaseUpload"):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaIoBaseUpload"):
                 doc_id = gdrive.create_google_doc("ლექცია შეჯამება", "updated content", "folder-id")
 
         assert doc_id == "existing-doc-id"
@@ -263,8 +263,8 @@ class TestUploadFile:
             None, {"id": "uploaded-id"}
         )
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaFileUpload"):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
                 file_id = gdrive.upload_file(fake_file, "folder-id")
 
         assert file_id == "uploaded-id"
@@ -278,8 +278,8 @@ class TestUploadFile:
             None, {"id": "some-id"}
         )
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaFileUpload") as mock_mfu:
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload") as mock_mfu:
                 gdrive.upload_file(fake_file, "folder-id", mime_type="video/mp4")
 
         mock_mfu.assert_called_once()
@@ -301,8 +301,8 @@ class TestUploadFile:
             None, {"id": "txt-id"}
         )
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaFileUpload") as mock_mfu:
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload") as mock_mfu:
                 gdrive.upload_file(fake_file, "folder-id")
 
         _, kwargs = mock_mfu.call_args
@@ -324,8 +324,8 @@ class TestGetCredentials:
         mock_creds = MagicMock()
         mock_creds.valid = True
 
-        with patch("tools.gdrive_manager._get_token_path", return_value=fake_token):
-            with patch("tools.gdrive_manager.Credentials") as mock_cred_cls:
+        with patch("tools.integrations.gdrive_manager._get_token_path", return_value=fake_token):
+            with patch("tools.integrations.gdrive_manager.Credentials") as mock_cred_cls:
                 mock_cred_cls.from_authorized_user_file.return_value = mock_creds
                 result = gdrive._get_credentials()
 
@@ -341,10 +341,10 @@ class TestGetCredentials:
         mock_creds.expired = True
         mock_creds.refresh_token = "some-refresh-token"
 
-        with patch("tools.gdrive_manager._get_token_path", return_value=fake_token):
-            with patch("tools.gdrive_manager.Credentials") as mock_cred_cls:
+        with patch("tools.integrations.gdrive_manager._get_token_path", return_value=fake_token):
+            with patch("tools.integrations.gdrive_manager.Credentials") as mock_cred_cls:
                 mock_cred_cls.from_authorized_user_file.return_value = mock_creds
-                with patch("tools.gdrive_manager.IS_RAILWAY", True):
+                with patch("tools.integrations.gdrive_manager.IS_RAILWAY", True):
                     result = gdrive._get_credentials()
 
         mock_creds.refresh.assert_called_once()
@@ -386,8 +386,8 @@ class TestGetDriveService:
 
     def test_first_call_builds_service(self):
         mock_svc = MagicMock()
-        with patch("tools.gdrive_manager._get_credentials", return_value=MagicMock()):
-            with patch("tools.gdrive_manager.build", return_value=mock_svc) as mock_build:
+        with patch("tools.integrations.gdrive_manager._get_credentials", return_value=MagicMock()):
+            with patch("tools.integrations.gdrive_manager.build", return_value=mock_svc) as mock_build:
                 result = gdrive.get_drive_service()
 
         assert result is mock_svc
@@ -395,8 +395,8 @@ class TestGetDriveService:
 
     def test_second_call_returns_cached(self):
         mock_svc = MagicMock()
-        with patch("tools.gdrive_manager._get_credentials", return_value=MagicMock()):
-            with patch("tools.gdrive_manager.build", return_value=mock_svc) as mock_build:
+        with patch("tools.integrations.gdrive_manager._get_credentials", return_value=MagicMock()):
+            with patch("tools.integrations.gdrive_manager.build", return_value=mock_svc) as mock_build:
                 first = gdrive.get_drive_service()
                 second = gdrive.get_drive_service()
 
@@ -416,8 +416,8 @@ class TestGetDocsService:
 
     def test_first_call_builds_service(self):
         mock_svc = MagicMock()
-        with patch("tools.gdrive_manager._get_credentials", return_value=MagicMock()):
-            with patch("tools.gdrive_manager.build", return_value=mock_svc) as mock_build:
+        with patch("tools.integrations.gdrive_manager._get_credentials", return_value=MagicMock()):
+            with patch("tools.integrations.gdrive_manager.build", return_value=mock_svc) as mock_build:
                 result = gdrive.get_docs_service()
 
         assert result is mock_svc
@@ -425,8 +425,8 @@ class TestGetDocsService:
 
     def test_second_call_returns_cached(self):
         mock_svc = MagicMock()
-        with patch("tools.gdrive_manager._get_credentials", return_value=MagicMock()):
-            with patch("tools.gdrive_manager.build", return_value=mock_svc) as mock_build:
+        with patch("tools.integrations.gdrive_manager._get_credentials", return_value=MagicMock()):
+            with patch("tools.integrations.gdrive_manager.build", return_value=mock_svc) as mock_build:
                 first = gdrive.get_docs_service()
                 second = gdrive.get_docs_service()
 
@@ -459,10 +459,10 @@ class TestCreateAllLectureFolders:
             2: {"drive_folder_id": "parent-2"},
         }
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.GROUPS", fake_groups):
-                with patch("tools.gdrive_manager.TOTAL_LECTURES", 2):
-                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.GROUPS", fake_groups):
+                with patch("tools.integrations.gdrive_manager.TOTAL_LECTURES", 2):
+                    with patch("tools.integrations.gdrive_manager.LECTURE_FOLDER_IDS", {}):
                         result = gdrive.create_all_lecture_folders()
 
         assert 1 in result
@@ -480,10 +480,10 @@ class TestCreateAllLectureFolders:
             2: {"drive_folder_id": ""},  # empty — should be skipped
         }
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.GROUPS", fake_groups):
-                with patch("tools.gdrive_manager.TOTAL_LECTURES", 2):
-                    with patch("tools.gdrive_manager.LECTURE_FOLDER_IDS", {}):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.GROUPS", fake_groups):
+                with patch("tools.integrations.gdrive_manager.TOTAL_LECTURES", 2):
+                    with patch("tools.integrations.gdrive_manager.LECTURE_FOLDER_IDS", {}):
                         result = gdrive.create_all_lecture_folders()
 
         assert 1 in result
@@ -512,8 +512,8 @@ class TestDownloadFile:
             (None, True),
         ]
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaIoBaseDownload", return_value=mock_downloader):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaIoBaseDownload", return_value=mock_downloader):
                 # We need the file to exist for stat() at the end
                 with patch("builtins.open", MagicMock()):
                     # Patch Path.stat to avoid real file check
@@ -531,8 +531,8 @@ class TestDownloadFile:
         mock_downloader = MagicMock()
         mock_downloader.next_chunk.return_value = (None, True)
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaIoBaseDownload", return_value=mock_downloader):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaIoBaseDownload", return_value=mock_downloader):
                 with patch("builtins.open", MagicMock()):
                     with patch.object(type(dest), "stat", return_value=MagicMock(st_size=100)):
                         with patch.object(type(dest.parent), "mkdir") as mock_mkdir:
@@ -556,7 +556,7 @@ class TestListFilesInFolder:
         files = [{"id": "f1", "name": "a.mp4"}, {"id": "f2", "name": "b.txt"}]
         svc = _make_drive_service(list_response={"files": files})
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             result = gdrive.list_files_in_folder("folder-id")
 
         assert result == files
@@ -564,7 +564,7 @@ class TestListFilesInFolder:
     def test_returns_empty_list_when_no_files(self):
         svc = _make_drive_service(list_response={"files": []})
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             result = gdrive.list_files_in_folder("empty-folder")
 
         assert result == []
@@ -579,8 +579,8 @@ class TestEnsurePrivateFolder:
     """ensure_private_folder must call ensure_folder then restrict_to_owner."""
 
     def test_calls_ensure_folder_and_restrict_to_owner(self):
-        with patch("tools.gdrive_manager.ensure_folder", return_value="folder-123") as mock_ef:
-            with patch("tools.gdrive_manager.restrict_to_owner") as mock_rto:
+        with patch("tools.integrations.gdrive_manager.ensure_folder", return_value="folder-123") as mock_ef:
+            with patch("tools.integrations.gdrive_manager.restrict_to_owner") as mock_rto:
                 svc = MagicMock()
                 result = gdrive.ensure_private_folder(svc, "Private", "parent-id")
 
@@ -609,10 +609,10 @@ class TestGetCredentialsEdgeCases:
         mock_creds.expired = False
         mock_creds.refresh_token = None
 
-        with patch("tools.gdrive_manager._get_token_path", return_value=fake_token):
-            with patch("tools.gdrive_manager.Credentials") as mock_cls:
+        with patch("tools.integrations.gdrive_manager._get_token_path", return_value=fake_token):
+            with patch("tools.integrations.gdrive_manager.Credentials") as mock_cls:
                 mock_cls.from_authorized_user_file.return_value = mock_creds
-                with patch("tools.gdrive_manager.IS_RAILWAY", True):
+                with patch("tools.integrations.gdrive_manager.IS_RAILWAY", True):
                     with pytest.raises(RuntimeError, match="refresh_token"):
                         gdrive._get_credentials()
 
@@ -625,10 +625,10 @@ class TestGetCredentialsEdgeCases:
         mock_creds.expired = False
         mock_creds.refresh_token = None
 
-        with patch("tools.gdrive_manager._get_token_path", return_value=fake_token):
-            with patch("tools.gdrive_manager.Credentials") as mock_cls:
+        with patch("tools.integrations.gdrive_manager._get_token_path", return_value=fake_token):
+            with patch("tools.integrations.gdrive_manager.Credentials") as mock_cls:
                 mock_cls.from_authorized_user_file.return_value = mock_creds
-                with patch("tools.gdrive_manager.IS_RAILWAY", False):
+                with patch("tools.integrations.gdrive_manager.IS_RAILWAY", False):
                     with patch.dict("os.environ", {}, clear=True):
                         with pytest.raises(RuntimeError, match="OAuth token expired"):
                             gdrive._get_credentials()
@@ -648,16 +648,16 @@ class TestGetCredentialsEdgeCases:
         mock_flow = MagicMock()
         mock_flow.run_local_server.return_value = mock_new_creds
 
-        with patch("tools.gdrive_manager._get_token_path", return_value=fake_token):
-            with patch("tools.gdrive_manager.Credentials") as mock_cls:
+        with patch("tools.integrations.gdrive_manager._get_token_path", return_value=fake_token):
+            with patch("tools.integrations.gdrive_manager.Credentials") as mock_cls:
                 mock_cls.from_authorized_user_file.return_value = mock_creds_invalid
-                with patch("tools.gdrive_manager.IS_RAILWAY", False):
+                with patch("tools.integrations.gdrive_manager.IS_RAILWAY", False):
                     with patch.dict("os.environ", {"DISPLAY": ":0"}):
-                        with patch("tools.gdrive_manager.get_google_credentials_path", return_value=tmp_path / "creds.json"):
-                            with patch("tools.gdrive_manager.InstalledAppFlow") as mock_iaf:
+                        with patch("tools.integrations.gdrive_manager.get_google_credentials_path", return_value=tmp_path / "creds.json"):
+                            with patch("tools.integrations.gdrive_manager.InstalledAppFlow") as mock_iaf:
                                 mock_iaf.from_client_secrets_file.return_value = mock_flow
                                 # Patch TOKEN_PATH to use tmp_path so write succeeds
-                                with patch("tools.gdrive_manager.TOKEN_PATH", fake_token):
+                                with patch("tools.integrations.gdrive_manager.TOKEN_PATH", fake_token):
                                     result = gdrive._get_credentials()
 
         assert result is mock_new_creds
@@ -683,8 +683,8 @@ class TestUploadFileRetry:
             (None, {"id": "retry-success-id"}),
         ]
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaFileUpload"):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
                 with patch("time.sleep"):  # skip actual delay
                     file_id = gdrive.upload_file(fake_file, "folder-id")
 
@@ -698,8 +698,8 @@ class TestUploadFileRetry:
         # Always raises
         svc.files.return_value.create.return_value.next_chunk.side_effect = Exception("Persistent failure")
 
-        with patch("tools.gdrive_manager.get_drive_service", return_value=svc):
-            with patch("tools.gdrive_manager.MediaFileUpload"):
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
                 with patch("time.sleep"):
                     with pytest.raises(Exception, match="Persistent failure"):
                         gdrive.upload_file(fake_file, "folder-id")

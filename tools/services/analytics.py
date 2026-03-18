@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Generator
 
-from tools.config import PROJECT_ROOT, TMP_DIR
+from tools.core.config import PROJECT_ROOT, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -867,7 +867,7 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
     _last_sync_time = now
 
     try:
-        from tools.knowledge_indexer import get_pinecone_index
+        from tools.integrations.knowledge_indexer import get_pinecone_index
     except ImportError:
         logger.warning("sync_from_pinecone: knowledge_indexer not available")
         return {"synced": 0, "skipped": 0, "failed": 0}

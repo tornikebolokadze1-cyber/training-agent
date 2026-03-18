@@ -5,7 +5,7 @@ Provides two log formats:
   - Production (Railway): JSON lines for structured log ingestion
 
 Usage:
-    from tools.logging_config import configure_logging
+    from tools.core.logging_config import configure_logging
     configure_logging()
 """
 

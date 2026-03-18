@@ -17,14 +17,14 @@ from datetime import date
 from google import genai
 from pinecone import Pinecone, ServerlessSpec
 
-from tools.config import (
+from tools.core.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_EMBEDDING_MODEL,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
 )
-from tools.retry import retry_with_backoff
+from tools.core.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +486,7 @@ def index_all_existing_content() -> None:
 
     Example::
 
-        from tools.knowledge_indexer import index_lecture_content
+        from tools.integrations.knowledge_indexer import index_lecture_content
 
         count = index_lecture_content(
             group_number=1,
@@ -519,10 +519,10 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(
             "Usage:\n"
-            "  python -m tools.knowledge_indexer test-embed\n"
-            "  python -m tools.knowledge_indexer index <group> <lecture> <type> <text_file>\n"
-            "  python -m tools.knowledge_indexer query <group> '<question>'\n"
-            "  python -m tools.knowledge_indexer index-all\n"
+            "  python -m tools.integrations.knowledge_indexer test-embed\n"
+            "  python -m tools.integrations.knowledge_indexer index <group> <lecture> <type> <text_file>\n"
+            "  python -m tools.integrations.knowledge_indexer query <group> '<question>'\n"
+            "  python -m tools.integrations.knowledge_indexer index-all\n"
         )
         sys.exit(1)
 

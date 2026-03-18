@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Micro-Visualization Components</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ================================================================
+   DESIGN TOKENS
+   ================================================================ */
+:root {
+  --bg:      #06080f;
+  --bg-card: #0d1117;
+  --bg-elevated: #161b22;
+  --good:    #34d399;
+  --mid:     #fbbf24;
+  --bad:     #f87171;
+  --accent:  #6366f1;
+  --text:    #f1f5f9;
+  --muted:   #64748b;
+  --font:    'Inter', -apple-system, system-ui, sans-serif;
+
+  /* Derived */
+  --good-dim: rgba(52, 211, 153, 0.15);
+  --mid-dim:  rgba(251, 191, 36, 0.15);
+  --bad-dim:  rgba(248, 113, 113, 0.15);
+  --accent-dim: rgba(99, 102, 241, 0.10);
+}
+
+/* ================================================================
+   RESET + BASE
+   ================================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  padding: 48px 32px;
+}
+
+/* ================================================================
+   LAYOUT -- DEMO ONLY
+   ================================================================ */
+.demo-grid {
+  max-width: 960px;
+  margin: 0 auto;
+  display: grid;
+  gap: 32px;
+}
+
+.demo-section {
+  background: var(--bg-card);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  padding: 28px 32px;
+}
+
+.demo-section h2 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+
+.demo-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.demo-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+/* ================================================================
+   1. INLINE SPARKLINE
+   Renders a smooth polyline with gradient fill.
+   80px wide, auto-scaled to data range.
+   ================================================================ */
+.sparkline {
+  display: inline-block;
+  vertical-align: middle;
+  width: 80px;
+  height: 28px;
+}
+
+.sparkline svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.sparkline-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sparkline-area {
+  opacity: 0.2;
+}
+
+.sparkline-dot {
+  r: 2;
+}
+
+/* Trend color modifiers */
+.sparkline--good .sparkline-line { stroke: var(--good); }
+.sparkline--good .sparkline-area { fill: url(#sparkGradGood); }
+.sparkline--good .sparkline-dot  { fill: var(--good); }
+
+.sparkline--mid .sparkline-line  { stroke: var(--mid); }
+.sparkline--mid .sparkline-area  { fill: url(#sparkGradMid); }
+.sparkline--mid .sparkline-dot   { fill: var(--mid); }
+
+.sparkline--bad .sparkline-line  { stroke: var(--bad); }
+.sparkline--bad .sparkline-area  { fill: url(#sparkGradBad); }
+.sparkline--bad .sparkline-dot   { fill: var(--bad); }
+
+/* ================================================================
+   2. MINI GAUGE
+   44x44px circular arc showing 0-10 score.
+   ================================================================ */
+.mini-gauge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+}
+
+.mini-gauge svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.mini-gauge__track {
+  fill: none;
+  stroke: var(--bg-elevated);
+  stroke-width: 3;
+}
+
+.mini-gauge__fill {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mini-gauge__value {
+  position: relative;
+  z-index: 1;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ================================================================
+   3. BULLET CHART
+   200px x 16px horizontal bar with range bands,
+   current value bar, and target marker.
+   ================================================================ */
+.bullet-chart {
+  position: relative;
+  width: 200px;
+  height: 16px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.bullet-chart__ranges {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.bullet-chart__range {
+  height: 100%;
+}
+
+.bullet-chart__range--low  { background: rgba(248,113,113,0.12); }
+.bullet-chart__range--mid  { background: rgba(251,191,36,0.10); }
+.bullet-chart__range--high { background: rgba(52,211,153,0.08); }
+
+.bullet-chart__bar {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  height: 8px;
+  border-radius: 2px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bullet-chart__target {
+  position: absolute;
+  top: 1px;
+  width: 2px;
+  height: 14px;
+  background: var(--text);
+  border-radius: 1px;
+  opacity: 0.7;
+}
+
+.bullet-chart__target::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ================================================================
+   4. DELTA BADGE
+   Inline pill showing change direction and magnitude.
+   ================================================================ */
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.delta-badge--up {
+  color: var(--good);
+  background: var(--good-dim);
+}
+
+.delta-badge--down {
+  color: var(--bad);
+  background: var(--bad-dim);
+}
+
+.delta-badge--flat {
+  color: var(--muted);
+  background: rgba(100, 116, 139, 0.15);
+}
+
+.delta-badge__arrow {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* ================================================================
+   5. PROGRESS DOTS
+   Row of 15 circles: filled (done), pulsing (current), empty (upcoming).
+   ================================================================ */
+.progress-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.progress-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-elevated);
+  background: transparent;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.progress-dot--done {
+  border-color: transparent;
+}
+
+.progress-dot--current {
+  border-color: transparent;
+  animation: dot-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.3); opacity: 0.7; }
+}
+
+.progress-dot--upcoming {
+  background: transparent;
+  border-color: rgba(100, 116, 139, 0.35);
+}
+
+/* ================================================================
+   6. SCORE PILL
+   Compact "6.4/10" with score-colored background.
+   ================================================================ */
+.score-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.score-pill__value {
+  /* inherits color from parent */
+}
+
+.score-pill__max {
+  opacity: 0.5;
+  font-weight: 500;
+}
+
+.score-pill--good {
+  color: var(--good);
+  background: var(--good-dim);
+}
+
+.score-pill--mid {
+  color: var(--mid);
+  background: var(--mid-dim);
+}
+
+.score-pill--bad {
+  color: var(--bad);
+  background: var(--bad-dim);
+}
+
+/* ================================================================
+   COMPOSITE DEMO: TABLE ROW
+   Shows all components working together.
+   ================================================================ */
+.composite-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.composite-table th {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: left;
+  padding: 0 12px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.composite-table td {
+  padding: 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: middle;
+}
+
+.composite-table tr:last-child td {
+  border-bottom: none;
+}
+
+.composite-table .cell-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.composite-table .cell-name span {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+  display: block;
+  margin-top: 1px;
+}
+</style>
+</head>
+<body>
+
+<!-- Shared SVG gradient definitions (invisible, referenced by sparklines) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="sparkGradGood" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sparkGradMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sparkGradBad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f87171" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#f87171" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div class="demo-grid">
+
+  <!-- ============================================================
+       1. SPARKLINE
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>1. Inline Sparkline</h2>
+    <div class="demo-row">
+      <div>
+        <div class="demo-label">3 points (up trend)</div>
+        <span class="sparkline sparkline--good" data-values="5.4,6.0,6.4"></span>
+      </div>
+      <div>
+        <div class="demo-label">7 points (volatile)</div>
+        <span class="sparkline sparkline--mid" data-values="4.2,5.1,4.8,6.3,5.9,7.0,6.5"></span>
+      </div>
+      <div>
+        <div class="demo-label">12 points (down trend)</div>
+        <span class="sparkline sparkline--bad" data-values="8.1,7.8,7.2,6.9,7.1,6.5,6.0,5.8,5.2,4.9,4.5,4.1"></span>
+      </div>
+      <div>
+        <div class="demo-label">15 points (recovery)</div>
+        <span class="sparkline sparkline--good" data-values="3.2,3.5,4.0,4.1,4.8,5.2,5.0,5.6,6.1,6.5,6.8,7.2,7.0,7.5,7.8"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       2. MINI GAUGE
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>2. Mini Gauge</h2>
+    <div class="demo-row">
+      <div>
+        <div class="demo-label">High</div>
+        <div class="mini-gauge" data-score="8.5"></div>
+      </div>
+      <div>
+        <div class="demo-label">Medium</div>
+        <div class="mini-gauge" data-score="5.8"></div>
+      </div>
+      <div>
+        <div class="demo-label">Low</div>
+        <div class="mini-gauge" data-score="3.2"></div>
+      </div>
+      <div>
+        <div class="demo-label">Perfect</div>
+        <div class="mini-gauge" data-score="10"></div>
+      </div>
+      <div>
+        <div class="demo-label">Zero</div>
+        <div class="mini-gauge" data-score="0"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       3. BULLET CHART
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>3. Bullet Chart</h2>
+    <div style="display:grid; gap:20px;">
+      <div>
+        <div class="demo-label">Above target (8.2 / 7.0)</div>
+        <div class="bullet-chart" data-value="8.2" data-target="7.0" data-max="10"></div>
+      </div>
+      <div>
+        <div class="demo-label">At target (7.0 / 7.0)</div>
+        <div class="bullet-chart" data-value="7.0" data-target="7.0" data-max="10"></div>
+      </div>
+      <div>
+        <div class="demo-label">Below target (4.5 / 7.0)</div>
+        <div class="bullet-chart" data-value="4.5" data-target="7.0" data-max="10"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       4. DELTA BADGE
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>4. Delta Badge</h2>
+    <div class="demo-row">
+      <span class="delta-badge delta-badge--up">
+        <span class="delta-badge__arrow">&#8593;</span>1.2
+      </span>
+      <span class="delta-badge delta-badge--up">
+        <span class="delta-badge__arrow">&#8593;</span>0.3
+      </span>
+      <span class="delta-badge delta-badge--down">
+        <span class="delta-badge__arrow">&#8595;</span>0.5
+      </span>
+      <span class="delta-badge delta-badge--down">
+        <span class="delta-badge__arrow">&#8595;</span>2.1
+      </span>
+      <span class="delta-badge delta-badge--flat">
+        <span class="delta-badge__arrow">&#8211;</span>0.0
+      </span>
+    </div>
+    <div style="margin-top:16px;">
+      <div class="demo-label">Inline usage: Score improved by <span class="delta-badge delta-badge--up"><span class="delta-badge__arrow">&#8593;</span>1.2</span> this week</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       5. PROGRESS DOTS
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>5. Progress Dots</h2>
+    <div style="display:grid; gap:16px;">
+      <div>
+        <div class="demo-label">Lecture 5 of 15 (mixed scores)</div>
+        <div class="progress-dots" data-total="15" data-current="5"
+             data-scores="7.2,5.1,8.4,3.9,6.5"></div>
+      </div>
+      <div>
+        <div class="demo-label">Lecture 12 of 15 (strong performance)</div>
+        <div class="progress-dots" data-total="15" data-current="12"
+             data-scores="7.5,8.0,7.8,8.2,8.5,7.9,8.8,9.0,8.7,9.2,8.9,9.1"></div>
+      </div>
+      <div>
+        <div class="demo-label">Lecture 1 of 15 (just started)</div>
+        <div class="progress-dots" data-total="15" data-current="1"
+             data-scores="6.0"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       6. SCORE PILL
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>6. Score Pill</h2>
+    <div class="demo-row">
+      <div>
+        <div class="demo-label">Good</div>
+        <span class="score-pill score-pill--good">
+          <span class="score-pill__value">8.4</span><span class="score-pill__max">/10</span>
+        </span>
+      </div>
+      <div>
+        <div class="demo-label">Medium</div>
+        <span class="score-pill score-pill--mid">
+          <span class="score-pill__value">5.7</span><span class="score-pill__max">/10</span>
+        </span>
+      </div>
+      <div>
+        <div class="demo-label">Low</div>
+        <span class="score-pill score-pill--bad">
+          <span class="score-pill__value">3.2</span><span class="score-pill__max">/10</span>
+        </span>
+      </div>
+      <div>
+        <div class="demo-label">Edge: 10</div>
+        <span class="score-pill score-pill--good">
+          <span class="score-pill__value">10</span><span class="score-pill__max">/10</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       COMPOSITE: All components in a table row
+       ============================================================ -->
+  <section class="demo-section">
+    <h2>Composite: Dashboard Table Row</h2>
+    <table class="composite-table">
+      <thead>
+        <tr>
+          <th>Lecture</th>
+          <th>Score</th>
+          <th>Trend</th>
+          <th>Change</th>
+          <th>vs Target</th>
+          <th>Progress</th>
+        </tr>
+      </thead>
+      <tbody id="compositeBody"></tbody>
+    </table>
+  </section>
+
+</div>
+
+<script>
+/* ==================================================================
+   UTILITY: Score to color
+   All data in this file is hardcoded sample data -- no user input.
+   ================================================================== */
+function scoreColor(score) {
+  if (score >= 7) return getComputedStyle(document.documentElement).getPropertyValue('--good').trim();
+  if (score >= 5) return getComputedStyle(document.documentElement).getPropertyValue('--mid').trim();
+  return getComputedStyle(document.documentElement).getPropertyValue('--bad').trim();
+}
+
+function scoreTier(score) {
+  if (score >= 7) return 'good';
+  if (score >= 5) return 'mid';
+  return 'bad';
+}
+
+/* ==================================================================
+   DOM BUILDER HELPERS
+   Safe DOM construction without innerHTML for dynamic components.
+   ================================================================== */
+function createSVGElement(tag, attrs) {
+  var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (var key in attrs) {
+    el.setAttribute(key, attrs[key]);
+  }
+  return el;
+}
+
+function createEl(tag, className, textContent) {
+  var el = document.createElement(tag);
+  if (className) el.className = className;
+  if (textContent !== undefined) el.textContent = textContent;
+  return el;
+}
+
+/* ==================================================================
+   1. SPARKLINE RENDERER
+   ================================================================== */
+function renderSparkline(container) {
+  var values = container.dataset.values.split(',').map(Number);
+  var w = 80, h = 28, pad = 3;
+  var min = Math.min.apply(null, values) - 0.5;
+  var max = Math.max.apply(null, values) + 0.5;
+  var range = max - min || 1;
+
+  var points = values.map(function(v, i) {
+    var x = pad + (i / Math.max(values.length - 1, 1)) * (w - pad * 2);
+    var y = pad + (1 - (v - min) / range) * (h - pad * 2);
+    return [x, y];
+  });
+
+  var lineD = points.map(function(p, i) {
+    return (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1);
+  }).join(' ');
+
+  var areaD = lineD
+    + ' L' + points[points.length - 1][0].toFixed(1) + ',' + (h - pad)
+    + ' L' + points[0][0].toFixed(1) + ',' + (h - pad) + ' Z';
+
+  var last = points[points.length - 1];
+
+  var svg = createSVGElement('svg', { viewBox: '0 0 ' + w + ' ' + h, preserveAspectRatio: 'none' });
+  svg.appendChild(createSVGElement('path', { class: 'sparkline-area', d: areaD }));
+  svg.appendChild(createSVGElement('path', { class: 'sparkline-line', d: lineD }));
+  svg.appendChild(createSVGElement('circle', { class: 'sparkline-dot', cx: last[0].toFixed(1), cy: last[1].toFixed(1) }));
+
+  container.textContent = '';
+  container.appendChild(svg);
+}
+
+/* ==================================================================
+   2. MINI GAUGE RENDERER
+   ================================================================== */
+function renderMiniGauge(container) {
+  var score = parseFloat(container.dataset.score);
+  var color = scoreColor(score);
+  var r = 18;
+  var circumference = 2 * Math.PI * r;
+  var pct = score / 10;
+  var offset = circumference * (1 - pct);
+
+  var svg = createSVGElement('svg', { viewBox: '0 0 44 44' });
+  svg.appendChild(createSVGElement('circle', {
+    class: 'mini-gauge__track', cx: '22', cy: '22', r: String(r)
+  }));
+  svg.appendChild(createSVGElement('circle', {
+    class: 'mini-gauge__fill', cx: '22', cy: '22', r: String(r),
+    stroke: color,
+    'stroke-dasharray': String(circumference),
+    'stroke-dashoffset': String(offset)
+  }));
+
+  var valueSpan = createEl('span', 'mini-gauge__value');
+  valueSpan.textContent = score % 1 === 0 ? score.toFixed(0) : score.toFixed(1);
+  valueSpan.style.color = color;
+
+  container.textContent = '';
+  container.appendChild(svg);
+  container.appendChild(valueSpan);
+}
+
+/* ==================================================================
+   3. BULLET CHART RENDERER
+   ================================================================== */
+function renderBulletChart(container) {
+  var value = parseFloat(container.dataset.value);
+  var target = parseFloat(container.dataset.target);
+  var max = parseFloat(container.dataset.max) || 10;
+  var color = scoreColor(value);
+
+  var valuePct = (value / max) * 100;
+  var targetPct = (target / max) * 100;
+
+  // Range bands: 0-4 bad, 4-7 mid, 7-10 good
+  var bandLow = (4 / max) * 100;
+  var bandMid = (3 / max) * 100;
+  var bandHigh = (3 / max) * 100;
+
+  var ranges = createEl('div', 'bullet-chart__ranges');
+  var rLow = createEl('div', 'bullet-chart__range bullet-chart__range--low');
+  rLow.style.width = bandLow + '%';
+  var rMid = createEl('div', 'bullet-chart__range bullet-chart__range--mid');
+  rMid.style.width = bandMid + '%';
+  var rHigh = createEl('div', 'bullet-chart__range bullet-chart__range--high');
+  rHigh.style.width = bandHigh + '%';
+  ranges.appendChild(rLow);
+  ranges.appendChild(rMid);
+  ranges.appendChild(rHigh);
+
+  var bar = createEl('div', 'bullet-chart__bar');
+  bar.style.width = valuePct + '%';
+  bar.style.background = color;
+
+  var tgt = createEl('div', 'bullet-chart__target');
+  tgt.style.left = targetPct + '%';
+  tgt.dataset.label = String(target);
+
+  container.textContent = '';
+  container.appendChild(ranges);
+  container.appendChild(bar);
+  container.appendChild(tgt);
+}
+
+/* ==================================================================
+   5. PROGRESS DOTS RENDERER
+   ================================================================== */
+function renderProgressDots(container) {
+  var total = parseInt(container.dataset.total);
+  var current = parseInt(container.dataset.current);
+  var scores = container.dataset.scores
+    ? container.dataset.scores.split(',').map(Number)
+    : [];
+
+  container.textContent = '';
+  for (var i = 0; i < total; i++) {
+    var dot = createEl('div', 'progress-dot');
+    dot.title = 'Lecture ' + (i + 1);
+    if (i < scores.length && i < current) {
+      var color = scoreColor(scores[i]);
+      dot.style.background = color;
+      dot.title = 'Lecture ' + (i + 1) + ': ' + scores[i];
+      if (i === current - 1) {
+        dot.classList.add('progress-dot--current');
+      } else {
+        dot.classList.add('progress-dot--done');
+      }
+    } else {
+      dot.classList.add('progress-dot--upcoming');
+    }
+    container.appendChild(dot);
+  }
+}
+
+/* ==================================================================
+   PROGRAMMATIC COMPONENT FACTORIES
+   Use these to create components from JS.
+   ================================================================== */
+var MicroViz = {
+  sparkline: function(values, opts) {
+    opts = opts || {};
+    var el = createEl('span', 'sparkline sparkline--' + scoreTier(values[values.length - 1]));
+    el.dataset.values = values.join(',');
+    if (opts.width && opts.width !== 80) el.style.width = opts.width + 'px';
+    renderSparkline(el);
+    return el;
+  },
+
+  gauge: function(score) {
+    var el = createEl('div', 'mini-gauge');
+    el.dataset.score = String(score);
+    renderMiniGauge(el);
+    return el;
+  },
+
+  bullet: function(value, target, max) {
+    target = target || 7.0;
+    max = max || 10;
+    var el = createEl('div', 'bullet-chart');
+    el.dataset.value = String(value);
+    el.dataset.target = String(target);
+    el.dataset.max = String(max);
+    renderBulletChart(el);
+    return el;
+  },
+
+  delta: function(change) {
+    var el = createEl('span');
+    var abs = Math.abs(change).toFixed(1);
+    var arrow = createEl('span', 'delta-badge__arrow');
+    if (change > 0) {
+      el.className = 'delta-badge delta-badge--up';
+      arrow.textContent = '\u2191';
+      el.appendChild(arrow);
+      el.appendChild(document.createTextNode(abs));
+    } else if (change < 0) {
+      el.className = 'delta-badge delta-badge--down';
+      arrow.textContent = '\u2193';
+      el.appendChild(arrow);
+      el.appendChild(document.createTextNode(abs));
+    } else {
+      el.className = 'delta-badge delta-badge--flat';
+      arrow.textContent = '\u2013';
+      el.appendChild(arrow);
+      el.appendChild(document.createTextNode('0.0'));
+    }
+    return el;
+  },
+
+  dots: function(total, current, scores) {
+    var el = createEl('div', 'progress-dots');
+    el.dataset.total = String(total);
+    el.dataset.current = String(current);
+    el.dataset.scores = scores.join(',');
+    renderProgressDots(el);
+    return el;
+  },
+
+  pill: function(score, max) {
+    max = max || 10;
+    var el = createEl('span', 'score-pill score-pill--' + scoreTier(score));
+    var display = score % 1 === 0 ? score.toFixed(0) : score.toFixed(1);
+    var valSpan = createEl('span', 'score-pill__value', display);
+    var maxSpan = createEl('span', 'score-pill__max', '/' + max);
+    el.appendChild(valSpan);
+    el.appendChild(maxSpan);
+    return el;
+  }
+};
+
+/* ==================================================================
+   INIT: Render all data-attribute-driven components
+   ================================================================== */
+document.querySelectorAll('.sparkline[data-values]').forEach(renderSparkline);
+document.querySelectorAll('.mini-gauge[data-score]').forEach(renderMiniGauge);
+document.querySelectorAll('.bullet-chart[data-value]').forEach(renderBulletChart);
+document.querySelectorAll('.progress-dots[data-total]').forEach(renderProgressDots);
+
+/* ==================================================================
+   COMPOSITE TABLE: Build rows using the JS factory API
+   ================================================================== */
+var lectures = [
+  {
+    name: 'Lecture 5', sub: 'Prompt Engineering',
+    scores: [5.4, 6.0, 6.4, 7.1, 7.8],
+    current: 5, total: 15, delta: 0.7
+  },
+  {
+    name: 'Lecture 10', sub: 'RAG Pipelines',
+    scores: [6.0, 5.8, 6.5, 7.0, 7.2, 7.8, 8.0, 7.5, 8.2, 8.5],
+    current: 10, total: 15, delta: 0.3
+  },
+  {
+    name: 'Lecture 3', sub: 'AI Fundamentals',
+    scores: [4.2, 3.8, 3.5],
+    current: 3, total: 15, delta: -0.3
+  }
+];
+
+var tbody = document.getElementById('compositeBody');
+lectures.forEach(function(l) {
+  var latest = l.scores[l.scores.length - 1];
+  var tr = document.createElement('tr');
+
+  // Name cell
+  var tdName = createEl('td', 'cell-name');
+  tdName.appendChild(document.createTextNode(l.name));
+  var subSpan = document.createElement('span');
+  subSpan.textContent = l.sub;
+  tdName.appendChild(subSpan);
+  tr.appendChild(tdName);
+
+  // Score pill
+  var tdScore = document.createElement('td');
+  tdScore.appendChild(MicroViz.pill(latest));
+  tr.appendChild(tdScore);
+
+  // Sparkline
+  var tdTrend = document.createElement('td');
+  tdTrend.appendChild(MicroViz.sparkline(l.scores));
+  tr.appendChild(tdTrend);
+
+  // Delta
+  var tdDelta = document.createElement('td');
+  tdDelta.appendChild(MicroViz.delta(l.delta));
+  tr.appendChild(tdDelta);
+
+  // Bullet
+  var tdBullet = document.createElement('td');
+  tdBullet.appendChild(MicroViz.bullet(latest, 7.0));
+  tr.appendChild(tdBullet);
+
+  // Progress dots
+  var tdDots = document.createElement('td');
+  tdDots.appendChild(MicroViz.dots(l.total, l.current, l.scores));
+  tr.appendChild(tdDots);
+
+  tbody.appendChild(tr);
+});
+</script>
+
+</body>
+</html>

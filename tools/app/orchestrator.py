@@ -20,7 +20,7 @@ from typing import Any
 
 import uvicorn
 
-from tools.config import (
+from tools.core.config import (
     ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GOOGLE_CREDENTIALS_PATH,
@@ -36,7 +36,7 @@ from tools.config import (
     ZOOM_CLIENT_ID,
     ZOOM_CLIENT_SECRET,
 )
-from tools.server import app, verify_webhook_secret
+from tools.app.server import app, verify_webhook_secret
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
         state["started_at"] = None
 
     # --- scheduler ---
-    import tools.scheduler as _sched_mod
+    import tools.app.scheduler as _sched_mod
 
     scheduler = _sched_mod._scheduler_ref
     if scheduler is None:
@@ -192,7 +192,7 @@ def _cleanup_stale_tmp_files() -> None:
 
     Prevents disk accumulation when Railway restarts mid-pipeline.
     """
-    from tools.config import TMP_DIR
+    from tools.core.config import TMP_DIR
     import time
 
     stale_hours = 6
@@ -224,7 +224,7 @@ async def _async_start() -> None:
     gracefully before the process exits.
     """
     # ---- APScheduler --------------------------------------------------------
-    from tools.scheduler import start_scheduler  # local import avoids circular ref at module level
+    from tools.app.scheduler import start_scheduler  # local import avoids circular ref at module level
 
     logger.info("Starting APScheduler...")
     scheduler = start_scheduler()
@@ -293,7 +293,7 @@ def start() -> None:
         logger.critical("%s", exc)
         sys.exit(1)
 
-    from tools.analytics import init_db, backfill_from_tmp, sync_from_pinecone
+    from tools.services.analytics import init_db, backfill_from_tmp, sync_from_pinecone
     init_db()
     backfill_result = backfill_from_tmp()
     if backfill_result["processed"] or backfill_result["failed"]:
@@ -319,11 +319,11 @@ def start() -> None:
 def _configure_logging() -> None:
     """Set up structured logging for the entire application.
 
-    Delegates to tools.logging_config which provides:
+    Delegates to tools.core.logging_config which provides:
       - Local: human-readable format + rotating file handler
       - Railway: JSON lines on stdout for structured log ingestion
     """
-    from tools.logging_config import configure_logging
+    from tools.core.logging_config import configure_logging
     configure_logging(project_root=PROJECT_ROOT)
 
 

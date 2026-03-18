@@ -130,7 +130,7 @@ def safe_operation(
                 logger.error("Failed to %s: %s", operation_name, exc)
                 if alert:
                     try:
-                        from tools.whatsapp_sender import alert_operator
+                        from tools.integrations.whatsapp_sender import alert_operator
 
                         alert_operator(f"{operation_name} FAILED: {exc}")
                     except Exception as alert_err:

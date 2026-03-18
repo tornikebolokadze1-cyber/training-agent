@@ -28,16 +28,16 @@ import pytest
 # test files).  Only project-level imports needed here.
 # ---------------------------------------------------------------------------
 
-from tools.config import (
+from tools.core.config import (
     GROUPS,
     TOTAL_LECTURES,
     get_group_for_weekday,
     get_lecture_folder_name,
     get_lecture_number,
 )
-from tools.knowledge_indexer import CONTENT_TYPES, chunk_text  # noqa: E402
-from tools.whatsapp_sender import MESSAGE_MAX_LENGTH, _split_message  # noqa: E402
-from tools.gemini_analyzer import _is_quota_error  # noqa: E402
+from tools.integrations.knowledge_indexer import CONTENT_TYPES, chunk_text  # noqa: E402
+from tools.integrations.whatsapp_sender import MESSAGE_MAX_LENGTH, _split_message  # noqa: E402
+from tools.integrations.gemini_analyzer import _is_quota_error  # noqa: E402
 
 
 # ===========================================================================
@@ -49,32 +49,32 @@ class TestModuleImports:
     """Verify all critical modules load without errors or real API calls."""
 
     def test_config_module_loads(self):
-        import tools.config as cfg
+        import tools.core.config as cfg
         assert hasattr(cfg, "GROUPS")
         assert hasattr(cfg, "TOTAL_LECTURES")
         assert hasattr(cfg, "get_lecture_number")
 
     def test_knowledge_indexer_module_loads(self):
-        import tools.knowledge_indexer as ki
+        import tools.integrations.knowledge_indexer as ki
         assert hasattr(ki, "chunk_text")
         assert hasattr(ki, "embed_text")
         assert hasattr(ki, "index_lecture_content")
         assert hasattr(ki, "query_knowledge")
 
     def test_whatsapp_sender_module_loads(self):
-        import tools.whatsapp_sender as ws
+        import tools.integrations.whatsapp_sender as ws
         assert hasattr(ws, "send_message_to_chat")
         assert hasattr(ws, "_split_message")
         assert hasattr(ws, "MESSAGE_MAX_LENGTH")
 
     def test_gemini_analyzer_module_loads(self):
-        import tools.gemini_analyzer as ga
+        import tools.integrations.gemini_analyzer as ga
         assert hasattr(ga, "split_video_chunks")
         assert hasattr(ga, "_is_quota_error")
         assert hasattr(ga, "CHUNK_DURATION_MINUTES")
 
     def test_server_module_loads(self):
-        import tools.server as srv
+        import tools.app.server as srv
         assert hasattr(srv, "verify_webhook_secret")
         assert hasattr(srv, "app")
 
@@ -311,11 +311,11 @@ class TestIndexLectureContentValidation:
     """Only tests the pure validation logic — no Pinecone/Gemini calls."""
 
     def test_invalid_content_type_raises_value_error(self):
-        from tools.knowledge_indexer import index_lecture_content
+        from tools.integrations.knowledge_indexer import index_lecture_content
 
         with pytest.raises(ValueError, match="Unknown content_type"):
             # Patch get_pinecone_index so we never reach the network call
-            with patch("tools.knowledge_indexer.get_pinecone_index"):
+            with patch("tools.integrations.knowledge_indexer.get_pinecone_index"):
                 index_lecture_content(1, 1, "some text", "invalid_type")
 
     def test_valid_content_types_do_not_raise_on_type_check(self):
@@ -440,20 +440,20 @@ class TestSplitVideoChunks:
     def _mock_duration(self, seconds: float):
         """Return a context manager that fakes _get_video_duration_seconds."""
         return patch(
-            "tools.gemini_analyzer._get_video_duration_seconds",
+            "tools.integrations.gemini_analyzer._get_video_duration_seconds",
             return_value=seconds,
         )
 
     def _mock_subprocess(self):
         """Prevent any real subprocess.run call."""
-        return patch("tools.gemini_analyzer.subprocess.run")
+        return patch("tools.integrations.gemini_analyzer.subprocess.run")
 
     def test_short_video_returns_original_path(self, tmp_path):
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
         with self._mock_duration(20 * 60):  # 20 min — under 45 min
-            from tools.gemini_analyzer import split_video_chunks
+            from tools.integrations.gemini_analyzer import split_video_chunks
             result = split_video_chunks(video)
 
         assert result == [video]
@@ -463,7 +463,7 @@ class TestSplitVideoChunks:
         video.write_bytes(b"fake")
 
         with self._mock_duration(45 * 60):  # exactly 45 min
-            from tools.gemini_analyzer import split_video_chunks
+            from tools.integrations.gemini_analyzer import split_video_chunks
             result = split_video_chunks(video)
 
         assert result == [video]
@@ -489,8 +489,8 @@ class TestSplitVideoChunks:
             return result
 
         with self._mock_duration(46 * 60):
-            with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.gemini_analyzer import split_video_chunks
+            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
+                from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
 
         assert len(result) == 2
@@ -512,8 +512,8 @@ class TestSplitVideoChunks:
             return result
 
         with self._mock_duration(180 * 60):  # 3 hours
-            with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.gemini_analyzer import split_video_chunks
+            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
+                from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
 
         assert len(result) == 4
@@ -543,8 +543,8 @@ class TestSplitVideoChunks:
             # Also pre-create chunk2 so none need creating
             chunk2 = video.with_suffix(".chunk2.mp4")
             chunk2.write_bytes(big_enough)
-            with patch("tools.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.gemini_analyzer import split_video_chunks
+            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
+                from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
 
         # ffmpeg should NOT have been called for any pre-existing chunk
@@ -562,10 +562,10 @@ class TestVerifyWebhookSecret:
 
     def _call(self, authorization: str | None, secret: str):
         """Call verify_webhook_secret with a patched WEBHOOK_SECRET."""
-        from tools import server as srv
+        from tools.app import server as srv
         with patch.object(srv, "WEBHOOK_SECRET", secret):
             # Re-import the function so it reads the patched module-level var
-            from tools.server import verify_webhook_secret
+            from tools.app.server import verify_webhook_secret
             verify_webhook_secret(authorization)
 
     def test_correct_secret_does_not_raise(self):
@@ -601,8 +601,8 @@ class TestVerifyWebhookSecret:
         """Verify hmac.compare_digest is used (not == operator) for safety.
         We confirm this indirectly: both correct and wrong tokens complete
         without timing shortcuts that could leak length information."""
-        import tools.server as srv
+        import tools.app.server as srv
         # Both calls must complete — no AttributeError or import issue
         with patch.object(srv, "WEBHOOK_SECRET", "secret123"):
-            from tools.server import verify_webhook_secret
+            from tools.app.server import verify_webhook_secret
             verify_webhook_secret("Bearer secret123")  # should pass silently
