@@ -15,10 +15,11 @@ import logging
 import sys
 from pathlib import Path
 
-from tools.config import GROUPS, TMP_DIR, get_lecture_folder_name
+from tools.config import GROUPS, TMP_DIR, get_drive_file_url, get_lecture_folder_name
 from tools.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
 from tools.gemini_analyzer import analyze_lecture
 from tools.knowledge_indexer import index_lecture_content
+from tools.retry import safe_operation
 from tools.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ def _get_lecture_folder_id(group_number: int, lecture_number: int) -> str | None
     return ensure_folder(service, folder_name, parent_id)
 
 
+@safe_operation("Drive summary upload", alert=True)
 def _upload_summary_to_drive(
     group_number: int,
     lecture_number: int,
@@ -50,34 +52,20 @@ def _upload_summary_to_drive(
 
     Returns the document ID, or None on failure.
     """
-    try:
-        folder_id = _get_lecture_folder_id(group_number, lecture_number)
-        if not folder_id:
-            return None
-
-        title = f"ლექცია #{lecture_number} — შეჯამება"
-        doc_id = create_google_doc(title, summary, folder_id)
-        logger.info(
-            "Uploaded summary to Drive: Group %d, ლექცია #%d (doc ID: %s)",
-            group_number, lecture_number, doc_id,
-        )
-        return doc_id
-    except Exception as e:
-        logger.error("Failed to upload summary to Drive: %s", e)
-        try:
-            alert_operator(f"Drive summary upload FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+    folder_id = _get_lecture_folder_id(group_number, lecture_number)
+    if not folder_id:
         return None
 
+    title = f"ლექცია #{lecture_number} — შეჯამება"
+    doc_id = create_google_doc(title, summary, folder_id)
+    logger.info(
+        "Uploaded summary to Drive: Group %d, ლექცია #%d (doc ID: %s)",
+        group_number, lecture_number, doc_id,
+    )
+    return doc_id
 
-def _get_drive_file_url(file_id: str, is_doc: bool = False) -> str:
-    """Build a shareable Google Drive/Docs URL."""
-    if is_doc:
-        return f"https://docs.google.com/document/d/{file_id}/edit"
-    return f"https://drive.google.com/file/d/{file_id}/view"
 
-
+@safe_operation("Drive recording lookup", alert=False)
 def _find_recording_in_drive(group_number: int, lecture_number: int) -> str | None:
     """Find the video recording file ID in the lecture's Drive folder."""
     from tools.gdrive_manager import list_files_in_folder
@@ -94,6 +82,7 @@ def _find_recording_in_drive(group_number: int, lecture_number: int) -> str | No
     return None
 
 
+@safe_operation("Drive private report upload", alert=True)
 def _upload_private_report_to_drive(
     group_number: int,
     lecture_number: int,
@@ -107,52 +96,44 @@ def _upload_private_report_to_drive(
 
     Returns the document ID, or None on failure.
     """
-    try:
-        group = GROUPS.get(group_number)
-        if not group:
-            logger.warning("No group config for Group %d", group_number)
-            return None
-
-        analysis_folder_id = group.get("analysis_folder_id")
-        if not analysis_folder_id:
-            logger.warning("No analysis folder configured for Group %d — skipping", group_number)
-            return None
-
-        # Combine gap + deep analysis into one report
-        group_name = group.get("name", f"ჯგუფი #{group_number}")
-        report_content = (
-            f"ჯგუფი: {group_name}\n"
-            f"{'━' * 50}\n\n"
-            f"🔍 GAP ANALYSIS\n"
-            f"{'─' * 50}\n\n"
-            f"{gap_analysis}\n\n"
-            f"{'━' * 50}\n\n"
-            f"🧠 DEEP ANALYSIS\n"
-            f"{'─' * 50}\n\n"
-            f"{deep_analysis}"
-        )
-
-        title = f"ლექცია #{lecture_number}"
-        doc_id = create_google_doc(title, report_content, analysis_folder_id)
-        logger.info(
-            "Private report uploaded to Drive: Group %d, ლექცია #%d (doc ID: %s)",
-            group_number, lecture_number, doc_id,
-        )
-        return doc_id
-
-    except Exception as e:
-        logger.error("Failed to upload private report to Drive: %s", e)
-        try:
-            alert_operator(f"Drive private report upload FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+    group = GROUPS.get(group_number)
+    if not group:
+        logger.warning("No group config for Group %d", group_number)
         return None
+
+    analysis_folder_id = group.get("analysis_folder_id")
+    if not analysis_folder_id:
+        logger.warning("No analysis folder configured for Group %d — skipping", group_number)
+        return None
+
+    # Combine gap + deep analysis into one report
+    group_name = group.get("name", f"ჯგუფი #{group_number}")
+    report_content = (
+        f"ჯგუფი: {group_name}\n"
+        f"{'━' * 50}\n\n"
+        f"🔍 GAP ANALYSIS\n"
+        f"{'─' * 50}\n\n"
+        f"{gap_analysis}\n\n"
+        f"{'━' * 50}\n\n"
+        f"🧠 DEEP ANALYSIS\n"
+        f"{'─' * 50}\n\n"
+        f"{deep_analysis}"
+    )
+
+    title = f"ლექცია #{lecture_number}"
+    doc_id = create_google_doc(title, report_content, analysis_folder_id)
+    logger.info(
+        "Private report uploaded to Drive: Group %d, ლექცია #%d (doc ID: %s)",
+        group_number, lecture_number, doc_id,
+    )
+    return doc_id
 
 
 # ---------------------------------------------------------------------------
 # WhatsApp helpers
 # ---------------------------------------------------------------------------
 
+@safe_operation("WhatsApp group notification", alert=True, default=None)
 def _notify_group_whatsapp(
     group_number: int,
     lecture_number: int,
@@ -164,23 +145,16 @@ def _notify_group_whatsapp(
         logger.warning("No summary doc ID — skipping WhatsApp group notification")
         return
 
-    recording_url = _get_drive_file_url(recording_file_id) if recording_file_id else "ატვირთვა მიმდინარეობს"
-    summary_url = _get_drive_file_url(summary_doc_id, is_doc=True)
+    recording_url = get_drive_file_url(recording_file_id) if recording_file_id else "ატვირთვა მიმდინარეობს"
+    summary_url = get_drive_file_url(summary_doc_id, is_doc=True)
 
-    try:
-        send_group_upload_notification(
-            group_number=group_number,
-            lecture_number=lecture_number,
-            drive_recording_url=recording_url,
-            summary_doc_url=summary_url,
-        )
-        logger.info("WhatsApp group notification sent for Group %d, Lecture #%d", group_number, lecture_number)
-    except Exception as e:
-        logger.error("Failed to send WhatsApp group notification: %s", e)
-        try:
-            alert_operator(f"WhatsApp group notification FAILED (G{group_number} L#{lecture_number}): {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+    send_group_upload_notification(
+        group_number=group_number,
+        lecture_number=lecture_number,
+        drive_recording_url=recording_url,
+        summary_doc_url=summary_url,
+    )
+    logger.info("WhatsApp group notification sent for Group %d, Lecture #%d", group_number, lecture_number)
 
 
 def _send_private_report_to_tornike(
@@ -192,7 +166,7 @@ def _send_private_report_to_tornike(
     group_name = GROUPS.get(group_number, {}).get("name", f"ჯგუფი #{group_number}")
 
     if report_doc_id:
-        doc_url = _get_drive_file_url(report_doc_id, is_doc=True)
+        doc_url = get_drive_file_url(report_doc_id, is_doc=True)
         message = (
             f"📊 ლექცია #{lecture_number} — ანალიზი მზადაა\n"
             f"ჯგუფი: {group_name}\n\n"
@@ -213,6 +187,32 @@ def _send_private_report_to_tornike(
         # Don't alert_operator here — this IS the private channel to Tornike
         # Just log at CRITICAL level so it appears in rotating log
         logger.critical("CRITICAL: Private report delivery failed for G%d L#%d: %s", group_number, lecture_number, e)
+
+
+# ---------------------------------------------------------------------------
+# Safe wrappers for use inside loops / inline calls
+# ---------------------------------------------------------------------------
+
+@safe_operation("Pinecone indexing", alert=True, default=0)
+def _safe_index(
+    group_number: int,
+    lecture_number: int,
+    content: str,
+    content_type: str,
+) -> int:
+    """Index a single content type into Pinecone, returning the vector count."""
+    return index_lecture_content(
+        group_number=group_number,
+        lecture_number=lecture_number,
+        content=content,
+        content_type=content_type,
+    )
+
+
+@safe_operation("Quality gate alert", alert=False, default=None)
+def _safe_alert(message: str) -> None:
+    """Send an operator alert, swallowing failures."""
+    alert_operator(message)
 
 
 # ---------------------------------------------------------------------------
@@ -326,22 +326,10 @@ def transcribe_and_index(
             logger.warning("No %s content to index", content_type)
             continue
 
-        try:
-            count = index_lecture_content(
-                group_number=group_number,
-                lecture_number=lecture_number,
-                content=text,
-                content_type=content_type,
-            )
-            index_counts[content_type] = count
+        count = _safe_index(group_number, lecture_number, text, content_type)
+        index_counts[content_type] = count
+        if count:
             logger.info("Indexed %d vectors for %s", count, content_type)
-        except Exception as e:
-            logger.error("Failed to index %s into Pinecone: %s", content_type, e)
-            index_counts[content_type] = 0
-            try:
-                alert_operator(f"Pinecone indexing FAILED for {content_type} (G{group_number} L#{lecture_number}): {e}")
-            except Exception as alert_err:
-                logger.error("alert_operator also failed: %s", alert_err)
 
     # Quality gate: warn if critical analysis outputs are empty
     empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
@@ -351,10 +339,7 @@ def transcribe_and_index(
             f"{', '.join(empty_analyses)}"
         )
         logger.warning(warning_msg)
-        try:
-            alert_operator(warning_msg)
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+        _safe_alert(warning_msg)
 
     total = sum(index_counts.values())
     logger.info(

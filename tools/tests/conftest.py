@@ -138,10 +138,13 @@ _fastapi.APIRouter = MagicMock
 
 _fastapi_responses = _stub_module("fastapi.responses")
 _fastapi_responses.JSONResponse = MagicMock
+_fastapi_responses.HTMLResponse = MagicMock
 
 _fastapi_middleware = _stub_module("fastapi.middleware")
 _fastapi_middleware_trustedhost = _stub_module("fastapi.middleware.trustedhost")
 _fastapi_middleware_trustedhost.TrustedHostMiddleware = MagicMock
+_fastapi_middleware_cors = _stub_module("fastapi.middleware.cors")
+_fastapi_middleware_cors.CORSMiddleware = MagicMock
 
 # ===================================================================
 # slowapi

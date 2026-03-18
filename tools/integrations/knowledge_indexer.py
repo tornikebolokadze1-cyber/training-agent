@@ -11,7 +11,6 @@ Embedding model:
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from datetime import date
 
@@ -25,6 +24,7 @@ from tools.config import (
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
 )
+from tools.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,6 @@ CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analys
 # ---------------------------------------------------------------------------
 
 _pinecone_index_cache: object | None = None
-_pinecone_lock = threading.Lock()
 
 
 def get_pinecone_index() -> object:
@@ -63,7 +62,6 @@ def get_pinecone_index() -> object:
 
     Uses dimension=3072 (gemini-embedding-001 output size) with cosine metric.
     Creates a serverless index if it does not yet exist.
-    Thread-safe: uses a lock to prevent concurrent initialization.
 
     Returns:
         A Pinecone Index object ready for upsert and query operations.
@@ -75,38 +73,33 @@ def get_pinecone_index() -> object:
     if _pinecone_index_cache is not None:
         return _pinecone_index_cache
 
-    with _pinecone_lock:
-        # Double-check after acquiring lock
-        if _pinecone_index_cache is not None:
-            return _pinecone_index_cache
+    if not PINECONE_API_KEY:
+        raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
 
-        if not PINECONE_API_KEY:
-            raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
+    pc = Pinecone(api_key=PINECONE_API_KEY)
 
-        pc = Pinecone(api_key=PINECONE_API_KEY)
+    existing = [idx.name for idx in pc.list_indexes()]
+    if PINECONE_INDEX_NAME not in existing:
+        logger.info(
+            "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
+            PINECONE_INDEX_NAME,
+            EMBEDDING_DIMENSION,
+        )
+        pc.create_index(
+            name=PINECONE_INDEX_NAME,
+            dimension=EMBEDDING_DIMENSION,
+            metric="cosine",
+            spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
+        )
+        # Wait until the index is ready
+        _wait_for_index_ready(pc)
+        logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
+    else:
+        logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
 
-        existing = [idx.name for idx in pc.list_indexes()]
-        if PINECONE_INDEX_NAME not in existing:
-            logger.info(
-                "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
-                PINECONE_INDEX_NAME,
-                EMBEDDING_DIMENSION,
-            )
-            pc.create_index(
-                name=PINECONE_INDEX_NAME,
-                dimension=EMBEDDING_DIMENSION,
-                metric="cosine",
-                spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
-            )
-            # Wait until the index is ready
-            _wait_for_index_ready(pc)
-            logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
-        else:
-            logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
-
-        index = pc.Index(PINECONE_INDEX_NAME)
-        _pinecone_index_cache = index
-        return index
+    index = pc.Index(PINECONE_INDEX_NAME)
+    _pinecone_index_cache = index
+    return index
 
 
 def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
@@ -140,25 +133,20 @@ def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
 # ---------------------------------------------------------------------------
 
 _embed_client_cache: genai.Client | None = None
-_embed_lock = threading.Lock()
 
 
 def _get_embed_client() -> genai.Client:
-    """Return a cached Gemini client for embedding calls. Thread-safe."""
+    """Return a cached Gemini client for embedding calls."""
     global _embed_client_cache
     if _embed_client_cache is not None:
         return _embed_client_cache
 
-    with _embed_lock:
-        if _embed_client_cache is not None:
-            return _embed_client_cache
+    api_key = GEMINI_API_KEY_PAID or GEMINI_API_KEY
+    if not api_key:
+        raise RuntimeError("Gemini API key not configured — set GEMINI_API_KEY in .env")
 
-        api_key = GEMINI_API_KEY_PAID or GEMINI_API_KEY
-        if not api_key:
-            raise RuntimeError("Gemini API key not configured — set GEMINI_API_KEY in .env")
-
-        _embed_client_cache = genai.Client(api_key=api_key)
-        return _embed_client_cache
+    _embed_client_cache = genai.Client(api_key=api_key)
+    return _embed_client_cache
 
 
 def embed_text(text: str) -> list[float]:
@@ -175,33 +163,25 @@ def embed_text(text: str) -> list[float]:
     """
     client = _get_embed_client()
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.debug(
-                "Embedding text (%d chars) with %s (attempt %d/%d)...",
-                len(text), GEMINI_EMBEDDING_MODEL, attempt, MAX_RETRIES,
-            )
-            response = client.models.embed_content(
-                model=GEMINI_EMBEDDING_MODEL,
-                contents=text,
-            )
-            vector = response.embeddings[0].values
-            logger.debug("Embedding generated (%d dims).", len(vector))
-            return list(vector)
+    def _do_embed() -> list[float]:
+        logger.debug(
+            "Embedding text (%d chars) with %s...",
+            len(text), GEMINI_EMBEDDING_MODEL,
+        )
+        response = client.models.embed_content(
+            model=GEMINI_EMBEDDING_MODEL,
+            contents=text,
+        )
+        vector = response.embeddings[0].values
+        logger.debug("Embedding generated (%d dims).", len(vector))
+        return list(vector)
 
-        except Exception as e:
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(
-                "Embedding attempt %d/%d failed: %s — retrying in %ds",
-                attempt, MAX_RETRIES, e, delay,
-            )
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(
-                    f"Embedding failed after {MAX_RETRIES} attempts: {e}"
-                ) from e
-            time.sleep(delay)
-
-    raise RuntimeError("Unreachable")
+    return retry_with_backoff(
+        _do_embed,
+        max_retries=MAX_RETRIES,
+        backoff_base=RETRY_BASE_DELAY,
+        operation_name="embedding",
+    )
 
 
 # Max texts per batch embed call (Gemini API limit)
@@ -231,35 +211,29 @@ def embed_texts_batch(texts: list[str]) -> list[list[float]]:
     for batch_start in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[batch_start: batch_start + EMBED_BATCH_SIZE]
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                logger.debug(
-                    "Batch embedding %d texts (%d-%d) with %s (attempt %d/%d)...",
-                    len(batch), batch_start, batch_start + len(batch),
-                    GEMINI_EMBEDDING_MODEL, attempt, MAX_RETRIES,
-                )
-                response = client.models.embed_content(
-                    model=GEMINI_EMBEDDING_MODEL,
-                    contents=batch,
-                )
-                batch_vectors = [list(e.values) for e in response.embeddings]
-                all_vectors.extend(batch_vectors)
-                logger.debug(
-                    "Batch embedded %d texts (%d dims each).",
-                    len(batch_vectors), len(batch_vectors[0]) if batch_vectors else 0,
-                )
-                break
-            except Exception as e:
-                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                logger.warning(
-                    "Batch embedding attempt %d/%d failed: %s — retrying in %ds",
-                    attempt, MAX_RETRIES, e, delay,
-                )
-                if attempt == MAX_RETRIES:
-                    raise RuntimeError(
-                        f"Batch embedding failed after {MAX_RETRIES} attempts: {e}"
-                    ) from e
-                time.sleep(delay)
+        def _do_batch_embed(b: list[str] = batch, bs: int = batch_start) -> list[list[float]]:
+            logger.debug(
+                "Batch embedding %d texts (%d-%d) with %s...",
+                len(b), bs, bs + len(b), GEMINI_EMBEDDING_MODEL,
+            )
+            response = client.models.embed_content(
+                model=GEMINI_EMBEDDING_MODEL,
+                contents=b,
+            )
+            batch_vectors = [list(e.values) for e in response.embeddings]
+            logger.debug(
+                "Batch embedded %d texts (%d dims each).",
+                len(batch_vectors), len(batch_vectors[0]) if batch_vectors else 0,
+            )
+            return batch_vectors
+
+        batch_vectors = retry_with_backoff(
+            _do_batch_embed,
+            max_retries=MAX_RETRIES,
+            backoff_base=RETRY_BASE_DELAY,
+            operation_name="batch embedding",
+        )
+        all_vectors.extend(batch_vectors)
 
     return all_vectors
 
@@ -412,25 +386,17 @@ def _batch_upsert(index: object, vectors: list[dict]) -> int:
     total = 0
     for batch_start in range(0, len(vectors), UPSERT_BATCH_SIZE):
         batch = vectors[batch_start: batch_start + UPSERT_BATCH_SIZE]
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                index.upsert(vectors=batch)
-                total += len(batch)
-                logger.debug(
-                    "Upserted batch of %d vectors (total so far: %d).", len(batch), total
-                )
-                break
-            except Exception as e:
-                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                logger.warning(
-                    "Upsert batch attempt %d/%d failed: %s — retrying in %ds",
-                    attempt, MAX_RETRIES, e, delay,
-                )
-                if attempt == MAX_RETRIES:
-                    raise RuntimeError(
-                        f"Pinecone upsert failed after {MAX_RETRIES} attempts: {e}"
-                    ) from e
-                time.sleep(delay)
+        retry_with_backoff(
+            index.upsert,
+            vectors=batch,
+            max_retries=MAX_RETRIES,
+            backoff_base=RETRY_BASE_DELAY,
+            operation_name="Pinecone upsert",
+        )
+        total += len(batch)
+        logger.debug(
+            "Upserted batch of %d vectors (total so far: %d).", len(batch), total
+        )
     return total
 
 
@@ -470,30 +436,20 @@ def query_knowledge(
     if group_number is not None:
         filter_dict = {"group_number": {"$eq": group_number}}
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info(
-                "Querying Pinecone: top_k=%d, group_filter=%s, query='%s...'",
-                top_k, group_number, query_text[:80],
-            )
-            response = index.query(
-                vector=query_vector,
-                top_k=top_k,
-                include_metadata=True,
-                filter=filter_dict,
-            )
-            break
-        except Exception as e:
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(
-                "Query attempt %d/%d failed: %s — retrying in %ds",
-                attempt, MAX_RETRIES, e, delay,
-            )
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(
-                    f"Pinecone query failed after {MAX_RETRIES} attempts: {e}"
-                ) from e
-            time.sleep(delay)
+    logger.info(
+        "Querying Pinecone: top_k=%d, group_filter=%s, query='%s...'",
+        top_k, group_number, query_text[:80],
+    )
+    response = retry_with_backoff(
+        index.query,
+        vector=query_vector,
+        top_k=top_k,
+        include_metadata=True,
+        filter=filter_dict,
+        max_retries=MAX_RETRIES,
+        backoff_base=RETRY_BASE_DELAY,
+        operation_name="Pinecone query",
+    )
 
     matches = response.get("matches", []) if isinstance(response, dict) else response.matches
     results: list[dict] = []

@@ -293,6 +293,17 @@ def start() -> None:
         logger.critical("%s", exc)
         sys.exit(1)
 
+    from tools.analytics import init_db, backfill_from_tmp, sync_from_pinecone
+    init_db()
+    backfill_result = backfill_from_tmp()
+    if backfill_result["processed"] or backfill_result["failed"]:
+        logger.info("Analytics backfill from .tmp/: %s", backfill_result)
+
+    # Sync scores from Pinecone (persistent source of truth)
+    sync_result = sync_from_pinecone(force=True)
+    if sync_result.get("synced") or sync_result.get("failed"):
+        logger.info("Pinecone sync on startup: %s", sync_result)
+
     try:
         asyncio.run(_async_start())
     except KeyboardInterrupt:

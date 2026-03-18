@@ -33,6 +33,8 @@ from tools.config import (
     DEEP_ANALYSIS_PROMPT,
 )
 
+from tools.retry import safe_operation
+
 logger = logging.getLogger(__name__)
 
 # File processing states
@@ -744,6 +746,29 @@ def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Safe wrappers (used inside analyze_lecture to avoid try/except boilerplate)
+# ---------------------------------------------------------------------------
+
+@safe_operation("Combined Claude analysis", alert=True, default={})
+def _safe_claude_reason_all(transcript: str) -> dict[str, str]:
+    """Run combined Claude reasoning, returning empty dict on failure."""
+    sections = _claude_reason_all(transcript)
+    logger.info(
+        "Combined Claude analysis complete: %s",
+        {k: len(v) for k, v in sections.items()},
+    )
+    return sections
+
+
+@safe_operation("Georgian writing", alert=True, default="")
+def _safe_gemini_write_georgian(
+    claude_text: str, prompt: str, label: str, *, use_free: bool = False,
+) -> str:
+    """Write Georgian text from Claude's English analysis, returning '' on failure."""
+    return _gemini_write_georgian(claude_text, prompt, label, use_free=use_free)
+
+
+# ---------------------------------------------------------------------------
 # Full Pipeline
 # ---------------------------------------------------------------------------
 
@@ -779,20 +804,7 @@ def analyze_lecture(
     results: dict[str, str] = {"transcript": transcript}
 
     # Step 2: Single Claude call for all three analyses (saves ~$3/lecture)
-    claude_sections: dict[str, str] = {}
-    try:
-        claude_sections = _claude_reason_all(transcript)
-        logger.info(
-            "Combined Claude analysis complete: %s",
-            {k: len(v) for k, v in claude_sections.items()},
-        )
-    except Exception as e:
-        logger.error("Combined Claude analysis failed: %s", e)
-        try:
-            from tools.whatsapp_sender import alert_operator
-            alert_operator(f"Combined Claude analysis FAILED: {e}")
-        except Exception as alert_err:
-            logger.error("alert_operator also failed: %s", alert_err)
+    claude_sections = _safe_claude_reason_all(transcript)
 
     # Steps 3-5: Gemini writes Georgian from each Claude section
     analysis_configs = [
@@ -806,16 +818,7 @@ def analyze_lecture(
             logger.warning("Skipping %s — no Claude output", label)
             results[key] = ""
             continue
-        try:
-            results[key] = _gemini_write_georgian(claude_text, prompt, label, use_free=False)
-        except Exception as e:
-            logger.error("%s Georgian writing failed: %s", label.title(), e)
-            results[key] = ""
-            try:
-                from tools.whatsapp_sender import alert_operator
-                alert_operator(f"{label.title()} Georgian writing FAILED: {e}")
-            except Exception as alert_err:
-                logger.error("alert_operator also failed: %s", alert_err)
+        results[key] = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
 
     return results
 

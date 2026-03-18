@@ -34,6 +34,8 @@ from tools.config import (
     TMP_DIR,
     WEBHOOK_SECRET,
     ZOOM_WEBHOOK_SECRET_TOKEN,
+    extract_group_from_topic,
+    get_drive_file_url,
     get_lecture_folder_name,
     get_lecture_number,
 )
@@ -158,6 +160,15 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
     return response
 
 
@@ -277,7 +288,7 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         )
         logger.info("Uploading recording to Google Drive...")
         recording_file_id = await asyncio.to_thread(upload_file, local_path, lecture_folder_id)
-        drive_recording_url = f"https://drive.google.com/file/d/{recording_file_id}/view"
+        drive_recording_url = get_drive_file_url(recording_file_id)
         logger.info("Recording uploaded: %s", drive_recording_url)
 
         # Step 3: Run the full analysis pipeline (transcribe → analyze →
@@ -589,13 +600,8 @@ def _extract_recording_context(body: dict) -> dict | None:
         logger.warning("Zoom webhook: no MP4 recording found in event")
         return None
 
-    group_number = 0
-    if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:
-        group_number = 1
-    elif "\u10ef\u10d2\u10e3\u10e4\u10d8 #2" in topic:
-        group_number = 2
-
-    if group_number == 0:
+    group_number = extract_group_from_topic(topic)
+    if group_number is None:
         logger.warning("Zoom webhook: could not determine group from topic: %s", topic)
         return None
 
@@ -635,13 +641,8 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     duration_minutes = obj.get("duration", 0)
 
     # Determine group from topic
-    group_number = 0
-    if "\u10ef\u10d2\u10e3\u10e4\u10d8 #1" in topic:   # ჯგუფი #1
-        group_number = 1
-    elif "\u10ef\u10d2\u10e3\u10e4\u10d8 #2" in topic:  # ჯგუფი #2
-        group_number = 2
-
-    if group_number == 0:
+    group_number = extract_group_from_topic(topic)
+    if group_number is None:
         logger.warning("[meeting.ended] Unknown group from topic: %s", topic)
         return {"status": "ignored", "reason": "unknown group"}
 
@@ -975,6 +976,8 @@ async def manual_trigger(
 # Analytics dashboard
 # ---------------------------------------------------------------------------
 
+_dashboard_cache: tuple[float, str] | None = None
+
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 @limiter.limit("30/minute")
@@ -987,9 +990,18 @@ async def analytics_dashboard(
     Operator-only endpoint: requires WEBHOOK_SECRET.
     """
     verify_webhook_secret(authorization)
-    from tools.analytics import get_dashboard_data, render_dashboard_html
+    import time as _time
+    # HTML cache: 5-min TTL (data changes at most twice per day)
+    global _dashboard_cache
+    now = _time.monotonic()
+    if _dashboard_cache and (now - _dashboard_cache[0]) < 300:
+        return HTMLResponse(content=_dashboard_cache[1])
+    from tools.analytics import get_dashboard_data, render_dashboard_html, sync_from_pinecone
+    await asyncio.to_thread(sync_from_pinecone)
     data = await asyncio.to_thread(get_dashboard_data)
-    return HTMLResponse(content=render_dashboard_html(data))
+    html = render_dashboard_html(data)
+    _dashboard_cache = (now, html)
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/scores", include_in_schema=False)

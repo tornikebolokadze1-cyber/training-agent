@@ -132,7 +132,10 @@ TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 # Minimum meeting duration (minutes) to consider a meeting "really ended".
 # Below this threshold, a meeting.ended event is treated as a temporary
 # disconnect (break/reconnect) — the pipeline will NOT start.
-MINIMUM_LECTURE_DURATION_MINUTES = 120
+try:
+    MINIMUM_LECTURE_DURATION_MINUTES = int(_env("MINIMUM_LECTURE_DURATION_MINUTES", "120"))
+except (ValueError, TypeError):
+    MINIMUM_LECTURE_DURATION_MINUTES = 120
 
 # ---------------------------------------------------------------------------
 # Group Definitions
@@ -368,3 +371,26 @@ def get_group_for_weekday(weekday: int) -> int | None:
 def get_lecture_folder_name(lecture_number: int) -> str:
     """Return Georgian folder name for a lecture number."""
     return f"ლექცია #{lecture_number}"
+
+
+def extract_group_from_topic(topic: str) -> int | None:
+    """Extract group number from a Zoom meeting topic string.
+
+    Searches for the short Georgian group marker (ჯგუფი #N) in the topic,
+    which is more robust than matching the full group name — Zoom topics
+    may vary but always contain "ჯგუფი #1" or "ჯგუფი #2".
+
+    Returns:
+        Group number (1 or 2) if found, None otherwise.
+    """
+    for group_num in GROUPS:
+        if f"ჯგუფი #{group_num}" in topic:
+            return group_num
+    return None
+
+
+def get_drive_file_url(file_id: str, is_doc: bool = False) -> str:
+    """Build a shareable Google Drive/Docs URL."""
+    if is_doc:
+        return f"https://docs.google.com/document/d/{file_id}/edit"
+    return f"https://drive.google.com/file/d/{file_id}/view"

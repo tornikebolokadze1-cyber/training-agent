@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from tools.retry import retry_with_backoff
 from tools.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
@@ -52,6 +53,10 @@ def _base_url() -> str:
     return f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE_ID}"
 
 
+class _NonRetryableError(Exception):
+    """Raised for HTTP 4xx errors (except 429) that should not be retried."""
+
+
 def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[str, Any]:
     """Send a request to Green API with retry logic.
 
@@ -64,7 +69,7 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
         Green API response dict.
 
     Raises:
-        RuntimeError: If all retries are exhausted.
+        RuntimeError: If all retries are exhausted or a non-retryable error occurs.
     """
     if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
         raise ValueError(
@@ -74,42 +79,32 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
 
     url = f"{_base_url()}/{method}/{GREEN_API_TOKEN}"
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            with httpx.Client(timeout=30) as client:
-                response = client.post(url, json=payload)
-        except Exception as e:
-            # Network-level error (timeout, connection refused, etc.) — retryable
-            logger.warning(
-                "%s attempt %d failed: %s",
-                purpose, attempt, e,
+    def _do_request() -> dict[str, Any]:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(url, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            logger.info("%s sent successfully: %s", purpose, data.get("idMessage", "ok"))
+            return data
+        # Don't retry on client errors (except 429 rate limit)
+        if 400 <= response.status_code < 500 and response.status_code != 429:
+            raise _NonRetryableError(
+                f"HTTP {response.status_code}: {response.text}"
             )
-        else:
-            if response.status_code == 200:
-                data = response.json()
-                logger.info("%s sent successfully: %s", purpose, data.get("idMessage", "ok"))
-                return data
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
 
-            error_text = response.text
-
-            # Don't retry on client errors (except 429 rate limit)
-            if 400 <= response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(
-                    f"{purpose} failed with HTTP {response.status_code}: {error_text}"
-                )
-
-            logger.warning(
-                "%s attempt %d failed: HTTP %d — %s",
-                purpose, attempt, response.status_code, error_text,
-            )
-
-        if attempt < MAX_RETRIES:
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            time.sleep(delay)
-        else:
-            raise RuntimeError(f"{purpose} failed after {MAX_RETRIES} attempts")
-
-    raise RuntimeError("Unreachable")
+    try:
+        return retry_with_backoff(
+            _do_request,
+            max_retries=MAX_RETRIES,
+            backoff_base=float(RETRY_BASE_DELAY),
+            retryable_exceptions=(RuntimeError, httpx.TransportError),
+            operation_name=purpose,
+        )
+    except _NonRetryableError as exc:
+        raise RuntimeError(
+            f"{purpose} failed with non-retryable error: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
