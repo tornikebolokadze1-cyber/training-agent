@@ -14,7 +14,6 @@ import logging
 import threading
 import time
 from datetime import date
-from pathlib import Path
 
 from google import genai
 from pinecone import Pinecone, ServerlessSpec
