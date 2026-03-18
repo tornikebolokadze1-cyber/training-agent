@@ -261,6 +261,11 @@ def _run_post_meeting_pipeline(
         5. Delegate to transcribe_and_index() for the full analysis pipeline
            (transcribe → analyze → Drive summary + private report → WhatsApp → Pinecone).
 
+    IMPORTANT: This function is called from both the meeting.ended webhook
+    (server.py) and the scheduler fallback (post_meeting_job). The dedup key
+    in ``_processing_tasks`` MUST be cleaned up in ALL exit paths — including
+    early returns — to prevent stale keys from blocking future processing.
+
     Args:
         group_number: 1 or 2.
         lecture_number: Ordinal lecture number (1–15).
@@ -271,6 +276,8 @@ def _run_post_meeting_pipeline(
 
     group = GROUPS[group_number]
     lecture_folder_name = get_lecture_folder_name(lecture_number)
+    temp_files: list[Path] = []
+
     logger.info(
         "[post] Starting pipeline — Group %d, Lecture #%d, Meeting %s",
         group_number,
@@ -278,71 +285,67 @@ def _run_post_meeting_pipeline(
         meeting_id,
     )
 
-    # ---- Step 1: Wait for recording segments -------------------------------
-    recordings = check_recording_ready(meeting_id)
-    if not recordings:
-        logger.error(
-            "[post] Aborting: no recording found for meeting %s", meeting_id
-        )
-        return
-
-    # ---- Step 2: Download all segments -------------------------------------
-    zm = _import_zoom_manager()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    segment_paths: list[Path] = []
-    temp_files: list[Path] = []
-
-    logger.info("[post] Downloading %d recording segment(s)...", len(recordings))
-    for i, rec in enumerate(recordings):
-        seg_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}_seg{i}.mp4"
-        seg_path = TMP_DIR / seg_filename
-
-        try:
-            access_token = zm.get_access_token()
-            zm.download_recording(rec["download_url"], access_token, seg_path)
-            segment_paths.append(seg_path)
-            temp_files.append(seg_path)
-        except Exception as exc:
-            logger.error("[post] Download failed for segment %d: %s", i, exc)
-            alert_operator(
-                f"Recording download FAILED for Group {group_number}, "
-                f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
-                f"Check Zoom dashboard for manual download."
-            )
-            # Clean up any segments already downloaded
-            for p in temp_files:
-                p.unlink(missing_ok=True)
-            return
-
-    # ---- Step 3: Concatenate if multiple segments --------------------------
-    local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
-    local_path = TMP_DIR / local_filename
-
-    if len(segment_paths) == 1:
-        # Single segment — just rename
-        segment_paths[0].rename(local_path)
-        temp_files = [local_path]
-    else:
-        try:
-            _concatenate_segments(segment_paths, local_path)
-            temp_files.append(local_path)
-        except Exception as exc:
-            logger.error("[post] Segment concatenation failed: %s", exc)
-            alert_operator(
-                f"ffmpeg concat FAILED for Group {group_number}, "
-                f"Lecture #{lecture_number}.\nError: {exc}\n"
-                f"Segments are in .tmp/ for manual merge."
-            )
-            return
-
-    file_size_mb = local_path.stat().st_size / (1024 * 1024)
-    logger.info(
-        "[post] Recording ready: %.1f MB (%d segment(s))",
-        file_size_mb,
-        len(segment_paths),
-    )
-
     try:
+        # ---- Step 1: Wait for recording segments ---------------------------
+        recordings = check_recording_ready(meeting_id)
+        if not recordings:
+            logger.error(
+                "[post] Aborting: no recording found for meeting %s", meeting_id
+            )
+            return
+
+        # ---- Step 2: Download all segments ---------------------------------
+        zm = _import_zoom_manager()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        segment_paths: list[Path] = []
+
+        logger.info("[post] Downloading %d recording segment(s)...", len(recordings))
+        for i, rec in enumerate(recordings):
+            seg_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}_seg{i}.mp4"
+            seg_path = TMP_DIR / seg_filename
+
+            try:
+                access_token = zm.get_access_token()
+                zm.download_recording(rec["download_url"], access_token, seg_path)
+                segment_paths.append(seg_path)
+                temp_files.append(seg_path)
+            except Exception as exc:
+                logger.error("[post] Download failed for segment %d: %s", i, exc)
+                alert_operator(
+                    f"Recording download FAILED for Group {group_number}, "
+                    f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
+                    f"Check Zoom dashboard for manual download."
+                )
+                return
+
+        # ---- Step 3: Concatenate if multiple segments ----------------------
+        local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
+        local_path = TMP_DIR / local_filename
+
+        if len(segment_paths) == 1:
+            # Single segment — just rename
+            segment_paths[0].rename(local_path)
+            temp_files = [local_path]
+        else:
+            try:
+                _concatenate_segments(segment_paths, local_path)
+                temp_files.append(local_path)
+            except Exception as exc:
+                logger.error("[post] Segment concatenation failed: %s", exc)
+                alert_operator(
+                    f"ffmpeg concat FAILED for Group {group_number}, "
+                    f"Lecture #{lecture_number}.\nError: {exc}\n"
+                    f"Segments are in .tmp/ for manual merge."
+                )
+                return
+
+        file_size_mb = local_path.stat().st_size / (1024 * 1024)
+        logger.info(
+            "[post] Recording ready: %.1f MB (%d segment(s))",
+            file_size_mb,
+            len(segment_paths),
+        )
+
         # ---- Step 4: Upload recording to Google Drive ----------------------
         logger.info("[post] Uploading recording to Google Drive...")
         service = get_drive_service()
@@ -378,6 +381,16 @@ def _run_post_meeting_pipeline(
             f"Error: {exc}"
         )
     finally:
+        # CRITICAL: Always remove the dedup key so other paths (recording.completed,
+        # manual-trigger, scheduler fallback) are not permanently blocked.
+        try:
+            from tools.server import _processing_tasks, _task_key
+            key = _task_key(group_number, lecture_number)
+            _processing_tasks.pop(key, None)
+            logger.info("[post] Dedup key %s removed from _processing_tasks", key)
+        except ImportError:
+            pass  # standalone scheduler mode — no server module
+
         # Clean up all temp files (segments + merged)
         for p in temp_files:
             if p.exists():
@@ -533,9 +546,12 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
         lecture_number: Lecture ordinal (passed from schedule time, not re-derived).
         meeting_id: Zoom meeting UUID (preferred) or numeric ID.
     """
-    # Check if webhook already started processing this lecture
+    # Check if webhook already started processing this lecture.
+    # Evict stale tasks first (mirrors server.py behavior) so a crashed
+    # pipeline from >4 hours ago doesn't permanently block the fallback.
     try:
-        from tools.server import _processing_tasks, _task_key
+        from tools.server import _processing_tasks, _task_key, _evict_stale_tasks
+        _evict_stale_tasks()
         key = _task_key(group_number, lecture_number)
         if key in _processing_tasks:
             logger.info(
@@ -544,6 +560,11 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
                 key,
             )
             return
+        # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
+        # Without this, a recording.completed webhook arriving during the
+        # 15-minute polling sleep would see no key and start a parallel run.
+        _processing_tasks[key] = datetime.now()
+        logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
         pass  # server module not available (standalone scheduler mode)
 

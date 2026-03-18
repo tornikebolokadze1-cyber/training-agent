@@ -645,14 +645,18 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         logger.warning("[meeting.ended] Unknown group from topic: %s", topic)
         return {"status": "ignored", "reason": "unknown group"}
 
-    # Calculate actual duration from timestamps
+    # Calculate actual duration from Zoom's start_time and end_time
+    end_time_str = obj.get("end_time", "")
     actual_duration = duration_minutes
     try:
         start_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-        end_dt = datetime.now(start_dt.tzinfo)
+        if end_time_str:
+            end_dt = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
+        else:
+            end_dt = datetime.now(start_dt.tzinfo)
         actual_duration = (end_dt - start_dt).total_seconds() / 60
     except (ValueError, AttributeError):
-        logger.warning("[meeting.ended] Could not parse start_time, using Zoom duration: %d min", duration_minutes)
+        logger.warning("[meeting.ended] Could not parse timestamps, using Zoom duration: %d min", duration_minutes)
 
     logger.info(
         "[meeting.ended] Meeting %s ended — Group %d, topic='%s', duration=%.0f min",
@@ -699,14 +703,16 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         group_number, lecture_number, poll_id,
     )
 
-    # Import and run post-meeting pipeline in background thread
+    # Run post-meeting pipeline in background, clean up dedup key on completion
     from tools.scheduler import _run_post_meeting_pipeline
-    background_tasks.add_task(
-        _run_post_meeting_pipeline,
-        group_number,
-        lecture_number,
-        poll_id,
-    )
+
+    def _run_and_cleanup() -> None:
+        try:
+            _run_post_meeting_pipeline(group_number, lecture_number, poll_id)
+        finally:
+            _processing_tasks.pop(key, None)
+
+    background_tasks.add_task(_run_and_cleanup)
 
     return {
         "status": "accepted",
