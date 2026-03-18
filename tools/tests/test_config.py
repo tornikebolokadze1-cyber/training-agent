@@ -339,14 +339,32 @@ class TestLoadAttendees:
         attendees_file = tmp_path / "attendees.json"
         attendees_file.write_text(json.dumps(data), encoding="utf-8")
 
+        # Patch _decode_b64_env to skip the env-var path, then patch
+        # Path(__file__) chain so that the computed attendees_path points
+        # to our temp file.
+        real_path = Path
+
+        def fake_path(*args, **kwargs):
+            p = real_path(*args, **kwargs)
+            # When called with the config module's __file__, redirect
+            # .parent.parent.parent / "attendees.json" to our temp file.
+            if args and str(args[0]).endswith("config.py"):
+                class _Redirect:
+                    @property
+                    def parent(self_inner):
+                        return self_inner
+                    def __truediv__(self_inner, name):
+                        if name == "attendees.json":
+                            return attendees_file
+                        return real_path(tmp_path) / name
+                return _Redirect()
+            return p
+
         with patch.dict(os.environ, {}, clear=False), \
              patch.object(cfg, "_decode_b64_env", return_value=None), \
-             patch("tools.core.config.Path") as mock_path:
-            mock_path.return_value.parent.parent.__truediv__ = lambda s, n: attendees_file
-            # Simpler: just patch the file check
+             patch("tools.core.config.Path", side_effect=fake_path):
             result = cfg._load_attendees()
-        # May fall through to default if path doesn't match
-        assert isinstance(result, dict)
+        assert result == data
 
     def test_returns_default_when_nothing_available(self):
         with patch.object(cfg, "_decode_b64_env", return_value=None):
