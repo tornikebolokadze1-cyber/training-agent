@@ -15,12 +15,25 @@ import logging
 import sys
 from pathlib import Path
 
-from tools.core.config import GROUPS, TMP_DIR, get_drive_file_url, get_lecture_folder_name
-from tools.integrations.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
+from tools.core.config import (
+    GROUPS,
+    TMP_DIR,
+    get_drive_file_url,
+    get_lecture_folder_name,
+)
+from tools.core.retry import safe_operation
+from tools.integrations.gdrive_manager import (
+    create_google_doc,
+    ensure_folder,
+    get_drive_service,
+)
 from tools.integrations.gemini_analyzer import analyze_lecture
 from tools.integrations.knowledge_indexer import index_lecture_content
-from tools.core.retry import safe_operation
-from tools.integrations.whatsapp_sender import alert_operator, send_group_upload_notification, send_private_report
+from tools.integrations.whatsapp_sender import (
+    alert_operator,
+    send_group_upload_notification,
+    send_private_report,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -27,7 +27,6 @@ import pytest
 # Module stubs are set up in tools/tests/conftest.py (shared across all
 # test files).  Only project-level imports needed here.
 # ---------------------------------------------------------------------------
-
 from tools.core.config import (
     GROUPS,
     TOTAL_LECTURES,
@@ -35,10 +34,12 @@ from tools.core.config import (
     get_lecture_folder_name,
     get_lecture_number,
 )
-from tools.integrations.knowledge_indexer import CONTENT_TYPES, chunk_text  # noqa: E402
-from tools.integrations.whatsapp_sender import MESSAGE_MAX_LENGTH, _split_message  # noqa: E402
 from tools.integrations.gemini_analyzer import _is_quota_error  # noqa: E402
-
+from tools.integrations.knowledge_indexer import CONTENT_TYPES, chunk_text  # noqa: E402
+from tools.integrations.whatsapp_sender import (  # noqa: E402
+    MESSAGE_MAX_LENGTH,
+    _split_message,
+)
 
 # ===========================================================================
 # 1. Module import smoke tests

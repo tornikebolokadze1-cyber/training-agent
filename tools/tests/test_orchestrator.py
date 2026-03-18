@@ -32,7 +32,6 @@ for _mod_name in list(sys.modules):
 
 import tools.app.orchestrator as orch  # noqa: E402
 
-
 # ===========================================================================
 # 1. validate_credentials — required vs optional
 # ===========================================================================
@@ -181,7 +180,7 @@ class TestStatusEndpoint:
 
     def test_uptime_computed_when_started_at_set(self):
         """When app.state.started_at is set, uptime should be computed."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         started = datetime.now(timezone.utc) - timedelta(seconds=120)
         mock_state = MagicMock()
@@ -468,7 +467,7 @@ class TestStart:
     def test_exits_on_credential_failure(self):
         """start() should call sys.exit(1) if validate_credentials raises."""
         with patch.object(orch, "_configure_logging"), \
-             patch.object(orch, "validate_credentials", side_effect=EnvironmentError("missing")), \
+             patch.object(orch, "validate_credentials", side_effect=OSError("missing")), \
              pytest.raises(SystemExit) as exc_info:
             orch.start()
 

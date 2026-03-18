@@ -44,11 +44,11 @@ from tools.integrations.gdrive_manager import (
     get_drive_service,
     upload_file,
 )
-from tools.services.transcribe_lecture import transcribe_and_index
 from tools.integrations.whatsapp_sender import alert_operator
+from tools.services.transcribe_lecture import transcribe_and_index
 
 try:
-    from tools.services.whatsapp_assistant import WhatsAppAssistant, IncomingMessage
+    from tools.services.whatsapp_assistant import IncomingMessage, WhatsAppAssistant
     _assistant_available = True
 except ImportError:
     _assistant_available = False
@@ -172,7 +172,7 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     return response
 
 
-assistant: "WhatsAppAssistant | None" = WhatsAppAssistant() if _assistant_available else None
+assistant: WhatsAppAssistant | None = WhatsAppAssistant() if _assistant_available else None
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ async def whatsapp_incoming(
     return {"status": "accepted"}
 
 
-async def _handle_assistant_message(message: "IncomingMessage") -> None:
+async def _handle_assistant_message(message: IncomingMessage) -> None:
     """Background task: run the assistant pipeline."""
     try:
         result = await assistant.handle_message(message)
@@ -856,8 +856,9 @@ async def trigger_pre_meeting(
     if group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
-    from tools.app.scheduler import pre_meeting_job
     import asyncio
+
+    from tools.app.scheduler import pre_meeting_job
     asyncio.ensure_future(pre_meeting_job(group_number=group))
 
     return {"status": "triggered", "group": group}
@@ -996,7 +997,11 @@ async def analytics_dashboard(
     now = _time.monotonic()
     if _dashboard_cache and (now - _dashboard_cache[0]) < 300:
         return HTMLResponse(content=_dashboard_cache[1])
-    from tools.services.analytics import get_dashboard_data, render_dashboard_html, sync_from_pinecone
+    from tools.services.analytics import (
+        get_dashboard_data,
+        render_dashboard_html,
+        sync_from_pinecone,
+    )
     await asyncio.to_thread(sync_from_pinecone)
     data = await asyncio.to_thread(get_dashboard_data)
     html = render_dashboard_html(data)

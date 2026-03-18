@@ -16,12 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import math
-from html import escape as _esc
 import re
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Generator
+from html import escape as _esc
 
 from tools.core.config import PROJECT_ROOT, TMP_DIR
 
@@ -1091,9 +1091,6 @@ def render_dashboard_html(data: dict) -> str:
     tpi = data.get("trainer_performance_index")
     dim_rankings = data.get("dimension_rankings", [])
 
-    def _pct(count: int) -> int:
-        return round(count / total * 100)
-
     def _sc(score) -> str:
         if score is None:
             return "na"
@@ -1109,39 +1106,6 @@ def render_dashboard_html(data: dict) -> str:
         if isinstance(val, float):
             return f"{val:.1f}"
         return str(val)
-
-    def _tier(score) -> str:
-        if score is None:
-            return "\u2014"
-        if score >= 8:
-            return "A+"
-        if score >= 7:
-            return "A"
-        if score >= 6:
-            return "B"
-        if score >= 5:
-            return "C"
-        if score >= 4:
-            return "D"
-        return "F"
-
-    def _sw_html(group_data: dict) -> str:
-        s = group_data.get("strengths", [])
-        w = group_data.get("weaknesses", [])
-        h = ""
-        if s:
-            h += '<div class="sw-section"><h4 class="sw-good">\u10eb\u10da\u10d8\u10d4\u10e0\u10d8 \u10db\u10ee\u10d0\u10e0\u10d4\u10d4\u10d1\u10d8</h4>'
-            for item in s:
-                lbl = data["dimension_labels_ka"].get(item["dim"], item["dim"])
-                h += f'<div class="sw-item"><span class="sw-dot good"></span>{lbl} <span class="sc-good">{_fmt(item["mean"])}/10</span></div>'
-            h += '</div>'
-        if w:
-            h += '<div class="sw-section"><h4 class="sw-growth">\u10d2\u10d0\u10dc\u10d5\u10d8\u10d7\u10d0\u10e0\u10d4\u10d1\u10d8\u10e1 \u10e1\u10e4\u10d4\u10e0\u10dd</h4>'
-            for item in w:
-                lbl = data["dimension_labels_ka"].get(item["dim"], item["dim"])
-                h += f'<div class="sw-item"><span class="sw-dot bad"></span>{lbl} <span class="sc-bad">{_fmt(item["mean"])}/10</span></div>'
-            h += '</div>'
-        return h if h else '<p class="empty-state">\u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8 \u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1</p>'
 
     def _build_insights_html(dashboard_data: dict) -> str:
         """Build AI insights digest section from all groups' insights."""

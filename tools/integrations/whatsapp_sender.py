@@ -19,16 +19,16 @@ from typing import Any
 
 import httpx
 
-from tools.core.retry import retry_with_backoff
 from tools.core.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
+    GROUPS,
     WEBHOOK_SECRET,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
-    GROUPS,
 )
+from tools.core.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 

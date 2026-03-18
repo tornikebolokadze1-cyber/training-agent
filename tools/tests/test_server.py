@@ -20,11 +20,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import time
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
@@ -32,6 +27,11 @@ import pytest
 # ASGI app with httpx.AsyncClient.  Restore them before importing server.
 # ---------------------------------------------------------------------------
 import sys
+import time
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Pop stubs for packages that test_server needs real implementations of.
 # Also pop tools.app.server so it reimports with real FastAPI/slowapi.
@@ -41,18 +41,19 @@ for _mod_name in list(sys.modules):
 
 # Now re-import real packages
 
-import httpx  # noqa: E402
-from httpx import ASGITransport, AsyncClient  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-import tools.integrations.whatsapp_sender as _wa_sender_mod  # noqa: E402
+import httpx  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
 import tools.app.server as srv  # noqa: E402
+import tools.integrations.whatsapp_sender as _wa_sender_mod  # noqa: E402
 from tools.app.server import (  # noqa: E402
+    STALE_TASK_HOURS,
     _evict_stale_tasks,
     _processing_tasks,
     _task_key,
     app,
-    STALE_TASK_HOURS,
 )
 
 # NOTE: @pytest.mark.asyncio is applied per-class below rather than globally

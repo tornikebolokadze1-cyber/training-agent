@@ -15,7 +15,11 @@ import logging
 from pathlib import Path
 
 from tools.core.config import GROUPS, get_lecture_folder_name
-from tools.integrations.gdrive_manager import ensure_folder, get_drive_service, upload_file
+from tools.integrations.gdrive_manager import (
+    ensure_folder,
+    get_drive_service,
+    upload_file,
+)
 from tools.services.transcribe_lecture import transcribe_and_index
 
 logger = logging.getLogger(__name__)

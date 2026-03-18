@@ -19,17 +19,19 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # Pop the NoOp stub so we can import the REAL whatsapp_assistant module.
 # ---------------------------------------------------------------------------
 sys.modules.pop("tools.services.whatsapp_assistant", None)
 
-from tools.services.whatsapp_assistant import IncomingMessage, WhatsAppAssistant  # noqa: E402
 import anthropic as _anthropic_real  # noqa: E402
-import tools.integrations.whatsapp_sender as _ws_mod  # noqa: E402
 
+import tools.integrations.whatsapp_sender as _ws_mod  # noqa: E402
+from tools.services.whatsapp_assistant import (  # noqa: E402
+    IncomingMessage,
+    WhatsAppAssistant,
+)
 
 # ---------------------------------------------------------------------------
 # Factory: create a WhatsAppAssistant with all API clients mocked out.
@@ -711,6 +713,7 @@ class TestHandleMessage:
 
     def test_full_pipeline_sends_response(self):
         import asyncio
+
         from tools.services import whatsapp_assistant as wa_mod
         assistant = _make_assistant()
 
@@ -752,6 +755,7 @@ class TestHandleMessage:
     def test_direct_mention_bypasses_cooldown(self):
         import asyncio
         import time
+
         from tools.services import whatsapp_assistant as wa_mod
         assistant = _make_assistant()
         assistant._last_passive_response["chat-001@g.us"] = time.time()

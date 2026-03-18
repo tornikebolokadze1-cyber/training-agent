@@ -262,9 +262,9 @@ class WhatsAppAssistant:
         # Remove null bytes and other control chars (keep newlines/tabs)
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
         # Truncate to prevent context stuffing (WhatsApp messages rarely exceed 4K)
-        MAX_INPUT_LENGTH = 4000
-        if len(cleaned) > MAX_INPUT_LENGTH:
-            cleaned = cleaned[:MAX_INPUT_LENGTH] + "... [truncated]"
+        max_input_length = 4000
+        if len(cleaned) > max_input_length:
+            cleaned = cleaned[:max_input_length] + "... [truncated]"
         return cleaned
 
     # ------------------------------------------------------------------
@@ -286,7 +286,9 @@ class WhatsAppAssistant:
             Formatted context string, or an empty string on failure.
         """
         try:
-            from tools.integrations.knowledge_indexer import query_knowledge  # lazy import
+            from tools.integrations.knowledge_indexer import (
+                query_knowledge,  # lazy import
+            )
 
             results = query_knowledge(query, group_number=group_number, top_k=4)
 

@@ -13,12 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
 import tools.core.railway_setup as rs
-
 
 # ===========================================================================
 # 1. FILES_TO_ENCODE structure

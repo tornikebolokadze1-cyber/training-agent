@@ -20,6 +20,7 @@ from typing import Any
 
 import uvicorn
 
+from tools.app.server import app, verify_webhook_secret
 from tools.core.config import (
     ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
@@ -36,7 +37,6 @@ from tools.core.config import (
     ZOOM_CLIENT_ID,
     ZOOM_CLIENT_SECRET,
 )
-from tools.app.server import app, verify_webhook_secret
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def validate_credentials() -> None:
             logger.debug("Credential present: %s = [SET]", name)
 
     if missing_required:
-        raise EnvironmentError(
+        raise OSError(
             "Training Agent cannot start — the following required environment "
             f"variables are not set: {', '.join(missing_required)}\n"
             "Add them to your .env file and restart."
@@ -192,8 +192,9 @@ def _cleanup_stale_tmp_files() -> None:
 
     Prevents disk accumulation when Railway restarts mid-pipeline.
     """
-    from tools.core.config import TMP_DIR
     import time
+
+    from tools.core.config import TMP_DIR
 
     stale_hours = 6
     cutoff = time.time() - stale_hours * 3600
@@ -224,7 +225,9 @@ async def _async_start() -> None:
     gracefully before the process exits.
     """
     # ---- APScheduler --------------------------------------------------------
-    from tools.app.scheduler import start_scheduler  # local import avoids circular ref at module level
+    from tools.app.scheduler import (
+        start_scheduler,  # local import avoids circular ref at module level
+    )
 
     logger.info("Starting APScheduler...")
     scheduler = start_scheduler()
@@ -289,11 +292,11 @@ def start() -> None:
 
     try:
         validate_credentials()
-    except EnvironmentError as exc:
+    except OSError as exc:
         logger.critical("%s", exc)
         sys.exit(1)
 
-    from tools.services.analytics import init_db, backfill_from_tmp, sync_from_pinecone
+    from tools.services.analytics import backfill_from_tmp, init_db, sync_from_pinecone
     init_db()
     backfill_result = backfill_from_tmp()
     if backfill_result["processed"] or backfill_result["failed"]:

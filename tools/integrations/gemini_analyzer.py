@@ -13,26 +13,24 @@ import subprocess
 import time
 from pathlib import Path
 
+import anthropic
 from google import genai
 from google.genai import types
 
-import anthropic
-
 from tools.core.config import (
     ANTHROPIC_API_KEY,
+    ASSISTANT_CLAUDE_MODEL,
+    DEEP_ANALYSIS_PROMPT,
+    GAP_ANALYSIS_PROMPT,
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
-    GEMINI_MODEL_TRANSCRIPTION,
     GEMINI_MODEL_ANALYSIS,
-    ASSISTANT_CLAUDE_MODEL,
-    TMP_DIR,
-    TRANSCRIPTION_PROMPT,
-    TRANSCRIPTION_CONTINUATION_PROMPT,
+    GEMINI_MODEL_TRANSCRIPTION,
     SUMMARIZATION_PROMPT,
-    GAP_ANALYSIS_PROMPT,
-    DEEP_ANALYSIS_PROMPT,
+    TMP_DIR,
+    TRANSCRIPTION_CONTINUATION_PROMPT,
+    TRANSCRIPTION_PROMPT,
 )
-
 from tools.core.retry import safe_operation
 
 logger = logging.getLogger(__name__)

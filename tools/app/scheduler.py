@@ -271,7 +271,11 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
-    from tools.integrations.gdrive_manager import ensure_folder, get_drive_service, upload_file
+    from tools.integrations.gdrive_manager import (
+        ensure_folder,
+        get_drive_service,
+        upload_file,
+    )
     from tools.services.transcribe_lecture import transcribe_and_index
 
     group = GROUPS[group_number]
@@ -550,7 +554,7 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     # Evict stale tasks first (mirrors server.py behavior) so a crashed
     # pipeline from >4 hours ago doesn't permanently block the fallback.
     try:
-        from tools.app.server import _processing_tasks, _task_key, _evict_stale_tasks
+        from tools.app.server import _evict_stale_tasks, _processing_tasks, _task_key
         _evict_stale_tasks()
         key = _task_key(group_number, lecture_number)
         if key in _processing_tasks:
