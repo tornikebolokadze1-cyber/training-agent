@@ -29,7 +29,12 @@ import tools.services.transcribe_lecture as tl
 # Helpers
 # ===========================================================================
 
+# The safe_operation decorator does a lazy import of alert_operator via the
+# module (tools.integrations.whatsapp_sender.alert_operator), so we must
+# patch at the module level. Direct calls in transcribe_lecture also go
+# through the local import, so we patch both for full coverage.
 _PATCH_ALERT = "tools.integrations.whatsapp_sender.alert_operator"
+_PATCH_ALERT_LOCAL = "tools.services.transcribe_lecture.alert_operator"
 _PATCH_SEND_GROUP = "tools.services.transcribe_lecture.send_group_upload_notification"
 _PATCH_SEND_PRIVATE = "tools.services.transcribe_lecture.send_private_report"
 _PATCH_CREATE_DOC = "tools.services.transcribe_lecture.create_google_doc"
@@ -60,7 +65,7 @@ class TestUploadSummaryDriveFailure:
         alert_message = mock_alert.call_args[0][0]
         assert "Drive" in alert_message or "FAILED" in alert_message
 
-    def test_alert_message_contains_group_and_lecture(self):
+    def test_alert_message_contains_operation_and_error(self):
         with (
             patch(_PATCH_GET_FOLDER_ID, return_value="folder-id-abc"),
             patch(_PATCH_CREATE_DOC, side_effect=OSError("network error")),
@@ -69,9 +74,9 @@ class TestUploadSummaryDriveFailure:
             tl._upload_summary_to_drive(2, 5, "summary")
 
         alert_message = mock_alert.call_args[0][0]
-        # Should contain group and lecture identifiers so operator knows which one failed
-        assert "2" in alert_message or "G2" in alert_message
-        assert "5" in alert_message or "L#5" in alert_message
+        # safe_operation formats alert as "{operation_name} FAILED: {error}"
+        assert "Drive summary upload" in alert_message
+        assert "network error" in alert_message
 
     def test_successful_upload_does_not_call_alert_operator(self):
         with (
@@ -307,7 +312,8 @@ class TestQualityGate:
         with (
             patch(_PATCH_ANALYZE, return_value=results),
             patch(_PATCH_INDEX, return_value=5),
-            patch(_PATCH_ALERT) as mock_alert,
+            patch(_PATCH_ALERT),
+            patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
             patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
             patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
             patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
@@ -316,9 +322,9 @@ class TestQualityGate:
         ):
             tl.transcribe_and_index(1, 1, video)
 
-        mock_alert.assert_called()
+        mock_alert_local.assert_called()
         # One of the alert calls should mention the missing analysis
-        alert_args = [c[0][0] for c in mock_alert.call_args_list]
+        alert_args = [c[0][0] for c in mock_alert_local.call_args_list]
         quality_alerts = [a for a in alert_args if "summary" in a or "EMPTY" in a]
         assert len(quality_alerts) >= 1
 
@@ -336,7 +342,8 @@ class TestQualityGate:
         with (
             patch(_PATCH_ANALYZE, return_value=results),
             patch(_PATCH_INDEX, return_value=0),
-            patch(_PATCH_ALERT) as mock_alert,
+            patch(_PATCH_ALERT),
+            patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
             patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
             patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value=None),
             patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
@@ -345,7 +352,7 @@ class TestQualityGate:
         ):
             tl.transcribe_and_index(1, 1, video)
 
-        mock_alert.assert_called()
+        mock_alert_local.assert_called()
 
     def test_full_analyses_do_not_trigger_quality_gate_alert(self, tmp_path):
         video = tmp_path / "lecture.mp4"

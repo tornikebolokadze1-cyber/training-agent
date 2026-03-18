@@ -137,14 +137,16 @@ class TestSendRequest:
         assert mock_client.post.call_count == 1
 
     def test_network_error_retries_then_fails(self):
+        import httpx as httpx_stub
+
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.side_effect = ConnectionError("Network down")
+        mock_client.post.side_effect = httpx_stub.TransportError("Network down")
 
         with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client), \
-             patch("tools.integrations.whatsapp_sender.time.sleep"):
-            with pytest.raises(RuntimeError, match="failed after"):
+             patch("tools.core.retry.time.sleep"):
+            with pytest.raises(httpx_stub.TransportError):
                 ws._send_request("sendMessage", {}, "test send")
 
         assert mock_client.post.call_count == ws.MAX_RETRIES
@@ -165,7 +167,7 @@ class TestSendRequest:
         mock_client.post.side_effect = [fail_response, ok_response]
 
         with patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client), \
-             patch("tools.integrations.whatsapp_sender.time.sleep"):
+             patch("tools.core.retry.time.sleep"):
             result = ws._send_request("sendMessage", {}, "test")
 
         assert result == {"idMessage": "ok"}
