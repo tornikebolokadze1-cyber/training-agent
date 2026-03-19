@@ -44,7 +44,7 @@ STATE_FAILED = "FAILED"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
-FILE_POLL_TIMEOUT = 900  # 15 minutes max wait for processing (large videos)
+FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
 GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
 
 

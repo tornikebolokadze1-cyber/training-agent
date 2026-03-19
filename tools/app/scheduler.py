@@ -100,6 +100,7 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
     zm = _import_zoom_manager()
 
     elapsed = 0
+    consecutive_404s = 0  # Track "still processing" 404s for adaptive backoff
     logger.info(
         "[recording] Waiting %d min before first poll for meeting %s...",
         RECORDING_INITIAL_DELAY // 60,
@@ -111,6 +112,7 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
     while elapsed < RECORDING_POLL_TIMEOUT:
         try:
             recordings = zm.get_meeting_recordings(meeting_id)
+            consecutive_404s = 0  # Reset on success
         except Exception as exc:
             # Distinguish transient (network) vs non-transient (auth) errors
             error_str = str(exc).lower()
@@ -127,6 +129,23 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
                 except Exception:
                     logger.error("[recording] alert_operator also failed for meeting %s", meeting_id)
                 return []
+
+            # Adaptive backoff for Zoom "still processing" 404s (common for large lectures)
+            is_still_processing = "404" in error_str and (
+                "3301" in error_str or "processing" in error_str or "still" in error_str
+            )
+            if is_still_processing:
+                consecutive_404s += 1
+                # Exponential backoff: 5, 10, 20, 30, 30... minutes (cap at 30 min)
+                backoff = min(RECORDING_POLL_INTERVAL * (2 ** (consecutive_404s - 1)), 30 * 60)
+                logger.warning(
+                    "[recording] Zoom still processing meeting %s (attempt %d) "
+                    "— backing off %d min",
+                    meeting_id, consecutive_404s, backoff // 60,
+                )
+                time.sleep(backoff)
+                elapsed += backoff
+                continue
 
             logger.warning(
                 "[recording] Transient error for meeting %s: %s — retrying in %d min",
@@ -236,7 +255,7 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
     ]
     logger.info("[post] Concatenating %d segments with ffmpeg...", len(segment_paths))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     concat_list.unlink(missing_ok=True)
 
     if result.returncode != 0:
@@ -554,20 +573,20 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     # Evict stale tasks first (mirrors server.py behavior) so a crashed
     # pipeline from >4 hours ago doesn't permanently block the fallback.
     try:
-        from tools.app.server import _evict_stale_tasks, _processing_tasks, _task_key
+        from tools.app.server import _evict_stale_tasks, _processing_lock, _processing_tasks, _task_key
         _evict_stale_tasks()
         key = _task_key(group_number, lecture_number)
-        if key in _processing_tasks:
-            logger.info(
-                "[post] Scheduler FALLBACK skipped — %s already processing "
-                "(webhook handled it)",
-                key,
-            )
-            return
-        # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
-        # Without this, a recording.completed webhook arriving during the
-        # 15-minute polling sleep would see no key and start a parallel run.
-        _processing_tasks[key] = datetime.now()
+        with _processing_lock:
+            if key in _processing_tasks:
+                logger.info(
+                    "[post] Scheduler FALLBACK skipped — %s already processing "
+                    "(webhook handled it)",
+                    key,
+                )
+                return
+            # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
+            # Atomic check-and-set under lock prevents webhook+scheduler race.
+            _processing_tasks[key] = datetime.now()
         logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
         pass  # server module not available (standalone scheduler mode)

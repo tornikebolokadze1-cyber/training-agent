@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import re
+import threading
 import time
 import traceback
 import uuid
@@ -59,6 +60,7 @@ logger = logging.getLogger(__name__)
 # In-flight task tracking (deduplication + observability)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
+_processing_lock = threading.Lock()  # Prevent webhook+scheduler race condition
 STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
 
 
@@ -94,6 +96,34 @@ def _evict_stale_tasks() -> list[str]:
 _docs_url = None if IS_RAILWAY else "/docs"
 _redoc_url = None if IS_RAILWAY else "/redoc"
 
+async def _eviction_loop() -> None:
+    """Background task: evict stale processing tasks every 30 minutes."""
+    while True:
+        try:
+            await asyncio.sleep(30 * 60)
+            _evict_stale_tasks()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("Stale task eviction loop error: %s", exc)
+
+
+from contextlib import asynccontextmanager  # noqa: E402
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):  # noqa: ARG001
+    eviction_task = asyncio.create_task(_eviction_loop())
+    try:
+        yield
+    finally:
+        eviction_task.cancel()
+        try:
+            await eviction_task
+        except asyncio.CancelledError:
+            pass
+
+
 app = FastAPI(
     title="Training Agent",
     description="Webhook server for Zoom recording processing and AI analysis",
@@ -101,6 +131,7 @@ app = FastAPI(
     docs_url=_docs_url,
     redoc_url=_redoc_url,
     openapi_url=None if IS_RAILWAY else "/openapi.json",
+    lifespan=_lifespan,
 )
 
 # Reject requests with Host headers from unknown origins.
@@ -688,11 +719,12 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         lecture_number = 1
 
     _evict_stale_tasks()
-    key = _task_key(group_number, lecture_number)
-    if key in _processing_tasks:
-        logger.info("[meeting.ended] %s already processing — skipping", key)
-        return {"status": "duplicate", "message": f"{key} already processing"}
-    _processing_tasks[key] = datetime.now()
+    with _processing_lock:
+        key = _task_key(group_number, lecture_number)
+        if key in _processing_tasks:
+            logger.info("[meeting.ended] %s already processing — skipping", key)
+            return {"status": "duplicate", "message": f"{key} already processing"}
+        _processing_tasks[key] = datetime.now()
 
     # Use meeting UUID for polling (Zoom recordings API needs UUID, not numeric ID)
     poll_id = meeting_uuid if meeting_uuid else meeting_id
@@ -760,10 +792,11 @@ async def zoom_webhook(
         )
 
         _evict_stale_tasks()
-        key = _task_key(ctx["group_number"], ctx["lecture_number"])
-        if key in _processing_tasks:
-            return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        with _processing_lock:
+            key = _task_key(ctx["group_number"], ctx["lecture_number"])
+            if key in _processing_tasks:
+                return {"status": "duplicate", "message": f"{key} already processing"}
+            _processing_tasks[key] = datetime.now()
 
         proc_payload = ProcessRecordingRequest(
             download_url=ctx["download_url"],
@@ -803,24 +836,20 @@ async def process_recording(
     # Evict stale tasks before checking (prevents permanent blocking from hung pipelines)
     _evict_stale_tasks()
 
-    # Deduplication: reject if this group+lecture is already being processed.
-    # Best-effort: the check-and-set is NOT locked, but since all async endpoint
-    # code runs on a single event loop thread (no awaits between check and set),
-    # concurrent requests are effectively serialised here.
     key = _task_key(payload.group_number, payload.lecture_number)
-    if key in _processing_tasks:
-        started = _processing_tasks[key]
-        logger.warning(
-            "Duplicate request rejected: Group %d, Lecture #%d (in progress since %s)",
-            payload.group_number, payload.lecture_number, started.isoformat(),
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                   f"is already being processed (started {started.isoformat()})",
-        )
-
-    _processing_tasks[key] = datetime.now()
+    with _processing_lock:
+        if key in _processing_tasks:
+            started = _processing_tasks[key]
+            logger.warning(
+                "Duplicate request rejected: Group %d, Lecture #%d (in progress since %s)",
+                payload.group_number, payload.lecture_number, started.isoformat(),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                       f"is already being processed (started {started.isoformat()})",
+            )
+        _processing_tasks[key] = datetime.now()
 
     logger.info(
         "Received recording request: Group %d, Lecture #%d",
@@ -944,15 +973,15 @@ async def manual_trigger(
     _evict_stale_tasks()
 
     key = _task_key(payload.group_number, payload.lecture_number)
-    if key in _processing_tasks:
-        started = _processing_tasks[key]
-        raise HTTPException(
-            status_code=409,
-            detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                   f"is already being processed (started {started.isoformat()})",
-        )
-
-    _processing_tasks[key] = datetime.now()
+    with _processing_lock:
+        if key in _processing_tasks:
+            started = _processing_tasks[key]
+            raise HTTPException(
+                status_code=409,
+                detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                       f"is already being processed (started {started.isoformat()})",
+            )
+        _processing_tasks[key] = datetime.now()
 
     logger.info(
         "Manual trigger: Group %d, Lecture #%d, Drive file: %s",
