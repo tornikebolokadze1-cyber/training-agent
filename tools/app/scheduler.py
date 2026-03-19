@@ -581,12 +581,15 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     )
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        _run_post_meeting_pipeline,
-        group_number,
-        lecture_number,
-        meeting_id,
+    await asyncio.wait_for(
+        loop.run_in_executor(
+            None,
+            _run_post_meeting_pipeline,
+            group_number,
+            lecture_number,
+            meeting_id,
+        ),
+        timeout=4 * 3600,  # 4-hour absolute cap — prevents indefinite hang
     )
 
 

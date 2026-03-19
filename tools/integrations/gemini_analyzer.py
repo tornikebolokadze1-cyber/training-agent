@@ -8,6 +8,7 @@ writing for analysis.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import subprocess
 import time
@@ -44,6 +45,7 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 900  # 15 minutes max wait for processing (large videos)
+GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
 
 
 def _is_quota_error(error: Exception) -> bool:
@@ -313,14 +315,23 @@ def _generate_with_retry(
             logger.info("Generating %s with %s (attempt %d/%d, %s tier)...",
                         purpose, model, attempt, MAX_RETRIES, tier)
 
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    temperature=0.3,
-                    max_output_tokens=max_output_tokens,
-                ),
-            )
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
+                _future = _exec.submit(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=max_output_tokens,
+                    ),
+                )
+                try:
+                    response = _future.result(timeout=GEMINI_GENERATE_TIMEOUT)
+                except concurrent.futures.TimeoutError as te:
+                    raise TimeoutError(
+                        f"Gemini generate_content timed out after "
+                        f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
+                    ) from te
 
             # response.text raises ValueError if blocked by safety filters
             try:
