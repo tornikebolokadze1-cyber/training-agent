@@ -315,7 +315,20 @@ def extract_insights(deep_analysis_text: str) -> dict:
             deep_analysis_text, re.UNICODE,
         )
         str_section = m.group(1) if m else ""
-    strengths_count = len(re.findall(r"(?m)^\s*\*\s+.+", str_section or ""))
+    if not str_section:
+        # Fallback: count "ძლიერი მხარე" or "ძლიერი:" anywhere as bullet items
+        str_section = _get_section(deep_analysis_text, r"ძლიერი") or ""
+    strengths_count = len(re.findall(r"(?m)^\s*[\*\-]\s+.+", str_section or ""))
+    if strengths_count == 0:
+        # Numbered items fallback: 1. **item**
+        strengths_count = len(re.findall(r"(?m)^\s*\d+\.\s+\*\*", str_section or ""))
+    if strengths_count == 0:
+        # Last resort: count score dimensions >= 7 as strengths
+        high_scores = re.findall(
+            r"\|\s*\*{0,2}(?:[789]|10)(?:\.\d+)?/10\*{0,2}\s*\|",
+            deep_analysis_text,
+        )
+        strengths_count = len(high_scores)
 
     # Weaknesses
     wk_section = _get_section(deep_analysis_text, r"\*?\*?სუსტი\s+მხარეები")
@@ -325,19 +338,52 @@ def extract_insights(deep_analysis_text: str) -> dict:
             deep_analysis_text, re.UNICODE,
         )
         wk_section = m.group(1) if m else ""
-    weaknesses_count = len(re.findall(r"(?m)^\s*\*\s+.+", wk_section or ""))
-    gaps_count = len(re.findall(
-        r"(?m)^\s*[a-z]\)\s+",
-        _get_section(deep_analysis_text, r"კრიტიკული\s+ხარვეზ") or ""
-    ))
+    if not wk_section:
+        # Fallback: look for "განვითარება" or "გასაუმჯობესებელი" sections
+        wk_section = _get_section(deep_analysis_text, r"განვითარებ|გასაუმჯობესებელ|სისუსტ") or ""
+    weaknesses_count = len(re.findall(r"(?m)^\s*[\*\-]\s+.+", wk_section or ""))
+    if weaknesses_count == 0:
+        weaknesses_count = len(re.findall(r"(?m)^\s*\d+\.\s+\*\*", wk_section or ""))
+    if weaknesses_count == 0:
+        # Last resort: count score dimensions <= 5 as weaknesses
+        low_scores = re.findall(
+            r"\|\s*\*{0,2}[1-5](?:\.\d+)?/10\*{0,2}\s*\|",
+            deep_analysis_text,
+        )
+        weaknesses_count = len(low_scores)
+
+    # Gaps: try multiple section names
+    gap_section = (
+        _get_section(deep_analysis_text, r"კრიტიკული\s+ხარვეზ")
+        or _get_section(deep_analysis_text, r"ხარვეზ")
+        or ""
+    )
+    gaps_count = len(re.findall(r"(?m)^\s*[a-z]\)\s+", gap_section))
+    if gaps_count == 0:
+        # Also count numbered items or bullets in gap section
+        gaps_count = len(re.findall(r"(?m)^\s*[\*\-]\s+.+", gap_section))
+    if gaps_count == 0:
+        gaps_count = len(re.findall(r"(?m)^\s*\d+\.\s+", gap_section))
+
+    # Blind spots: try both "ბრმა წერტილი" header and "ბრმა წერტილები" section
     blind_spots = len(re.findall(
-        r"(?m)^###\s+ბრმა\s+წერტილი",
+        r"(?m)^###?\s+.*ბრმა\s+წერტილ",
         deep_analysis_text
     ))
-    recs_count = len(re.findall(
-        r"(?m)^\s*\d+\.\s+\*\*",
-        _get_section(deep_analysis_text, r"რეკომენდაცი|გაუმჯობესებ") or ""
-    ))
+    if blind_spots == 0:
+        bs_section = _get_section(deep_analysis_text, r"ბრმა\s+წერტილ") or ""
+        blind_spots = len(re.findall(r"(?m)^\s*[\*\-]\s+.+", bs_section))
+        if blind_spots == 0:
+            blind_spots = len(re.findall(r"(?m)^\s*\d+\.\s+", bs_section))
+
+    # Recommendations
+    rec_section = _get_section(deep_analysis_text, r"რეკომენდაცი|გაუმჯობესებ|სარეკომენდაციო") or ""
+    recs_count = len(re.findall(r"(?m)^\s*\d+\.\s+\*\*", rec_section))
+    if recs_count == 0:
+        recs_count = len(re.findall(r"(?m)^\s*[\*\-]\s+\*\*", rec_section))
+    if recs_count == 0:
+        # Count any numbered steps: "ნაბიჯი N:"
+        recs_count = len(re.findall(r"(?m)ნაბიჯი\s+\d+", rec_section))
     # Count ✅ items (technically correct) and ⚠️ items (problematic)
     tech_correct = len(re.findall(r"(?m)^\s*✅\s+", deep_analysis_text))
     tech_problematic = len(re.findall(r"(?m)^\s*[⚠️]\s*\*\*", deep_analysis_text))
@@ -355,13 +401,31 @@ def extract_insights(deep_analysis_text: str) -> dict:
         deep_analysis_text,
         r"ძლიერი\s+მხარეები.+?(?=\n##|\n\*\*სუსტი|\Z)"
     )
+    if not top_strength:
+        # Fallback: get justification from highest-scored dimension in table
+        best = re.findall(
+            r"\|[^\|]+\|\s*\*{0,2}([789]|10)(?:\.\d+)?/10\*{0,2}\s*\|([^\|]+)\|",
+            deep_analysis_text, re.UNICODE,
+        )
+        if best:
+            best.sort(key=lambda x: -float(x[0]))
+            top_strength = best[0][1].strip()[:300]
     top_weakness = _extract_first_item(
         deep_analysis_text,
         r"სუსტი\s+მხარეები.+?(?=\n##|\Z)"
     )
+    if not top_weakness:
+        # Fallback: get justification from lowest-scored dimension in table
+        worst = re.findall(
+            r"\|[^\|]+\|\s*\*{0,2}([1-5])(?:\.\d+)?/10\*{0,2}\s*\|([^\|]+)\|",
+            deep_analysis_text, re.UNICODE,
+        )
+        if worst:
+            worst.sort(key=lambda x: float(x[0]))
+            top_weakness = worst[0][1].strip()[:300]
     key_rec = _extract_first_item(
         deep_analysis_text,
-        r"(?:რეკომენდაცი|გაუმჯობესებ).+?(?=\n##|\Z)"
+        r"(?:რეკომენდაცი|გაუმჯობესებ|სარეკომენდაციო).+?(?=\n##|\Z)"
     )
 
     # Extract score justifications as JSON
@@ -388,9 +452,24 @@ def extract_insights(deep_analysis_text: str) -> dict:
 
 
 def _get_section(text: str, header_pattern: str) -> str | None:
-    """Extract text from a section header to the next ## header."""
+    """Extract text from a section header to the next ## header.
+
+    Handles multiple header formats:
+    - ## ძლიერი მხარეები
+    - ### 10. კრიტიკული ბრმა წერტილები
+    - **ძლიერი მხარეები:**
+    - ნაწილი II — ძლიერი მხარეები
+    """
+    # Try markdown headers first (##, ###)
     match = re.search(
-        rf"(?:##?\s*\d*\.?\s*){header_pattern}.*?\n(.*?)(?=\n##|\Z)",
+        rf"(?:##?#?\s*(?:\d+\.?\s*)?(?:ნაწილი\s+[IVX]+\s*[—\-]?\s*)?){header_pattern}.*?\n(.*?)(?=\n##|\Z)",
+        text, re.UNICODE | re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        return match.group(1)
+    # Try bold headers: **header:**
+    match = re.search(
+        rf"\*\*[^*]*{header_pattern}[^*]*\*\*:?\s*\n(.*?)(?=\n\*\*[^*]+\*\*:?\s*\n|\n##|\Z)",
         text, re.UNICODE | re.DOTALL | re.IGNORECASE,
     )
     return match.group(1) if match else None
