@@ -1123,14 +1123,14 @@ def render_dashboard_html(data: dict) -> str:
             ln = ins["lecture_number"]
             dot_cls = "g1-dot" if gn == 1 else "g2-dot"
 
-            # Score justifications
+            # Score justifications — show full text (no truncation)
             just_html = ""
             if ins.get("score_justifications"):
                 try:
                     justs = json.loads(ins["score_justifications"])
                     for dim_key, text_val in justs.items():
                         dim_label = dashboard_data["dimension_labels_ka"].get(dim_key, dim_key)
-                        just_html += f'<div class="just-item"><span class="just-dim">{_esc(dim_label)}:</span> {_esc(text_val[:150])}...</div>'
+                        just_html += f'<div class="just-item"><span class="just-dim">{_esc(dim_label)}:</span> {_esc(str(text_val))}</div>'
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -1147,9 +1147,9 @@ def render_dashboard_html(data: dict) -> str:
               </div>'''
 
             if ins.get("top_strength"):
-                h += f'<div class="ins-quote good"><strong>\u10eb\u10da\u10d8\u10d4\u10e0\u10d8:</strong> {_esc(ins["top_strength"][:200])}</div>'
+                h += f'<div class="ins-quote good expandable"><strong>\u10eb\u10da\u10d8\u10d4\u10e0\u10d8:</strong> <span class="expand-text">{_esc(str(ins["top_strength"]))}</span></div>'
             if ins.get("top_weakness"):
-                h += f'<div class="ins-quote growth"><strong>\u10d2\u10d0\u10dc\u10d5\u10d8\u10d7\u10d0\u10e0\u10d4\u10d1\u10d0:</strong> {_esc(ins["top_weakness"][:200])}</div>'
+                h += f'<div class="ins-quote growth expandable"><strong>\u10d2\u10d0\u10dc\u10d5\u10d8\u10d7\u10d0\u10e0\u10d4\u10d1\u10d0:</strong> <span class="expand-text">{_esc(str(ins["top_weakness"]))}</span></div>'
             if just_html:
                 h += f'<details class="just-details"><summary>\u10e5\u10e3\u10da\u10d4\u10d1\u10d8\u10e1 \u10d3\u10d0\u10e1\u10d0\u10d1\u10e3\u10d7\u10d4\u10d1\u10d0</summary>{just_html}</details>'
             h += '</div>'
@@ -1425,6 +1425,40 @@ def render_dashboard_html(data: dict) -> str:
     _no_lectures_msg = '<div class="card"><p class="empty-state">\u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1 \u10da\u10d4\u10e5\u10ea\u10d8\u10d4\u10d1\u10d8 \u10d3\u10d0\u10db\u10e3\u10e8\u10d0\u10d5\u10d4\u10d1\u10e3\u10da\u10d8</p></div>'
     _no_data_msg = '<p class="empty-state">\u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8 \u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1</p>'
 
+    # ── Lecture Comparison Table HTML ──
+    def _cell_cls(v: float | None) -> str:
+        if v is None:
+            return ""
+        if v >= 7:
+            return "cell-good"
+        if v >= 5:
+            return "cell-mid"
+        return "cell-bad"
+
+    cmp_table_rows = ""
+    for r in all_rows:
+        gn = r["group_number"]
+        ln = r["lecture_number"]
+        comp = r["composite"]
+        cmp_table_rows += f'<tr><td><span class="grp-badge g{gn}">\u10ef\u10d2 #{gn}</span> \u10da\u10d4\u10e5\u10ea\u10d8\u10d0 #{ln}</td>'
+        for d in DIMENSIONS:
+            v = r[d]
+            cmp_table_rows += f'<td><span class="sc-cell {_cell_cls(v)}">{_fmt(v)}</span></td>'
+        cmp_table_rows += f'<td><span class="sc-cell cell-comp {_cell_cls(comp)}">{_fmt(comp)}</span></td></tr>'
+
+    dim_labels_ka_short = {
+        "content_depth": "\u10e8\u10d8\u10dc\u10d0\u10d0\u10e0\u10e1\u10d8\u10e1 \u10e1\u10d8\u10e6\u10e0\u10db\u10d4",
+        "practical_value": "\u10de\u10e0\u10d0\u10e5\u10e2\u10d8\u10d9\u10e3\u10da\u10d8 \u10e6\u10d8\u10e0\u10d4\u10d1\u10e3\u10da\u10d4\u10d1\u10d0",
+        "engagement": "\u10e9\u10d0\u10e0\u10d7\u10e3\u10da\u10dd\u10d1\u10d0",
+        "technical_accuracy": "\u10e2\u10d4\u10e5\u10dc\u10d8\u10d9\u10e3\u10e0\u10d8 \u10e1\u10d8\u10d6\u10e3\u10e1\u10e2\u10d4",
+        "market_relevance": "\u10d1\u10d0\u10d6\u10e0\u10d8\u10e1 \u10e0\u10d4\u10da\u10d4\u10d5\u10d0\u10dc\u10e2\u10e3\u10e0\u10dd\u10d1\u10d0",
+    }
+
+    cmp_table_header = "<tr><th>\u10da\u10d4\u10e5\u10ea\u10d8\u10d0</th>"
+    for d in DIMENSIONS:
+        cmp_table_header += f"<th>{dim_labels_ka_short.get(d, d)}</th>"
+    cmp_table_header += "<th>\u10d9\u10dd\u10db\u10de\u10dd\u10d6\u10d8\u10e2\u10e3\u10e0\u10d8</th></tr>"
+
     cross_summary_html = ""
     for dim in DIMENSIONS:
         cg = cross_group.get(dim, {})
@@ -1491,7 +1525,7 @@ body::before {{
   padding: 1.5rem;
   backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
   transition: border-color 0.3s, box-shadow 0.3s;
-  position: relative; overflow: hidden;
+  position: relative; overflow: visible;
 }}
 .card:hover {{ border-color: var(--card-hover); }}
 
@@ -1723,6 +1757,52 @@ h2.sec::before {{
 .ins-quote {{ font-size:0.72rem; color:var(--text2); padding:0.5rem 0.65rem; margin:0.4rem 0; border-radius:8px; line-height:1.5; border-left:3px solid; }}
 .ins-quote.good {{ border-color:var(--good); background:rgba(52,211,153,0.04); }}
 .ins-quote.growth {{ border-color:var(--mid); background:rgba(251,191,36,0.04); }}
+
+/* ── Expand/Collapse for insights text ── */
+.ins-quote.expandable {{ cursor:pointer; position:relative; }}
+.ins-quote.expandable .expand-text {{ display:block; }}
+.ins-quote.expandable.collapsed .expand-text {{
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+}}
+.ins-quote.expandable::after {{
+  content:'ვრცლად \u25BC'; display:block; margin-top:0.35rem;
+  font-size:0.62rem; font-weight:600; color:var(--accent); text-align:right;
+}}
+.ins-quote.expandable.collapsed::after {{ content:'ვრცლად \u25BC'; }}
+.ins-quote.expandable:not(.collapsed)::after {{ content:'შეკვეცა \u25B2'; }}
+
+/* ── Lecture Comparison Table ── */
+.cmp-table-wrap {{ overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:0.75rem; }}
+.cmp-table {{
+  width:100%; border-collapse:collapse; font-size:0.78rem;
+  background:var(--card); border-radius:12px; overflow:hidden;
+}}
+.cmp-table thead th {{
+  background:var(--surface); color:var(--muted); font-weight:700;
+  font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em;
+  padding:0.65rem 0.5rem; text-align:center; white-space:nowrap;
+  border-bottom:1px solid var(--card-border);
+}}
+.cmp-table thead th:first-child {{ text-align:left; padding-left:1rem; }}
+.cmp-table tbody tr {{ border-bottom:1px solid rgba(255,255,255,0.03); transition:background 0.15s; }}
+.cmp-table tbody tr:hover {{ background:rgba(99,102,241,0.06); }}
+.cmp-table tbody td {{
+  padding:0.55rem 0.5rem; text-align:center; font-weight:600;
+}}
+.cmp-table tbody td:first-child {{ text-align:left; padding-left:1rem; font-weight:700; }}
+.cmp-table .sc-cell {{
+  display:inline-block; min-width:32px; padding:0.15rem 0.4rem;
+  border-radius:6px; font-size:0.72rem; font-weight:700; text-align:center;
+}}
+.cmp-table .sc-cell.cell-good {{ background:rgba(52,211,153,0.18); color:var(--good); }}
+.cmp-table .sc-cell.cell-mid {{ background:rgba(251,191,36,0.18); color:var(--mid); }}
+.cmp-table .sc-cell.cell-bad {{ background:rgba(248,113,113,0.18); color:var(--bad); }}
+.cmp-table .sc-cell.cell-comp {{ font-size:0.82rem; padding:0.2rem 0.55rem; }}
+
+/* ── Charts: bar chart section ── */
+.charts-2col {{ display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }}
+@media (max-width:900px) {{ .charts-2col {{ grid-template-columns:1fr; }} }}
+
 .just-details {{ margin-top:0.4rem; }}
 .just-details summary {{ font-size:0.68rem; color:var(--accent); cursor:pointer; font-weight:600; }}
 .just-details summary:hover {{ text-decoration:underline; }}
@@ -1845,6 +1925,12 @@ h2.sec::before {{
   *,*::before,*::after {{ animation-duration:0.01ms!important; transition-duration:0.01ms!important; }}
 }}
 
+/* ── Tablet ── */
+@media (max-width:900px) {{
+  .charts-2col {{ grid-template-columns:1fr; }}
+  .cmp-table {{ font-size:0.72rem; }}
+}}
+
 /* ── Mobile ── */
 @media (max-width:640px) {{
   .wrap {{ padding:1rem 0.75rem; }}
@@ -1854,6 +1940,13 @@ h2.sec::before {{
   .tl-dot {{ width:20px; height:20px; min-width:20px; font-size:0.5rem; }}
   .dash-footer {{ flex-direction:column; text-align:center; }}
   .bullet-label {{ width:80px; font-size:0.65rem; }}
+  .cmp-table {{ font-size:0.65rem; }}
+  .cmp-table thead th {{ padding:0.4rem 0.3rem; font-size:0.58rem; }}
+  .cmp-table tbody td {{ padding:0.4rem 0.3rem; }}
+  .cmp-table .sc-cell {{ min-width:24px; padding:0.1rem 0.25rem; font-size:0.62rem; }}
+  .lec-grid {{ grid-template-columns:1fr; }}
+  .chart-wrap {{ height:200px; }}
+  .ins-quote {{ font-size:0.68rem; }}
 }}
 
 /* ── Focus ── */
@@ -2063,6 +2156,24 @@ h2.sec::before {{
   </div>
 </div>
 
+<!-- ════════ 8b. LECTURE COMPARISON TABLE ════════ -->
+<div class="card">
+  <h2 class="sec">\u10da\u10d4\u10e5\u10ea\u10d8\u10d4\u10d1\u10d8\u10e1 \u10e8\u10d4\u10d3\u10d0\u10e0\u10d4\u10d1\u10d8\u10e1 \u10ea\u10ee\u10e0\u10d8\u10da\u10d8</h2>
+  <div class="cmp-table-wrap">
+    <table class="cmp-table">
+      <thead>{cmp_table_header}</thead>
+      <tbody>{cmp_table_rows if cmp_table_rows else '<tr><td colspan="7" class="empty-state">\u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1 \u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8</td></tr>'}</tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════ 8c. BAR CHART: DIMENSION COMPARISON ════════ -->
+<div class="card">
+  <h2 class="sec">\u10d2\u10d0\u10dc\u10d6\u10dd\u10db\u10d8\u10da\u10d4\u10d1\u10d4\u10d1\u10d8\u10e1 \u10e8\u10d4\u10d3\u10d0\u10e0\u10d4\u10d1\u10d0 (\u10ef\u10d2\u10e3\u10e4\u10d4\u10d1\u10d8)</h2>
+  <div class="card-label">\u10e1\u10d0\u10e8\u10e3\u10d0\u10da\u10dd \u10e5\u10e3\u10da\u10d4\u10d1\u10d8 \u10d2\u10d0\u10dc\u10d6\u10dd\u10db\u10d8\u10da\u10d4\u10d1\u10d4\u10d1\u10d8\u10e1 \u10db\u10d8\u10ee\u10d4\u10d3\u10d5\u10d8\u10d7</div>
+  <div class="chart-wrap"><canvas id="barDimensions" role="img" aria-label="\u10d2\u10d0\u10dc\u10d6\u10dd\u10db\u10d8\u10da\u10d4\u10d1\u10d4\u10d1\u10d8\u10e1 \u10e8\u10d4\u10d3\u10d0\u10e0\u10d4\u10d1\u10d0"></canvas></div>
+</div>
+
 <!-- ════════ 9. CROSS-GROUP COMPARISON ════════ -->
 <h2 class="sec">\u10ef\u10d2\u10e3\u10e4\u10d4\u10d1\u10d8\u10e1 \u10e8\u10d4\u10d3\u10d0\u10e0\u10d4\u10d1\u10d0</h2>
 <div class="cross-grid">
@@ -2087,7 +2198,7 @@ h2.sec::before {{
 
 <!-- ════════ FOOTER ════════ -->
 <div class="dash-footer">
-  <span>Training Agent Analytics v3.0</span>
+  <span>Training Agent Analytics v4.0</span>
   <span>Auto-refresh: 5 \u10ec\u10d7 &middot; {generated_at}</span>
 </div>
 
@@ -2096,7 +2207,7 @@ h2.sec::before {{
 <script>
 const DATA = {json_data};
 const DIMS = ["content_depth","practical_value","engagement","technical_accuracy","market_relevance"];
-const DIM_LABELS = ["\u10e8\u10d8\u10dc. \u10e1\u10d8\u10e6\u10e0\u10db\u10d4","\u10de\u10e0\u10d0\u10e5\u10e2. \u10e6\u10d8\u10e0.","\u10e9\u10d0\u10e0\u10d7\u10e3\u10da\u10dd\u10d1\u10d0","\u10e2\u10d4\u10e5. \u10e1\u10d8\u10d6.","\u10d1\u10d0\u10d6. \u10e0\u10d4\u10da."];
+const DIM_LABELS = ["\u10e8\u10d8\u10dc\u10d0\u10d0\u10e0\u10e1\u10d8\u10e1 \u10e1\u10d8\u10e6\u10e0\u10db\u10d4","\u10de\u10e0\u10d0\u10e5\u10e2\u10d8\u10d9\u10e3\u10da\u10d8 \u10e6\u10d8\u10e0\u10d4\u10d1\u10e3\u10da\u10d4\u10d1\u10d0","\u10e9\u10d0\u10e0\u10d7\u10e3\u10da\u10dd\u10d1\u10d0","\u10e2\u10d4\u10e5\u10dc\u10d8\u10d9\u10e3\u10e0\u10d8 \u10e1\u10d8\u10d6\u10e3\u10e1\u10e2\u10d4","\u10d1\u10d0\u10d6\u10e0\u10d8\u10e1 \u10e0\u10d4\u10da\u10d4\u10d5\u10d0\u10dc\u10e2\u10e3\u10e0\u10dd\u10d1\u10d0"];
 const COLORS = {json.dumps(_CHART_COLORS)};
 const FILLS  = {json.dumps(_CHART_COLORS_FILL)};
 
@@ -2141,6 +2252,59 @@ document.addEventListener("DOMContentLoaded", function() {{
             backgroundColor: "rgba(15,23,42,0.95)", titleColor: "#f1f5f9", bodyColor: "#cbd5e1",
             borderColor: "rgba(99,102,241,0.2)", borderWidth: 1, padding: 12, cornerRadius: 8,
           }}
+        }}
+      }}
+    }});
+  }})();
+
+  /* ── Bar Chart: Dimension Comparison ── */
+  (function() {{
+    var g1 = DATA.groups[1];
+    var g2 = DATA.groups[2];
+    if (!g1.lecture_count && !g2.lecture_count) return;
+    var dimLabels = ["\u10e8\u10d8\u10dc\u10d0\u10d0\u10e0\u10e1\u10d8\u10e1\n\u10e1\u10d8\u10e6\u10e0\u10db\u10d4","\u10de\u10e0\u10d0\u10e5\u10e2\u10d8\u10d9\u10e3\u10da\u10d8\n\u10e6\u10d8\u10e0\u10d4\u10d1\u10e3\u10da\u10d4\u10d1\u10d0","\u10e9\u10d0\u10e0\u10d7\u10e3\u10da\u10dd\u10d1\u10d0","\u10e2\u10d4\u10e5\u10dc\u10d8\u10d9\u10e3\u10e0\u10d8\n\u10e1\u10d8\u10d6\u10e3\u10e1\u10e2\u10d4","\u10d1\u10d0\u10d6\u10e0\u10d8\u10e1\n\u10e0\u10d4\u10da\u10d4\u10d5\u10d0\u10dc\u10e2\u10e3\u10e0\u10dd\u10d1\u10d0"];
+    var ds = [];
+    function avgDims(g) {{
+      return DIMS.map(function(d) {{
+        var vals = g.scores.map(function(s) {{ return s[d]; }}).filter(function(v) {{ return v != null; }});
+        return vals.length ? vals.reduce(function(a,b) {{ return a+b; }},0) / vals.length : 0;
+      }});
+    }}
+    if (g1.lecture_count) {{
+      ds.push({{
+        label: "\u10ef\u10d2\u10e3\u10e4\u10d8 #1",
+        data: avgDims(g1),
+        backgroundColor: "rgba(99,102,241,0.7)",
+        borderColor: "rgba(99,102,241,1)",
+        borderWidth: 1.5, borderRadius: 6
+      }});
+    }}
+    if (g2.lecture_count) {{
+      ds.push({{
+        label: "\u10ef\u10d2\u10e3\u10e4\u10d8 #2",
+        data: avgDims(g2),
+        backgroundColor: "rgba(34,211,238,0.7)",
+        borderColor: "rgba(34,211,238,1)",
+        borderWidth: 1.5, borderRadius: 6
+      }});
+    }}
+    new Chart(document.getElementById("barDimensions"), {{
+      type: "bar",
+      data: {{ labels: dimLabels, datasets: ds }},
+      options: {{
+        responsive: true, maintainAspectRatio: false,
+        interaction: {{ mode: "index", intersect: false }},
+        plugins: {{
+          legend: {{ position: "bottom", labels: {{ color: "#94a3b8", font: {{ size: 11 }}, usePointStyle: true, padding: 16 }} }},
+          tooltip: {{
+            backgroundColor: "rgba(15,23,42,0.95)", titleColor: "#f1f5f9", bodyColor: "#cbd5e1",
+            borderColor: "rgba(99,102,241,0.2)", borderWidth: 1, padding: 12, cornerRadius: 8,
+            callbacks: {{ label: function(ctx) {{ return " " + ctx.dataset.label + ": " + ctx.parsed.y.toFixed(1) + "/10"; }} }}
+          }}
+        }},
+        scales: {{
+          x: {{ ticks: {{ color: "#94a3b8", font: {{ size: 10 }}, maxRotation: 0 }}, grid: {{ display: false }} }},
+          y: {{ min: 0, max: 10, ticks: {{ color: "#64748b", stepSize: 2 }}, grid: {{ color: GC }} }}
         }}
       }}
     }});
@@ -2204,6 +2368,14 @@ document.addEventListener("DOMContentLoaded", function() {{
       }}
     }});
   }})();
+}});
+
+/* ── Expand/Collapse for insights text ── */
+document.querySelectorAll('.ins-quote.expandable').forEach(function(el) {{
+  el.classList.add('collapsed');
+  el.addEventListener('click', function() {{
+    this.classList.toggle('collapsed');
+  }});
 }});
 
 /* Auto-refresh every 5 minutes */

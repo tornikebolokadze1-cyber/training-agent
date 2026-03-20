@@ -617,6 +617,35 @@ async def health_check(request: Request):
     )
 
 
+@app.get("/dashboard")
+@limiter.limit("10/minute")
+async def dashboard(request: Request):
+    """Render the analytics dashboard as an HTML page."""
+    try:
+        from tools.services.analytics import get_dashboard_data, render_dashboard_html
+        data = get_dashboard_data()
+        html = render_dashboard_html(data)
+        return HTMLResponse(content=html)
+    except Exception as exc:
+        logger.error("Dashboard render failed: %s", exc)
+        return HTMLResponse(
+            content=f"<h1>Dashboard Error</h1><pre>{exc}</pre>",
+            status_code=500,
+        )
+
+
+@app.get("/dashboard/data")
+@limiter.limit("10/minute")
+async def dashboard_data(request: Request):
+    """Return raw dashboard data as JSON (for custom frontends)."""
+    try:
+        from tools.services.analytics import get_dashboard_data
+        return get_dashboard_data()
+    except Exception as exc:
+        logger.error("Dashboard data failed: %s", exc)
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
 @app.post("/whatsapp-incoming")
 @limiter.limit("30/minute")
 async def whatsapp_incoming(
