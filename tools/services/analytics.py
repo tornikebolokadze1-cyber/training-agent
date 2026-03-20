@@ -1046,7 +1046,13 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
     # Check both scores AND insights — Pinecone sync may insert scores but
     # fail on insights extraction for this corrupted lecture.
     _g1l1_needs_scores = not get_scores_for_lecture(1, 1)
-    _g1l1_needs_insights = not get_lecture_insights(1, 1)
+    _g1l1_existing_insights = get_lecture_insights(1, 1)
+    _g1l1_needs_insights = (
+        not _g1l1_existing_insights
+        or (_g1l1_existing_insights.get("strengths_count", 0) == 0
+            and _g1l1_existing_insights.get("weaknesses_count", 0) == 0
+            and not _g1l1_existing_insights.get("top_strength"))
+    )
     if _g1l1_needs_scores or _g1l1_needs_insights:
         try:
             with _get_conn() as conn:
@@ -1064,7 +1070,7 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                     )
                 if _g1l1_needs_insights:
                     conn.execute(
-                        """INSERT OR IGNORE INTO lecture_insights
+                        """INSERT OR REPLACE INTO lecture_insights
                        (group_number, lecture_number, strengths_count, weaknesses_count,
                         gaps_count, recommendations_count, tech_correct_count,
                         tech_problematic_count, blind_spots_count,
