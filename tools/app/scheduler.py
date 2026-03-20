@@ -12,6 +12,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -56,6 +57,89 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 # All calls to these modules go through the helper below so the scheduler
 # file is importable regardless.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Persistent post-meeting job store (survives Railway deploys / restarts)
+# ---------------------------------------------------------------------------
+_PENDING_JOBS_FILE = Path(TMP_DIR) / "pending_post_meeting_jobs.json"
+
+
+def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
+                      fire_time_iso: str) -> None:
+    """Persist a pending post-meeting job to disk so it survives restarts."""
+    jobs: list[dict] = []
+    if _PENDING_JOBS_FILE.exists():
+        try:
+            jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Replace existing entry for same group+lecture
+    jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+    jobs.append({
+        "group": group_number,
+        "lecture": lecture_number,
+        "meeting_id": meeting_id,
+        "fire_time": fire_time_iso,
+    })
+    _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+    logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
+                group_number, lecture_number, fire_time_iso)
+
+
+def _remove_pending_job(group_number: int, lecture_number: int) -> None:
+    """Remove a completed/consumed post-meeting job from the persistent store."""
+    if not _PENDING_JOBS_FILE.exists():
+        return
+    try:
+        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+        _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[persist] Failed to remove pending job: %s", exc)
+
+
+def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
+    """Re-schedule any persisted post-meeting jobs that are still valid.
+
+    Called once at startup. Jobs with fire_time in the past (but within
+    misfire_grace_time of 30 min) are fired immediately.
+
+    Returns:
+        Number of jobs restored.
+    """
+    if not _PENDING_JOBS_FILE.exists():
+        return 0
+    try:
+        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+    now = datetime.now(TBILISI_TZ)
+    restored = 0
+    for entry in jobs:
+        try:
+            fire_time = datetime.fromisoformat(entry["fire_time"])
+        except (ValueError, KeyError):
+            continue
+        # Skip jobs more than 2 hours in the past (too stale)
+        if fire_time < now - timedelta(hours=2):
+            logger.info("[persist] Skipping stale job: G%d L%d (fire_time=%s)",
+                        entry.get("group"), entry.get("lecture"), entry.get("fire_time"))
+            continue
+
+        _schedule_post_meeting(
+            scheduler=scheduler,
+            group_number=entry["group"],
+            lecture_number=entry["lecture"],
+            meeting_id=entry["meeting_id"],
+            fire_at_hour=fire_time.hour,
+            fire_at_minute=fire_time.minute,
+        )
+        restored += 1
+
+    logger.info("[persist] Restored %d post-meeting jobs from disk", restored)
+    return restored
 
 
 def _import_zoom_manager():
@@ -414,6 +498,9 @@ def _run_post_meeting_pipeline(
         except ImportError:
             pass  # standalone scheduler mode — no server module
 
+        # Remove from persistent pending jobs store
+        _remove_pending_job(group_number, lecture_number)
+
         # Clean up all temp files (segments + merged)
         for p in temp_files:
             if p.exists():
@@ -678,6 +765,8 @@ def _schedule_post_meeting(
         replace_existing=True,
         misfire_grace_time=30 * 60,  # tolerate up to 30 min late fire
     )
+    # Persist to disk so restarts don't lose the scheduled job
+    _save_pending_job(group_number, lecture_number, meeting_id, fire_time.isoformat())
     logger.info(
         "[sched] Post-meeting job '%s' scheduled at %s",
         job_id,
@@ -784,7 +873,11 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler.start()
     _scheduler_ref = scheduler
 
-    logger.info("Scheduler started with %d recurring jobs:", len(scheduler.get_jobs()))
+    # Restore any post-meeting jobs that were lost during restart
+    restored = _restore_pending_jobs(scheduler)
+
+    logger.info("Scheduler started with %d jobs (%d restored from disk):",
+                len(scheduler.get_jobs()), restored)
     for job in scheduler.get_jobs():
         logger.info("  [%s] %s — next: %s", job.id, job.name, job.next_run_time)
 
