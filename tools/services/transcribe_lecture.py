@@ -27,7 +27,7 @@ from tools.integrations.gdrive_manager import (
     ensure_folder,
     get_drive_service,
 )
-from tools.integrations.gemini_analyzer import analyze_lecture
+from tools.integrations.gemini_analyzer import analyze_lecture, cleanup_checkpoints
 from tools.integrations.knowledge_indexer import index_lecture_content
 from tools.integrations.whatsapp_sender import (
     alert_operator,
@@ -278,7 +278,12 @@ def transcribe_and_index(
 
     # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
     logger.info("Step 1: Running analysis pipeline...")
-    results = analyze_lecture(video_path, existing_transcript=existing_transcript)
+    results = analyze_lecture(
+        video_path,
+        existing_transcript=existing_transcript,
+        group=group_number,
+        lecture=lecture_number,
+    )
 
     # Save raw outputs to .tmp immediately (crash resilience)
     for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
@@ -353,6 +358,11 @@ def transcribe_and_index(
         )
         logger.warning(warning_msg)
         _safe_alert(warning_msg)
+
+    # Clean up checkpoint files now that the full pipeline succeeded
+    deleted = cleanup_checkpoints(group_number, lecture_number)
+    if deleted:
+        logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
     total = sum(index_counts.values())
     logger.info(

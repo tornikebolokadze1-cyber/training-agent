@@ -43,9 +43,21 @@ STATE_FAILED = "FAILED"
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
+RETRY_EMPTY_RESPONSE_DELAY = 45  # seconds — Gemini may still be processing
+MIN_MEANINGFUL_RESPONSE_CHARS = 100  # minimum chars for a valid response
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
 GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
+
+# Gemini pricing (per 1M tokens, as of 2025)
+GEMINI_COST_TABLE: dict[str, dict[str, float]] = {
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
+    "gemini-2.5-pro-preview-05-06": {"input": 1.25, "output": 10.0},
+    "gemini-2.0-pro": {"input": 1.25, "output": 10.0},
+    "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
+}
+GEMINI_COST_DEFAULT = {"input": 1.25, "output": 10.0}  # fallback
 
 
 def _is_quota_error(error: Exception) -> bool:
@@ -296,6 +308,44 @@ def wait_for_processing(client: genai.Client, file_name: str) -> object:
 # Step 1: Transcription (multimodal — needs video)
 # ---------------------------------------------------------------------------
 
+def _log_gemini_cost(model: str, response: object, purpose: str) -> None:
+    """Log estimated cost for a Gemini generate_content call."""
+    try:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            logger.info("Cost tracking: no usage_metadata in response for %s", purpose)
+            return
+        input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        # Find cost rates for this model
+        cost_rates = GEMINI_COST_DEFAULT
+        for model_key, rates in GEMINI_COST_TABLE.items():
+            if model_key in model:
+                cost_rates = rates
+                break
+        input_cost = (input_tokens / 1_000_000) * cost_rates["input"]
+        output_cost = (output_tokens / 1_000_000) * cost_rates["output"]
+        total_cost = input_cost + output_cost
+        logger.info(
+            "💰 Gemini cost [%s] model=%s | input=%d tokens ($%.4f) | "
+            "output=%d tokens ($%.4f) | total=$%.4f",
+            purpose, model, input_tokens, input_cost,
+            output_tokens, output_cost, total_cost,
+        )
+    except Exception as e:
+        logger.debug("Cost tracking failed for %s: %s", purpose, e)
+
+
+def _is_empty_response_error(error: Exception) -> bool:
+    """Check if error is specifically about an empty/insufficient response (not an API failure)."""
+    error_str = str(error).lower()
+    return any(phrase in error_str for phrase in [
+        "empty response",
+        "response too short",
+        "insufficient content",
+    ])
+
+
 def _generate_with_retry(
     client: genai.Client,
     model: str,
@@ -333,6 +383,9 @@ def _generate_with_retry(
                         f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
                     ) from te
 
+            # Log cost for every generate_content call (even failed ones)
+            _log_gemini_cost(model, response, purpose)
+
             # response.text raises ValueError if blocked by safety filters
             try:
                 text = response.text
@@ -342,6 +395,15 @@ def _generate_with_retry(
                 ) from resp_err
             if not text:
                 raise ValueError(f"Empty response for {purpose}")
+
+            # Validate response has meaningful content (not just whitespace/boilerplate)
+            stripped = text.strip()
+            if len(stripped) < MIN_MEANINGFUL_RESPONSE_CHARS:
+                raise ValueError(
+                    f"Response too short for {purpose}: {len(stripped)} chars "
+                    f"(minimum {MIN_MEANINGFUL_RESPONSE_CHARS}). "
+                    f"Content: {stripped[:200]!r}"
+                )
 
             logger.info("%s generated successfully (%d chars, %s tier)", purpose, len(text), tier)
             return text
@@ -359,13 +421,24 @@ def _generate_with_retry(
                     max_output_tokens=max_output_tokens, use_free=True,
                 )
 
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(
-                "%s attempt %d failed: %s — retrying in %ds",
-                purpose, attempt, e, delay,
-            )
             if attempt == MAX_RETRIES:
                 raise RuntimeError(f"{purpose} failed after {MAX_RETRIES} attempts: {e}") from e
+
+            # Use longer delay for empty responses (Gemini may still be processing)
+            # vs short exponential backoff for actual API errors
+            if _is_empty_response_error(e):
+                delay = RETRY_EMPTY_RESPONSE_DELAY
+                logger.warning(
+                    "%s attempt %d returned empty/insufficient — "
+                    "Gemini may still be processing, waiting %ds before retry",
+                    purpose, attempt, delay,
+                )
+            else:
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "%s attempt %d failed: %s — retrying in %ds",
+                    purpose, attempt, e, delay,
+                )
             time.sleep(delay)
 
     raise RuntimeError("Unreachable")
@@ -408,6 +481,8 @@ def transcribe_video(file_ref: object, use_free: bool = False,
 def transcribe_chunked_video(
     video_path: str | Path,
     use_free: bool = False,
+    group: int | None = None,
+    lecture: int | None = None,
 ) -> tuple[str, bool]:
     """Split video into chunks if needed, transcribe each multimodally, concatenate.
 
@@ -415,9 +490,16 @@ def transcribe_chunked_video(
     Uses try/finally to ensure Gemini uploads and local chunk files are
     cleaned up even when a mid-pipeline failure occurs.
 
+    Checkpoint/resume: When group and lecture are provided, each chunk's
+    transcript is saved to .tmp/ after successful transcription. On restart,
+    already-transcribed chunks are loaded from disk instead of re-uploading
+    and re-transcribing — saving ~$1-2 per chunk.
+
     Args:
         video_path: Path to the original video file.
         use_free: Whether to start with the free API key.
+        group: Group number (for checkpoint filenames). Optional.
+        lecture: Lecture number (for checkpoint filenames). Optional.
 
     Returns:
         Tuple of (full transcript text, whether free tier was used).
@@ -425,29 +507,55 @@ def transcribe_chunked_video(
     chunks = split_video_chunks(video_path)
     total_chunks = len(chunks)
     transcripts: list[str] = []
+    prefix = _checkpoint_prefix(group, lecture)
+    use_checkpoints = bool(prefix)
 
     # Track resources for cleanup on failure
     uploaded_gemini_files: list[tuple[str, bool]] = []  # (file_name, use_free)
 
     try:
         for i, chunk_path in enumerate(chunks):
+            # Check for existing chunk checkpoint
+            if use_checkpoints:
+                checkpoint_name = f"{prefix}_chunk{i}_transcript.txt"
+                cached = _load_checkpoint(checkpoint_name)
+                if cached:
+                    logger.info(
+                        "Resuming from checkpoint: chunk %d/%d already transcribed (%d chars)",
+                        i + 1, total_chunks, len(cached),
+                    )
+                    transcripts.append(cached)
+                    pct = int((i + 1) / total_chunks * 100)
+                    logger.info(
+                        "Transcription %d%% — chunk %d/%d (from checkpoint)",
+                        pct, i + 1, total_chunks,
+                    )
+                    continue
+
             logger.info(
                 "Processing chunk %d/%d: %s", i + 1, total_chunks, chunk_path.name,
             )
 
-            # Upload chunk to Gemini
+            # Upload chunk to Gemini (only once — cache for retries)
             file_ref, use_free = upload_video(chunk_path, use_free=use_free)
             uploaded_gemini_files.append((file_ref.name, use_free))
 
-            # Transcribe with chunk context
+            # Transcribe with chunk context — retries reuse the cached file_ref
+            # instead of re-uploading the video (saves $2-3 per retry)
             transcript = transcribe_video(
                 file_ref, use_free=use_free,
                 chunk_number=i, total_chunks=total_chunks,
             )
             transcripts.append(transcript)
+
+            # Save chunk checkpoint immediately after successful transcription
+            if use_checkpoints:
+                _save_checkpoint(checkpoint_name, transcript)
+
+            pct = int((i + 1) / total_chunks * 100)
             logger.info(
-                "Chunk %d/%d transcribed: %d chars",
-                i + 1, total_chunks, len(transcript),
+                "Transcription %d%% — chunk %d/%d transcribed: %d chars",
+                pct, i + 1, total_chunks, len(transcript),
             )
 
             # Clean up Gemini file immediately (success path)
@@ -781,9 +889,57 @@ def _safe_gemini_write_georgian(
 # Full Pipeline
 # ---------------------------------------------------------------------------
 
+def _checkpoint_prefix(group: int | None, lecture: int | None) -> str:
+    """Return the checkpoint file prefix, or empty string if no group/lecture."""
+    if group is not None and lecture is not None:
+        return f"g{group}_l{lecture}"
+    return ""
+
+
+def _load_checkpoint(name: str) -> str | None:
+    """Load a checkpoint file from .tmp/ if it exists and is non-empty."""
+    path = TMP_DIR / name
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        if content.strip():
+            return content
+    return None
+
+
+def _save_checkpoint(name: str, content: str) -> None:
+    """Save content to a checkpoint file in .tmp/."""
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    path = TMP_DIR / name
+    path.write_text(content, encoding="utf-8")
+    logger.info("Checkpoint saved: %s (%d chars)", name, len(content))
+
+
+def cleanup_checkpoints(group: int, lecture: int) -> int:
+    """Delete all checkpoint files for a given group/lecture.
+
+    Called after the full pipeline succeeds (Drive upload + WhatsApp sent).
+    Returns the number of files deleted.
+    """
+    prefix = _checkpoint_prefix(group, lecture)
+    if not prefix:
+        return 0
+
+    deleted = 0
+    for path in TMP_DIR.glob(f"{prefix}_*"):
+        try:
+            path.unlink()
+            logger.info("Cleaned up checkpoint: %s", path.name)
+            deleted += 1
+        except OSError as e:
+            logger.warning("Failed to delete checkpoint %s: %s", path.name, e)
+    return deleted
+
+
 def analyze_lecture(
     file_path: str | Path,
     existing_transcript: str | None = None,
+    group: int | None = None,
+    lecture: int | None = None,
 ) -> dict[str, str]:
     """Hybrid lecture analysis: video chunking → multimodal transcription → Claude+Gemini analysis.
 
@@ -793,41 +949,111 @@ def analyze_lecture(
     - Step 2: Single Claude Opus call → produces summary + gap + deep analysis (English)
     - Steps 3-5: Gemini writes each analysis in Georgian (3 separate calls, different prompts)
 
+    Checkpoint/resume: When group and lecture are provided, intermediate results
+    are saved to .tmp/ after each expensive step. On restart, completed steps
+    are skipped automatically — saving $4-6 per failed pipeline restart.
+
     Args:
         file_path: Path to the video file.
         existing_transcript: If provided, skip transcription and use this text.
+        group: Group number (for checkpoint filenames). Optional.
+        lecture: Lecture number (for checkpoint filenames). Optional.
 
     Returns:
         Dict with keys: 'transcript', 'summary', 'gap_analysis', 'deep_analysis'
     """
     file_path = Path(file_path)
+    prefix = _checkpoint_prefix(group, lecture)
+    use_checkpoints = bool(prefix)
 
+    # Total pipeline steps for progress logging:
+    # 1. Transcription (chunked)  2. Claude reasoning  3. Summary  4. Gap  5. Deep
+    total_steps = 5
+    completed_steps = 0
+
+    def _log_progress(step_name: str) -> None:
+        nonlocal completed_steps
+        completed_steps += 1
+        pct = int(completed_steps / total_steps * 100)
+        logger.info("Pipeline %d%% — %s complete", pct, step_name)
+
+    # --- Step 1: Transcription ---
     if existing_transcript:
         transcript = existing_transcript
         logger.info("Using existing transcript (%d chars)", len(transcript))
+        _log_progress("transcription (pre-existing)")
+    elif use_checkpoints and (cached := _load_checkpoint(f"{prefix}_full_transcript.txt")):
+        transcript = cached
+        logger.info("Resuming from checkpoint: full transcript (%d chars)", len(transcript))
+        _log_progress("transcription (from checkpoint)")
     else:
         # Step 0+1: Split video into chunks and transcribe multimodally
-        transcript, _use_free = transcribe_chunked_video(file_path, use_free=False)
+        transcript, _use_free = transcribe_chunked_video(
+            file_path, use_free=False, group=group, lecture=lecture,
+        )
         logger.info("Full transcript length: %d chars", len(transcript))
+        if use_checkpoints:
+            _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
+        _log_progress("transcription")
 
     results: dict[str, str] = {"transcript": transcript}
 
-    # Step 2: Single Claude call for all three analyses (saves ~$3/lecture)
-    claude_sections = _safe_claude_reason_all(transcript)
+    # --- Step 2: Single Claude call for all three analyses ---
+    claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
+    claude_sections: dict[str, str] = {}
 
-    # Steps 3-5: Gemini writes Georgian from each Claude section
+    if use_checkpoints and claude_checkpoint_name:
+        cached_json = _load_checkpoint(claude_checkpoint_name)
+        if cached_json:
+            import json
+            try:
+                claude_sections = json.loads(cached_json)
+                logger.info("Resuming from checkpoint: Claude analysis (%s)",
+                           {k: len(v) for k, v in claude_sections.items()})
+            except json.JSONDecodeError:
+                logger.warning("Corrupt Claude checkpoint — will re-run analysis")
+                claude_sections = {}
+
+    if not claude_sections:
+        claude_sections = _safe_claude_reason_all(transcript)
+        if use_checkpoints and claude_sections:
+            import json
+            _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
+
+    _log_progress("Claude reasoning")
+
+    # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
     analysis_configs = [
         ("summary", SUMMARIZATION_PROMPT, "summary"),
         ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
         ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
     ]
     for key, prompt, label in analysis_configs:
+        checkpoint_name = f"{prefix}_{key}.txt" if use_checkpoints else ""
+
+        # Try checkpoint first
+        if use_checkpoints and checkpoint_name:
+            cached = _load_checkpoint(checkpoint_name)
+            if cached:
+                logger.info("Resuming from checkpoint: %s (%d chars)", label, len(cached))
+                results[key] = cached
+                _log_progress(label)
+                continue
+
         claude_text = claude_sections.get(key, "")
         if not claude_text:
             logger.warning("Skipping %s — no Claude output", label)
             results[key] = ""
+            _log_progress(f"{label} (skipped)")
             continue
-        results[key] = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
+
+        georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
+        results[key] = georgian_text
+
+        if use_checkpoints and georgian_text:
+            _save_checkpoint(checkpoint_name, georgian_text)
+
+        _log_progress(label)
 
     return results
 

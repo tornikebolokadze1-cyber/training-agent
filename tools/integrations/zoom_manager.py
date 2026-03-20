@@ -365,6 +365,37 @@ def get_meeting_recordings(meeting_id: str | int) -> dict[str, Any]:
     return data  # type: ignore[return-value]
 
 
+def list_user_recordings(
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """List cloud recordings for the authenticated user.
+
+    Uses GET /v2/users/me/recordings (requires cloud_recording:read:list_user_recordings:admin).
+
+    Args:
+        from_date: Start date in YYYY-MM-DD format. Defaults to today.
+        to_date: End date in YYYY-MM-DD format. Defaults to today.
+
+    Returns:
+        List of meeting dicts, each containing ``uuid``, ``id``, ``topic``,
+        ``start_time``, and ``recording_files``.
+    """
+    from datetime import date as _date
+
+    if from_date is None:
+        from_date = _date.today().isoformat()
+    if to_date is None:
+        to_date = _date.today().isoformat()
+
+    params = {"from": from_date, "to": to_date, "page_size": 30}
+    logger.info("Listing user recordings from %s to %s", from_date, to_date)
+    data = _zoom_request("GET", "/users/me/recordings", params=params)
+    meetings = data.get("meetings", [])
+    logger.info("Found %d recording meeting(s) in date range.", len(meetings))
+    return meetings
+
+
 def download_recording(
     download_url: str,
     access_token: str,

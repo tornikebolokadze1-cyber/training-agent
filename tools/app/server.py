@@ -111,9 +111,140 @@ async def _eviction_loop() -> None:
 from contextlib import asynccontextmanager  # noqa: E402
 
 
+async def _check_unprocessed_recordings() -> None:
+    """Startup recovery: check Zoom for any unprocessed recordings from today.
+
+    Uses GET /v2/users/me/recordings to list today's recordings, then checks
+    if each one has already been processed (by looking for vectors in Pinecone
+    with matching group + lecture number). If unprocessed recordings are found,
+    starts the pipeline automatically.
+    """
+    from tools.app.scheduler import _run_post_meeting_pipeline
+
+    try:
+        zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
+    except ImportError:
+        logger.warning("[startup-recovery] zoom_manager not available — skipping")
+        return
+
+    today = datetime.now(TBILISI_TZ).date()
+    today_str = today.isoformat()
+
+    try:
+        meetings = await asyncio.to_thread(
+            zm.list_user_recordings, today_str, today_str,
+        )
+    except Exception as exc:
+        logger.warning("[startup-recovery] Failed to list recordings: %s", exc)
+        return
+
+    if not meetings:
+        logger.info("[startup-recovery] No recordings found for today (%s)", today_str)
+        return
+
+    logger.info("[startup-recovery] Found %d recording meeting(s) for today", len(meetings))
+
+    for meeting in meetings:
+        topic = meeting.get("topic", "")
+        group_number = extract_group_from_topic(topic)
+        if group_number is None:
+            logger.debug("[startup-recovery] Skipping meeting with unknown topic: %s", topic[:60])
+            continue
+
+        # Determine lecture number from meeting start time
+        start_time_str = meeting.get("start_time", "")
+        try:
+            meeting_date = datetime.fromisoformat(
+                start_time_str.replace("Z", "+00:00")
+            ).date()
+        except (ValueError, AttributeError):
+            meeting_date = today
+
+        lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+        if lecture_number == 0:
+            continue
+
+        # Check if already processing
+        key = _task_key(group_number, lecture_number)
+        with _processing_lock:
+            if key in _processing_tasks:
+                logger.info("[startup-recovery] %s already processing — skipping", key)
+                continue
+
+        # Check if already indexed in Pinecone (any vectors for this lecture)
+        already_indexed = False
+        try:
+            from tools.integrations.knowledge_indexer import get_pinecone_index
+            index = await asyncio.to_thread(get_pinecone_index)
+            # Query with a filter — if any vectors exist for this group+lecture, it's done
+            dummy_embedding = [0.0] * 3072
+            result = await asyncio.to_thread(
+                lambda: index.query(
+                    vector=dummy_embedding,
+                    top_k=1,
+                    filter={
+                        "group_number": {"$eq": group_number},
+                        "lecture_number": {"$eq": lecture_number},
+                    },
+                )
+            )
+            if result.get("matches"):
+                already_indexed = True
+        except Exception as exc:
+            logger.warning(
+                "[startup-recovery] Pinecone check failed for G%d L%d: %s — assuming not indexed",
+                group_number, lecture_number, exc,
+            )
+
+        if already_indexed:
+            logger.info(
+                "[startup-recovery] G%d L%d already indexed in Pinecone — skipping",
+                group_number, lecture_number,
+            )
+            continue
+
+        # Not processed — start the pipeline
+        meeting_uuid = meeting.get("uuid", "")
+        meeting_id = str(meeting.get("id", ""))
+        poll_id = meeting_uuid or meeting_id
+
+        if not poll_id:
+            logger.warning("[startup-recovery] No meeting ID for G%d L%d", group_number, lecture_number)
+            continue
+
+        with _processing_lock:
+            # Re-check under lock
+            if key in _processing_tasks:
+                continue
+            _processing_tasks[key] = datetime.now()
+
+        logger.info(
+            "[startup-recovery] Starting pipeline for UNPROCESSED recording: "
+            "Group %d, Lecture #%d, poll_id=%s",
+            group_number, lecture_number, poll_id,
+        )
+
+        # Run in background thread (non-blocking)
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            _run_post_meeting_pipeline,
+            group_number,
+            lecture_number,
+            poll_id,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # noqa: ARG001
     eviction_task = asyncio.create_task(_eviction_loop())
+
+    # Startup recovery: check for unprocessed recordings
+    try:
+        await _check_unprocessed_recordings()
+    except Exception as exc:
+        logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
+
     try:
         yield
     finally:
@@ -214,13 +345,18 @@ _DRIVE_FOLDER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{10,100}$")
 
 
 class ProcessRecordingRequest(BaseModel):
-    """Payload from n8n when a Zoom recording is ready."""
+    """Payload from n8n when a Zoom recording is ready.
 
-    download_url: str
-    access_token: str
+    download_url and access_token can be empty or "auto" — in that case, the
+    /process-recording endpoint will use the Zoom polling pipeline
+    (scheduler._run_post_meeting_pipeline) to auto-discover the recording.
+    """
+
+    download_url: str = ""
+    access_token: str = ""
     group_number: int
     lecture_number: int
-    drive_folder_id: str
+    drive_folder_id: str = ""
 
     def __init__(self, **data):  # type: ignore[override]
         super().__init__(**data)
@@ -857,6 +993,48 @@ async def process_recording(
         payload.lecture_number,
     )
 
+    # If download_url is empty or "auto", use Zoom polling pipeline instead of direct download
+    is_auto = not payload.download_url or payload.download_url.strip().lower() == "auto"
+    if is_auto:
+        from tools.app.scheduler import _run_post_meeting_pipeline
+
+        # Need a meeting ID to poll Zoom — use the group's configured meeting ID
+        group_cfg = GROUPS.get(payload.group_number, {})
+        meeting_id = group_cfg.get("zoom_meeting_id", "")
+        if not meeting_id:
+            _processing_tasks.pop(key, None)
+            raise HTTPException(
+                status_code=422,
+                detail=f"No zoom_meeting_id configured for Group {payload.group_number} "
+                       f"— cannot auto-discover recording",
+            )
+
+        logger.info(
+            "Auto-discovery mode: using Zoom polling pipeline (meeting_id=%s)",
+            meeting_id,
+        )
+
+        def _run_auto(gn: int, ln: int, mid: str) -> None:
+            try:
+                _run_post_meeting_pipeline(gn, ln, mid)
+            finally:
+                _processing_tasks.pop(_task_key(gn, ln), None)
+
+        background_tasks.add_task(
+            asyncio.to_thread,
+            _run_auto,
+            payload.group_number,
+            payload.lecture_number,
+            meeting_id,
+        )
+
+        return {
+            "status": "accepted",
+            "mode": "auto-discovery",
+            "message": f"Auto-discovery pipeline started for Group {payload.group_number}, "
+                       f"Lecture #{payload.lecture_number} (polling meeting {meeting_id})",
+        }
+
     background_tasks.add_task(process_recording_task, payload)
 
     return {
@@ -891,6 +1069,142 @@ async def trigger_pre_meeting(
     asyncio.ensure_future(pre_meeting_job(group_number=group))
 
     return {"status": "triggered", "group": group}
+
+
+@app.post("/retry-latest")
+@limiter.limit("2/minute")
+async def retry_latest(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Auto-discover and process the latest unprocessed recording.
+
+    Queries Zoom for recent recordings, checks Pinecone to find ones not yet
+    indexed, and starts the pipeline for the most recent unprocessed one.
+    No parameters needed — fully automatic discovery.
+
+    Operator-only endpoint: requires WEBHOOK_SECRET.
+    """
+    verify_webhook_secret(authorization)
+
+    from tools.app.scheduler import _run_post_meeting_pipeline
+
+    try:
+        zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
+    except ImportError:
+        raise HTTPException(status_code=503, detail="zoom_manager not available")
+
+    # Search the last 3 days to catch weekend recordings
+    today = datetime.now(TBILISI_TZ).date()
+    from datetime import timedelta as _td
+    from_date = (today - _td(days=3)).isoformat()
+    to_date = today.isoformat()
+
+    try:
+        meetings = await asyncio.to_thread(
+            zm.list_user_recordings, from_date, to_date,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Zoom API error: {exc}")
+
+    if not meetings:
+        return {"status": "no_recordings", "message": "No recordings found in the last 3 days"}
+
+    # Sort by start_time descending (most recent first)
+    meetings.sort(key=lambda m: m.get("start_time", ""), reverse=True)
+
+    # Find the first unprocessed one
+    for meeting in meetings:
+        topic = meeting.get("topic", "")
+        group_number = extract_group_from_topic(topic)
+        if group_number is None:
+            continue
+
+        start_time_str = meeting.get("start_time", "")
+        try:
+            meeting_date = datetime.fromisoformat(
+                start_time_str.replace("Z", "+00:00")
+            ).date()
+        except (ValueError, AttributeError):
+            meeting_date = today
+
+        lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+        if lecture_number == 0:
+            continue
+
+        # Check dedup
+        key = _task_key(group_number, lecture_number)
+        with _processing_lock:
+            if key in _processing_tasks:
+                continue
+
+        # Check Pinecone
+        already_indexed = False
+        try:
+            from tools.integrations.knowledge_indexer import get_pinecone_index
+            index = await asyncio.to_thread(get_pinecone_index)
+            dummy_embedding = [0.0] * 3072
+            result = await asyncio.to_thread(
+                lambda: index.query(
+                    vector=dummy_embedding,
+                    top_k=1,
+                    filter={
+                        "group_number": {"$eq": group_number},
+                        "lecture_number": {"$eq": lecture_number},
+                    },
+                )
+            )
+            if result.get("matches"):
+                already_indexed = True
+        except Exception as exc:
+            logger.warning("[retry-latest] Pinecone check failed: %s", exc)
+
+        if already_indexed:
+            continue
+
+        # Found an unprocessed recording — start pipeline
+        meeting_uuid = meeting.get("uuid", "")
+        meeting_id_val = str(meeting.get("id", ""))
+        poll_id = meeting_uuid or meeting_id_val
+
+        if not poll_id:
+            continue
+
+        _evict_stale_tasks()
+        with _processing_lock:
+            if key in _processing_tasks:
+                continue
+            _processing_tasks[key] = datetime.now()
+
+        logger.info(
+            "[retry-latest] Starting pipeline for Group %d, Lecture #%d (poll_id=%s)",
+            group_number, lecture_number, poll_id,
+        )
+
+        def _run_retry(gn: int, ln: int, pid: str) -> None:
+            try:
+                _run_post_meeting_pipeline(gn, ln, pid)
+            finally:
+                _processing_tasks.pop(_task_key(gn, ln), None)
+
+        background_tasks.add_task(
+            asyncio.to_thread, _run_retry, group_number, lecture_number, poll_id,
+        )
+
+        return {
+            "status": "accepted",
+            "group": group_number,
+            "lecture": lecture_number,
+            "poll_id": poll_id,
+            "topic": topic,
+        }
+
+    return {
+        "status": "all_processed",
+        "message": "All recent recordings are already processed",
+        "recordings_checked": len(meetings),
+    }
 
 
 class ManualTriggerRequest(BaseModel):
