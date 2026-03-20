@@ -423,6 +423,22 @@ def extract_insights(deep_analysis_text: str) -> dict:
         if worst:
             worst.sort(key=lambda x: float(x[0]))
             top_weakness = worst[0][1].strip()[:300]
+
+    # If strengths/weaknesses counts are still 0, derive from score table
+    if strengths_count == 0 and top_strength:
+        # Count dimensions scoring >= 7 as strengths
+        high_dims = re.findall(
+            r"\|\s*\*{0,2}([789]|10)(?:\.\d+)?/10\*{0,2}\s*\|",
+            deep_analysis_text,
+        )
+        strengths_count = max(len(high_dims), 1)  # at least 1 if we have top_strength
+    if weaknesses_count == 0 and top_weakness:
+        # Count dimensions scoring <= 5 as weaknesses
+        low_dims = re.findall(
+            r"\|\s*\*{0,2}[1-5](?:\.\d+)?/10\*{0,2}\s*\|",
+            deep_analysis_text,
+        )
+        weaknesses_count = max(len(low_dims), 1)  # at least 1 if we have top_weakness
     key_rec = _extract_first_item(
         deep_analysis_text,
         r"(?:რეკომენდაცი|გაუმჯობესებ|სარეკომენდაციო).+?(?=\n##|\Z)"
@@ -431,7 +447,11 @@ def extract_insights(deep_analysis_text: str) -> dict:
     # Extract score justifications as JSON
     justifications = {}
     for col, label_pattern in _DIMENSION_PATTERNS:
-        pattern = r"\|[^\|]*" + label_pattern + r"[^\|]*\|\s*\d+(?:\.\d+)?/10\s*\|([^\|]+)\|"
+        # Handle both plain "N/10" and bold "**N/10**" formats
+        pattern = (
+            r"\|[^\|]*" + label_pattern
+            + r"[^\|]*\|\s*\**\d+(?:\.\d+)?/10\**\s*\|([^\|]+)\|"
+        )
         m = re.search(pattern, deep_analysis_text, re.UNICODE | re.IGNORECASE)
         if m:
             justifications[col] = m.group(1).strip()[:300]
@@ -1300,21 +1320,24 @@ def render_dashboard_html(data: dict) -> str:
     def _timeline_dots(group_data: dict, group_num: int) -> str:
         scores = group_data.get("scores", [])
         score_map = {r["lecture_number"]: r["composite"] for r in scores}
-        current_lecture = len(scores) + 1
+        # Find the last completed lecture number and the next upcoming one
+        completed_nums = sorted(score_map.keys())
+        last_completed = completed_nums[-1] if completed_nums else 0
+        next_lecture = last_completed + 1
         dots = ""
         for i in range(1, total + 1):
             if i in score_map:
                 sc = score_map[i]
                 color = "#34d399" if sc >= 7 else ("#fbbf24" if sc >= 5 else "#f87171")
                 cls = "tl-dot completed"
-                if i == len(scores):
+                if i == last_completed:
                     cls += " current"
                 dots += f'<div class="{cls}" style="background:{color}" title="\u10da#{i}: {sc}">{i}</div>'
-            elif i == current_lecture:
+            elif i == next_lecture and next_lecture <= total:
                 dots += f'<div class="tl-dot next" title="\u10e8\u10d4\u10db\u10d3\u10d4\u10d2\u10d8">{i}</div>'
             else:
                 dots += f'<div class="tl-dot upcoming">{i}</div>'
-        fill_pct = (len(scores) / total * 100) if total > 0 else 0
+        fill_pct = (last_completed / total * 100) if total > 0 else 0
         return f'''<div class="tl-track">
             <div class="tl-line"></div>
             <div class="tl-line-fill" style="width:{fill_pct}%"></div>
@@ -1758,7 +1781,7 @@ h2.sec::before {{
 }}
 .mg-wrap svg {{ position:absolute; inset:0; width:100%; height:100%; }}
 .mg-val {{ position:relative; z-index:1; font-size:0.82rem; font-weight:700; }}
-.mg-label {{ font-size:0.68rem; color:var(--muted); font-weight:500; }}
+.mg-label {{ font-size:0.68rem; color:var(--muted); font-weight:500; overflow-wrap:break-word; word-break:break-word; line-height:1.3; max-width:100%; }}
 
 /* ── Lecture Cards ── */
 .lec-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:1rem; }}
@@ -1799,7 +1822,7 @@ h2.sec::before {{
 
 /* ── Bullet Chart / Dimension Ranking ── */
 .bullet-row {{ display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0; }}
-.bullet-label {{ font-size:0.72rem; color:var(--text2); width:130px; flex-shrink:0; text-align:right; }}
+.bullet-label {{ font-size:0.72rem; color:var(--text2); width:140px; flex-shrink:0; text-align:right; overflow-wrap:break-word; word-break:break-word; hyphens:auto; line-height:1.3; }}
 .bullet-track {{
   flex:1; height:16px; border-radius:4px; position:relative; overflow:visible;
   display:flex; background:rgba(30,41,59,0.6);
@@ -1832,7 +1855,7 @@ h2.sec::before {{
 @media (max-width:640px) {{ .insights-grid {{ grid-template-columns:repeat(3,1fr); }} }}
 .ins-stat {{ text-align:center; padding:0.4rem 0.15rem; background:rgba(255,255,255,0.02); border-radius:8px; }}
 .ins-num {{ font-size:1.3rem; font-weight:800; display:block; line-height:1; }}
-.ins-lbl {{ font-size:0.55rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.15rem; display:block; }}
+.ins-lbl {{ font-size:0.55rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.15rem; display:block; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }}
 .ins-quote {{ font-size:0.72rem; color:var(--text2); padding:0.5rem 0.65rem; margin:0.4rem 0; border-radius:8px; line-height:1.5; border-left:3px solid; }}
 .ins-quote.good {{ border-color:var(--good); background:rgba(52,211,153,0.04); }}
 .ins-quote.growth {{ border-color:var(--mid); background:rgba(251,191,36,0.04); }}
@@ -1859,8 +1882,8 @@ h2.sec::before {{
 .cmp-table thead th {{
   background:var(--surface); color:var(--muted); font-weight:700;
   font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em;
-  padding:0.65rem 0.5rem; text-align:center; white-space:nowrap;
-  border-bottom:1px solid var(--card-border);
+  padding:0.65rem 0.5rem; text-align:center; white-space:normal;
+  border-bottom:1px solid var(--card-border); overflow-wrap:break-word; word-break:break-word;
 }}
 .cmp-table thead th:first-child {{ text-align:left; padding-left:1rem; }}
 .cmp-table tbody tr {{ border-bottom:1px solid rgba(255,255,255,0.03); transition:background 0.15s; }}
@@ -1950,7 +1973,7 @@ h2.sec::before {{
 @media (max-width:640px) {{ .kirk-grid {{ grid-template-columns:repeat(2,1fr); }} }}
 .kirk-level {{ text-align:center; padding:1rem 0.5rem; background:var(--surface); border-radius:12px; border:1px solid var(--glass-border); }}
 .kirk-num {{ font-size:0.6rem; font-weight:700; color:var(--accent); letter-spacing:0.1em; text-transform:uppercase; }}
-.kirk-name {{ font-size:0.75rem; font-weight:600; color:var(--text); margin:0.25rem 0; }}
+.kirk-name {{ font-size:0.75rem; font-weight:600; color:var(--text); margin:0.25rem 0; overflow-wrap:break-word; word-break:break-word; }}
 .kirk-score {{ font-size:1.8rem; font-weight:800; line-height:1; }}
 .kirk-desc {{ font-size:0.6rem; color:var(--muted); margin-top:0.25rem; }}
 
@@ -1966,7 +1989,7 @@ h2.sec::before {{
 .metric-card:hover {{ border-color:rgba(99,102,241,0.2); transform:translateY(-2px); }}
 .metric-icon {{ font-size:1.5rem; margin-bottom:0.4rem; }}
 .metric-value {{ font-size:1.6rem; font-weight:800; line-height:1; }}
-.metric-name {{ font-size:0.7rem; font-weight:600; color:var(--text); margin-top:0.4rem; text-transform:uppercase; letter-spacing:0.05em; }}
+.metric-name {{ font-size:0.7rem; font-weight:600; color:var(--text); margin-top:0.4rem; text-transform:uppercase; letter-spacing:0.05em; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }}
 .metric-detail {{ font-size:0.62rem; color:var(--muted); margin-top:0.2rem; line-height:1.3; }}
 
 /* ── Cross-Group Comparison ── */
@@ -1974,7 +1997,7 @@ h2.sec::before {{
 @media (max-width:640px) {{ .cross-grid {{ grid-template-columns:1fr; }} }}
 .cross-summary {{ display:flex; flex-direction:column; gap:0.4rem; }}
 .cross-item {{ display:flex; align-items:center; justify-content:space-between; padding:0.35rem 0; border-bottom:1px solid rgba(255,255,255,0.04); }}
-.cross-dim {{ font-size:0.78rem; color:var(--text2); }}
+.cross-dim {{ font-size:0.78rem; color:var(--text2); overflow-wrap:break-word; word-break:break-word; }}
 
 /* ── Charts ── */
 .chart-wrap {{ position:relative; height:300px; }}
