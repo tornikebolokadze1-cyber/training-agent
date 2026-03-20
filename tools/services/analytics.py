@@ -1041,25 +1041,30 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                 logger.warning("sync: fetch/reconstruct error for G%dL%d: %s", group, lecture, e)
                 failed += 1
 
-    # Seed G1L1 approximate scores (video was corrupted, scores derived from
-    # equivalent G2L1 delivery analysis — cannot be re-processed).
-    if (1, 1) not in existing and not get_scores_for_lecture(1, 1):
+    # Seed G1L1 approximate scores + insights (video was corrupted, scores
+    # derived from equivalent G2L1 delivery analysis — cannot be re-processed).
+    # Check both scores AND insights — Pinecone sync may insert scores but
+    # fail on insights extraction for this corrupted lecture.
+    _g1l1_needs_scores = not get_scores_for_lecture(1, 1)
+    _g1l1_needs_insights = not get_lecture_insights(1, 1)
+    if _g1l1_needs_scores or _g1l1_needs_insights:
         try:
             with _get_conn() as conn:
-                conn.execute(
-                    """INSERT INTO lecture_scores
-                       (group_number, lecture_number, content_depth, practical_value,
-                        engagement, technical_accuracy, market_relevance,
-                        overall_score, composite, raw_score_text, processed_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (1, 1, 4.0, 5.0, 5.0, 5.0, 7.0, 5.2, 5.2,
-                     "Approximate scores based on G2L1 deep analysis "
-                     "(same lecture content). Video recording corrupted.",
-                     datetime.now(timezone.utc).isoformat()),
-                )
-                # Also seed insights for G1L1
-                conn.execute(
-                    """INSERT OR IGNORE INTO lecture_insights
+                if _g1l1_needs_scores:
+                    conn.execute(
+                        """INSERT INTO lecture_scores
+                           (group_number, lecture_number, content_depth, practical_value,
+                            engagement, technical_accuracy, market_relevance,
+                            overall_score, composite, raw_score_text, processed_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (1, 1, 4.0, 5.0, 5.0, 5.0, 7.0, 5.2, 5.2,
+                         "Approximate scores based on G2L1 deep analysis "
+                         "(same lecture content). Video recording corrupted.",
+                         datetime.now(timezone.utc).isoformat()),
+                    )
+                if _g1l1_needs_insights:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO lecture_insights
                        (group_number, lecture_number, strengths_count, weaknesses_count,
                         gaps_count, recommendations_count, tech_correct_count,
                         tech_problematic_count, blind_spots_count,
