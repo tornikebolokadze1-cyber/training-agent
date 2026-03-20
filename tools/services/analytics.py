@@ -1891,7 +1891,7 @@ h2.sec::before {{
 .bullet-over {{ font-size:0.62rem; font-weight:600; color:var(--good); width:32px; }}
 
 /* ── Insights ── */
-.ins-cards-grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; }}
+.ins-cards-grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; align-items:start; }}
 @media (max-width:640px) {{ .ins-cards-grid {{ grid-template-columns:1fr; }} }}
 .ins-card {{ padding:1.25rem; }}
 .group-header {{ display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; }}
@@ -1901,10 +1901,10 @@ h2.sec::before {{
 .group-name {{ font-size:0.85rem; font-weight:700; }}
 .insights-grid {{ display:grid; grid-template-columns:repeat(6,1fr); gap:0.4rem; margin:0.5rem 0; }}
 @media (max-width:640px) {{ .insights-grid {{ grid-template-columns:repeat(3,1fr); }} }}
-.ins-stat {{ text-align:center; padding:0.4rem 0.15rem; background:rgba(255,255,255,0.02); border-radius:8px; }}
+.ins-stat {{ text-align:center; padding:0.4rem 0.15rem; background:rgba(255,255,255,0.02); border-radius:8px; min-height:3rem; overflow:visible; }}
 .ins-num {{ font-size:1.3rem; font-weight:800; display:block; line-height:1; }}
-.ins-lbl {{ font-size:0.55rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.15rem; display:block; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }}
-.ins-quote {{ font-size:0.72rem; color:var(--text2); padding:0.5rem 0.65rem; margin:0.4rem 0; border-radius:8px; line-height:1.5; border-left:3px solid; }}
+.ins-lbl {{ font-size:0.6rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.2rem; display:block; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }}
+.ins-quote {{ font-size:0.8rem; color:var(--text2); padding:0.6rem 0.75rem; margin:0.5rem 0; border-radius:8px; line-height:1.6; border-left:3px solid; }}
 .ins-quote.good {{ border-color:var(--good); background:rgba(52,211,153,0.04); }}
 .ins-quote.growth {{ border-color:var(--mid); background:rgba(251,191,36,0.04); }}
 
@@ -1912,7 +1912,7 @@ h2.sec::before {{
 .ins-quote.expandable {{ cursor:pointer; position:relative; }}
 .ins-quote.expandable .expand-text {{ display:block; }}
 .ins-quote.expandable.collapsed .expand-text {{
-  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+  display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden;
 }}
 .ins-quote.expandable::after {{
   content:'ვრცლად \u25BC'; display:block; margin-top:0.35rem;
@@ -1920,6 +1920,8 @@ h2.sec::before {{
 }}
 .ins-quote.expandable.collapsed::after {{ content:'ვრცლად \u25BC'; }}
 .ins-quote.expandable:not(.collapsed)::after {{ content:'შეკვეცა \u25B2'; }}
+.ins-quote.expandable.no-toggle {{ cursor:default; }}
+.ins-quote.expandable.no-toggle::after {{ display:none; }}
 
 /* ── Lecture Comparison Table ── */
 .cmp-table-wrap {{ overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:0.75rem; }}
@@ -2522,10 +2524,21 @@ document.addEventListener("DOMContentLoaded", function() {{
 
 /* ── Expand/Collapse for insights text ── */
 document.querySelectorAll('.ins-quote.expandable').forEach(function(el) {{
+  var expandText = el.querySelector('.expand-text');
+  if (!expandText) return;
+  /* Temporarily collapse to measure if text overflows the 6-line clamp */
   el.classList.add('collapsed');
-  el.addEventListener('click', function() {{
-    this.classList.toggle('collapsed');
-  }});
+  var wouldOverflow = expandText.scrollHeight > expandText.clientHeight + 2;
+  el.classList.remove('collapsed');
+  if (wouldOverflow) {{
+    /* Text is long enough to need toggle — start expanded, allow collapse */
+    el.addEventListener('click', function() {{
+      this.classList.toggle('collapsed');
+    }});
+  }} else {{
+    /* Text fits fully — no toggle needed, hide the ::after button */
+    el.classList.add('no-toggle');
+  }}
 }});
 
 /* Auto-refresh every 5 minutes */
