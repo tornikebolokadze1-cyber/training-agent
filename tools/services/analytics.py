@@ -323,9 +323,9 @@ def extract_insights(deep_analysis_text: str) -> dict:
         # Numbered items fallback: 1. **item**
         strengths_count = len(re.findall(r"(?m)^\s*\d+\.\s+\*\*", str_section or ""))
     if strengths_count == 0:
-        # Last resort: count score dimensions >= 7 as strengths
+        # Last resort: count score dimensions >= 6 as relative strengths
         high_scores = re.findall(
-            r"\|\s*\*{0,2}(?:[789]|10)(?:\.\d+)?/10\*{0,2}\s*\|",
+            r"\|\s*\*{0,2}(?:[6789]|10)(?:\.\d+)?/10\*{0,2}\s*\|",
             deep_analysis_text,
         )
         strengths_count = len(high_scores)
@@ -404,7 +404,7 @@ def extract_insights(deep_analysis_text: str) -> dict:
     if not top_strength:
         # Fallback: get justification from highest-scored dimension in table
         best = re.findall(
-            r"\|[^\|]+\|\s*\*{0,2}([789]|10)(?:\.\d+)?/10\*{0,2}\s*\|([^\|]+)\|",
+            r"\|[^\|]+\|\s*\*{0,2}(\d+)(?:\.\d+)?/10\*{0,2}\s*\|([^\|]+)\|",
             deep_analysis_text, re.UNICODE,
         )
         if best:
