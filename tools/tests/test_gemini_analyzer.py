@@ -714,13 +714,13 @@ class TestGenerateWithRetry:
 
     def test_successful_generation(self):
         client = MagicMock()
-        client.models.generate_content.return_value = self._make_response("hello")
+        client.models.generate_content.return_value = self._make_response("x" * 150)
 
         with patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
             result = ga._generate_with_retry(
                 client, "model-x", ["content"], "test purpose"
             )
-        assert result == "hello"
+        assert result == "x" * 150
 
     def test_empty_response_raises_value_error(self):
         resp = MagicMock()
@@ -753,7 +753,7 @@ class TestGenerateWithRetry:
         paid_client.models.generate_content.side_effect = Exception("429 rate limit")
 
         free_client = MagicMock()
-        free_client.models.generate_content.return_value = self._make_response("free result")
+        free_client.models.generate_content.return_value = self._make_response("f" * 150)
 
         with patch.object(ga, "_get_client", return_value=free_client), \
              patch.object(ga, "GEMINI_API_KEY", "free-key"), \
@@ -763,7 +763,7 @@ class TestGenerateWithRetry:
                 use_free=False,
             )
 
-        assert result == "free result"
+        assert result == "f" * 150
 
     def test_max_retries_exhausted_raises_runtime_error(self):
         client = MagicMock()

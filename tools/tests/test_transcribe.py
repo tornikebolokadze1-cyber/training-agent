@@ -406,7 +406,7 @@ class TestTranscriptResumeThreshold:
 
         analyze_calls: list = []
 
-        def capture_analyze(video_path, existing_transcript=None):
+        def capture_analyze(video_path, existing_transcript=None, **kwargs):
             analyze_calls.append(existing_transcript)
             return {
                 "transcript": "t" * 3000,
