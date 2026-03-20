@@ -292,7 +292,7 @@ def _extract_first_item(text: str, section_pattern: str) -> str | None:
     section = match.group(0)
     item_match = re.search(r"(?m)^\s*(?:\*\*?|\d+\.)\s*\**(.+?)(?:\*\*|\n)", section)
     if item_match:
-        return item_match.group(1).strip()[:200]
+        return item_match.group(1).strip()
     return None
 
 
@@ -409,7 +409,7 @@ def extract_insights(deep_analysis_text: str) -> dict:
         )
         if best:
             best.sort(key=lambda x: -float(x[0]))
-            top_strength = best[0][1].strip()[:300]
+            top_strength = best[0][1].strip()
     top_weakness = _extract_first_item(
         deep_analysis_text,
         r"სუსტი\s+მხარეები.+?(?=\n##|\Z)"
@@ -422,7 +422,7 @@ def extract_insights(deep_analysis_text: str) -> dict:
         )
         if worst:
             worst.sort(key=lambda x: float(x[0]))
-            top_weakness = worst[0][1].strip()[:300]
+            top_weakness = worst[0][1].strip()
 
     # If strengths/weaknesses counts are still 0, derive from score table
     if strengths_count == 0 and top_strength:
@@ -454,7 +454,7 @@ def extract_insights(deep_analysis_text: str) -> dict:
         )
         m = re.search(pattern, deep_analysis_text, re.UNICODE | re.IGNORECASE)
         if m:
-            justifications[col] = m.group(1).strip()[:300]
+            justifications[col] = m.group(1).strip()
 
     return {
         "strengths_count": strengths_count,
