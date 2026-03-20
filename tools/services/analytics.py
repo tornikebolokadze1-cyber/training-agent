@@ -1074,12 +1074,14 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                        (group_number, lecture_number, strengths_count, weaknesses_count,
                         gaps_count, recommendations_count, tech_correct_count,
                         tech_problematic_count, blind_spots_count,
-                        top_strength, top_weakness, key_recommendation)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        top_strength, top_weakness, key_recommendation,
+                        score_justifications, extracted_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (1, 1, 2, 3, 3, 0, 0, 0, 0,
                      "ლექტორს აქვს გულწრფელი ვნება AI ტექნოლოგიების მიმართ და პრაქტიკული გამოცდილება აგენტების შექმნაში.",
                      "ლექცია არასტრუქტურირებულია — არ არის დღის წესრიგი, სასწავლო მიზნები და შეჯამება.",
-                     None),
+                     None, None,
+                     datetime.now(timezone.utc).isoformat()),
                 )
                 conn.commit()
             synced += 1
