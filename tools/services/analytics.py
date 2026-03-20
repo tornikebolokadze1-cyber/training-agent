@@ -1057,9 +1057,22 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                      "(same lecture content). Video recording corrupted.",
                      datetime.now(timezone.utc).isoformat()),
                 )
+                # Also seed insights for G1L1
+                conn.execute(
+                    """INSERT OR IGNORE INTO lecture_insights
+                       (group_number, lecture_number, strengths_count, weaknesses_count,
+                        gaps_count, recommendations_count, tech_correct_count,
+                        tech_problematic_count, blind_spots_count,
+                        top_strength, top_weakness, key_recommendation)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (1, 1, 2, 3, 3, 0, 0, 0, 0,
+                     "ლექტორს აქვს გულწრფელი ვნება AI ტექნოლოგიების მიმართ და პრაქტიკული გამოცდილება აგენტების შექმნაში.",
+                     "ლექცია არასტრუქტურირებულია — არ არის დღის წესრიგი, სასწავლო მიზნები და შეჯამება.",
+                     None),
+                )
                 conn.commit()
             synced += 1
-            logger.info("sync: seeded G1L1 approximate scores (corrupted video)")
+            logger.info("sync: seeded G1L1 approximate scores + insights (corrupted video)")
         except Exception as e:
             logger.warning("sync: failed to seed G1L1: %s", e)
 
