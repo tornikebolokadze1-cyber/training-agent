@@ -1041,6 +1041,28 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                 logger.warning("sync: fetch/reconstruct error for G%dL%d: %s", group, lecture, e)
                 failed += 1
 
+    # Seed G1L1 approximate scores (video was corrupted, scores derived from
+    # equivalent G2L1 delivery analysis — cannot be re-processed).
+    if (1, 1) not in existing and not get_scores_for_lecture(1, 1):
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """INSERT INTO lecture_scores
+                       (group_number, lecture_number, content_depth, practical_value,
+                        engagement, technical_accuracy, market_relevance,
+                        overall_score, composite, raw_score_text, processed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (1, 1, 4.0, 5.0, 5.0, 5.0, 7.0, 5.2, 5.2,
+                     "Approximate scores based on G2L1 deep analysis "
+                     "(same lecture content). Video recording corrupted.",
+                     datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
+            synced += 1
+            logger.info("sync: seeded G1L1 approximate scores (corrupted video)")
+        except Exception as e:
+            logger.warning("sync: failed to seed G1L1: %s", e)
+
     if synced:
         logger.info("Pinecone sync complete: synced=%d skipped=%d failed=%d", synced, skipped, failed)
 
