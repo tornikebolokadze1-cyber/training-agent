@@ -32,3 +32,4 @@ pinecone==8.1.0
 
 # Development (install via: pip install -r requirements-dev.txt)
 # pytest, pytest-asyncio, pytest-cov, ruff
+mem0ai>=1.0.7

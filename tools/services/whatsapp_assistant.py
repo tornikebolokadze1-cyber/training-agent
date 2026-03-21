@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -121,10 +122,42 @@ class WhatsAppAssistant:
         # Lazily populated chat-ID → group-number mapping
         self._group_map: dict[str, int] = _build_group_chat_map()
 
+        # Mem0 graph memory — learns from feedback and conversations
+        self._memory = None
+        try:
+            from mem0 import Memory
+            mem0_config = {
+                "graph_store": {
+                    "provider": "falkordb",
+                    "config": {
+                        "url": os.environ.get("FALKORDB_URL", ""),
+                    },
+                },
+                "vector_store": {
+                    "provider": "qdrant",
+                    "config": {
+                        "host": "localhost",
+                        "port": 6333,
+                    },
+                },
+                "version": "v1.1",
+            }
+            # Use simpler in-memory config if external stores not available
+            falkordb_url = os.environ.get("FALKORDB_URL", "")
+            if not falkordb_url:
+                # Local-only mode: uses SQLite + in-memory vector store
+                mem0_config = {"version": "v1.1"}
+            self._memory = Memory.from_config(mem0_config)
+            logger.info("Mem0 graph memory initialized")
+        except Exception as exc:
+            logger.warning("Mem0 not available (non-critical): %s", exc)
+            self._memory = None
+
         logger.info(
-            "WhatsAppAssistant initialised — Claude: %s | Gemini: %s",
+            "WhatsAppAssistant initialised — Claude: %s | Gemini: %s | Memory: %s",
             ASSISTANT_CLAUDE_MODEL,
             self._gemini_model,
+            "Mem0" if self._memory else "disabled",
         )
 
     # ------------------------------------------------------------------
@@ -625,6 +658,23 @@ class WhatsAppAssistant:
             group_number,
         )
 
+        # 6.5 Recall relevant memories about this user/topic
+        memory_context = ""
+        if self._memory:
+            try:
+                user_id = message.sender_name or message.sender_id[:10]
+                memories = self._memory.search(message.text, user_id=user_id, limit=3)
+                if memories and memories.get("results"):
+                    mem_items = [m["memory"] for m in memories["results"] if m.get("memory")]
+                    if mem_items:
+                        memory_context = "MEMORY (previous interactions with this user):\n" + "\n".join(f"- {m}" for m in mem_items)
+                        logger.info("Recalled %d memories for %s", len(mem_items), user_id)
+            except Exception as exc:
+                logger.debug("Memory recall failed (non-critical): %s", exc)
+
+        if memory_context:
+            context = f"{context}\n\n{memory_context}" if context else memory_context
+
         # 7. Claude: decide and reason (with chat history)
         reasoning = await loop.run_in_executor(
             None,
@@ -678,6 +728,19 @@ class WhatsAppAssistant:
         # 10. Update cooldown for passive responses
         if not is_direct:
             self._last_passive_response[message.chat_id] = time.time()
+
+        # 11. Save to memory (learn from this interaction)
+        if self._memory:
+            try:
+                user_id = message.sender_name or message.sender_id[:10]
+                conversation = [
+                    {"role": "user", "content": message.text},
+                    {"role": "assistant", "content": response_text},
+                ]
+                self._memory.add(conversation, user_id=user_id)
+                logger.debug("Saved interaction to memory for %s", user_id)
+            except Exception as exc:
+                logger.debug("Memory save failed (non-critical): %s", exc)
 
         return formatted
 
