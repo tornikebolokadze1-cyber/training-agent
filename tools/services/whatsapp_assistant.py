@@ -508,6 +508,41 @@ class WhatsAppAssistant:
             return "ბოდიში, ამჯერად ვერ მოვახერხე პასუხის გენერირება. სცადეთ მოგვიანებით."
 
     # ------------------------------------------------------------------
+    # Web Search (Gemini Google Search grounding)
+    # ------------------------------------------------------------------
+
+    def _needs_web_search(self, reasoning: str, message_text: str) -> bool:
+        """Detect if the question requires real-time web information."""
+        indicators = [
+            "recent", "new feature", "latest", "just launched", "announced",
+            "update", "release", "ახალი", "გუშინ", "დღეს", "ამბები",
+            "განახლება", "დამატებული", "გამოვიდა", "cowork", "projects",
+        ]
+        combined = (reasoning + " " + message_text).lower()
+        return any(ind in combined for ind in indicators)
+
+    def _web_search(self, query: str) -> str:
+        """Use Gemini with Google Search grounding for real-time info."""
+        try:
+            from google.genai import types
+
+            response = self._genai_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"Search the web and provide factual, up-to-date information about: {query}",
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.1,
+                ),
+            )
+            result = response.text.strip() if response.text else ""
+            if result:
+                logger.info("Web search returned %d chars for: %s…", len(result), query[:50])
+            return result[:2000]  # Cap to avoid huge context
+        except Exception as exc:
+            logger.warning("Web search failed: %s", exc)
+            return ""
+
+    # ------------------------------------------------------------------
     # Formatting
     # ------------------------------------------------------------------
 
@@ -606,13 +641,25 @@ class WhatsAppAssistant:
         if reasoning is None:
             return None
 
+        # 7.5 Web search: if reasoning mentions recent/new features, enrich with live data
+        web_context = ""
+        if self._needs_web_search(reasoning, message.text):
+            web_context = await loop.run_in_executor(
+                None,
+                self._web_search,
+                message.text,
+            )
+
         # 8. Gemini: write Georgian response
+        combined_context = context
+        if web_context:
+            combined_context = f"{context}\n\nWEB SEARCH RESULTS (real-time):\n{web_context}" if context else f"WEB SEARCH RESULTS (real-time):\n{web_context}"
         response_text = await loop.run_in_executor(
             None,
             self._write_response,
             reasoning,
             message.text,
-            context,
+            combined_context,
         )
 
         # 9. Format and send
