@@ -677,10 +677,14 @@ async def whatsapp_incoming(
     # Extract text from different message types
     sender_data = body.get("senderData", {})
     text = ""
+    quoted_text = ""
     if type_message == "textMessage":
         text = message_data.get("textMessageData", {}).get("textMessage", "")
     elif type_message in ("extendedTextMessage", "quotedMessage"):
-        text = message_data.get("extendedTextMessageData", {}).get("text", "")
+        ext_data = message_data.get("extendedTextMessageData", {})
+        text = ext_data.get("text", "")
+        # Extract quoted/replied-to message text for context
+        quoted_text = ext_data.get("quotedMessage", {}).get("textMessage", "") if ext_data.get("quotedMessage") else ""
     else:
         return {"status": "ignored", "reason": f"message type: {type_message}"}
 
@@ -700,6 +704,7 @@ async def whatsapp_incoming(
         sender_id=sender_data.get("sender", ""),
         sender_name=sender_data.get("senderName", ""),
         text=text,
+        quoted_text=quoted_text,
         timestamp=body.get("timestamp", 0),
     )
 

@@ -74,6 +74,7 @@ class IncomingMessage:
     sender_id: str
     sender_name: str
     text: str
+    quoted_text: str = ""
     timestamp: int = field(default_factory=lambda: int(time.time()))
 
 
@@ -388,9 +389,18 @@ class WhatsAppAssistant:
 
         history_section = f"\n\n{chat_history}\n" if chat_history else ""
 
+        # Include quoted/replied-to message for conversation context
+        quoted_section = ""
+        if getattr(message, "quoted_text", "") and message.quoted_text.strip():
+            quoted_section = (
+                f"[This message is a REPLY to a previous message. "
+                f"The quoted message was: \"{self._sanitize_input(message.quoted_text[:500])}\"]\n"
+            )
+
         user_prompt = (
             f"{history_section}"
             f"Sender: {self._sanitize_input((message.sender_name or 'unknown')[:100])}\n"
+            f"{quoted_section}"
             f"Message: {self._sanitize_input(message.text)}\n"
             f"{context_section}"
         )
