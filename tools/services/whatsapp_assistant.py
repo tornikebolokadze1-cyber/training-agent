@@ -345,23 +345,21 @@ class WhatsAppAssistant:
             "You MUST produce a response plan — do not return SILENT."
             if is_direct
             else (
-                "This message was NOT a direct mention. You are a thoughtful participant in "
-                "this AI literacy course group chat. You don't respond to every message, "
-                "but you do join when the conversation is about AI, technology, or the course.\n\n"
-                "Look at the RECENT CHAT CONTEXT provided below. Use it to judge:\n"
-                "- Is there an active discussion (2+ people talking about a topic)?\n"
-                "- Is the topic related to AI, technology, tools, or the course?\n"
-                "- Can you add a useful perspective or insight?\n\n"
+                "This message was NOT a direct mention. You are an active, helpful participant in "
+                "this AI literacy course group chat. You respond when the topic is relevant.\n\n"
+                "Look at the RECENT CHAT CONTEXT provided below. Use it to judge.\n\n"
                 "RESPOND when:\n"
-                "- 2+ people are discussing AI/tech/course topics and you can add value\n"
-                "- Someone asks a question about AI/tech that hasn't been fully answered\n"
-                "- The conversation has been going on and your input would be welcome\n\n"
-                "Return SILENT for:\n"
-                "- Personal introductions or people sharing about themselves\n"
-                "- Greetings, logistics, scheduling\n"
-                "- Simple reactions, emojis, or short comments like 'კარგი'\n"
-                "- When someone already answered well\n\n"
-                "Be modest. Speak rarely but meaningfully."
+                "- Someone asks ANY question about AI, technology, tools, or the course\n"
+                "- Someone shares a problem or confusion about tech topics\n"
+                "- An AI/tech discussion is happening and you can add value\n"
+                "- Someone is asking for help, advice, or recommendations about tools\n"
+                "- The question is clearly meant for you (the AI assistant) even without 'მრჩეველო'\n\n"
+                "Return SILENT ONLY for:\n"
+                "- Pure greetings with no question ('გამარჯობა', 'სალამი')\n"
+                "- Simple reactions ('კარგი', 'მადლობა', emojis only)\n"
+                "- Personal/off-topic conversations clearly between humans\n"
+                "- When someone already answered the question fully\n\n"
+                "When in doubt, RESPOND — it's better to help than to stay silent."
             )
         )
 
@@ -512,14 +510,13 @@ class WhatsAppAssistant:
     # ------------------------------------------------------------------
 
     def _needs_web_search(self, reasoning: str, message_text: str) -> bool:
-        """Detect if the question requires real-time web information."""
-        indicators = [
-            "recent", "new feature", "latest", "just launched", "announced",
-            "update", "release", "ახალი", "გუშინ", "დღეს", "ამბები",
-            "განახლება", "დამატებული", "გამოვიდა", "cowork", "projects",
-        ]
+        """Always enrich with web search — old knowledge is often outdated."""
+        # Web search for any substantive question (not greetings/thanks)
+        skip_patterns = ["გამარჯობა", "მადლობა", "კარგი", "ok", "👍"]
         combined = (reasoning + " " + message_text).lower()
-        return any(ind in combined for ind in indicators)
+        if any(p in combined for p in skip_patterns) and len(message_text) < 30:
+            return False
+        return True  # Default: always search
 
     def _web_search(self, query: str) -> str:
         """Use Gemini with Google Search grounding for real-time info."""
