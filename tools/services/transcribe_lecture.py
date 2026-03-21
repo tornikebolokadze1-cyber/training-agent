@@ -364,6 +364,20 @@ def transcribe_and_index(
     if deleted:
         logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
+    # Step 7: Sync Obsidian knowledge vault (non-fatal)
+    try:
+        from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
+        logger.info("Step 7: Syncing Obsidian vault...")
+        sync_result = obsidian_sync(group_number, lecture_number)
+        logger.info(
+            "Obsidian sync: %d concepts, %d relationships, %d files updated",
+            sync_result.get("concepts", 0),
+            sync_result.get("relationships", 0),
+            sync_result.get("files_updated", 0),
+        )
+    except Exception as _obsidian_err:
+        logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+
     total = sum(index_counts.values())
     logger.info(
         "Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
