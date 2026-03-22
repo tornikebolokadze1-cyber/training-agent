@@ -19,11 +19,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from tools.core.config import (
@@ -319,14 +317,14 @@ def _build_concept_index(all_entities: dict[str, dict]) -> dict[str, dict]:
         return concept_index[name]
 
     for lecture_key, data in all_entities.items():
-        g, l = _parse_lecture_key(lecture_key)
+        g, lec = _parse_lecture_key(lecture_key)
 
         for concept in data.get("concepts", []):
             name = concept.get("name", "").strip()
             if not name or len(name) < 2:
                 continue
             c = _get_or_create(name)
-            c["lectures"].append((g, l))
+            c["lectures"].append((g, lec))
             if concept.get("description"):
                 c["descriptions"].append(concept["description"])
             if concept.get("category"):
@@ -342,10 +340,10 @@ def _build_concept_index(all_entities: dict[str, dict]) -> dict[str, dict]:
             rel_type = rel.get("type", "related")
             if from_name and to_name:
                 _get_or_create(from_name)["relationships"].append(
-                    {"target": to_name, "type": rel_type, "group": g, "lecture": l}
+                    {"target": to_name, "type": rel_type, "group": g, "lecture": lec}
                 )
                 _get_or_create(to_name)["relationships"].append(
-                    {"target": from_name, "type": rel_type, "group": g, "lecture": l}
+                    {"target": from_name, "type": rel_type, "group": g, "lecture": lec}
                 )
 
         for example in data.get("practical_examples", []):
@@ -353,7 +351,7 @@ def _build_concept_index(all_entities: dict[str, dict]) -> dict[str, dict]:
             use_case = example.get("use_case", "")
             if tool:
                 _get_or_create(tool)["practical_uses"].append(
-                    {"use_case": use_case, "group": g, "lecture": l}
+                    {"use_case": use_case, "group": g, "lecture": lec}
                 )
 
     return concept_index
@@ -386,15 +384,15 @@ def _ensure_vault_dirs() -> None:
 
 def _generate_lecture_note(
     g: int,
-    l: int,
+    lec: int,
     entity_data: dict[str, Any],
 ) -> str:
     """Generate a single lecture markdown note."""
-    date = _compute_lecture_date(g, l)
-    title = entity_data.get("lecture_title", f"ლექცია #{l}")
+    date = _compute_lecture_date(g, lec)
+    title = entity_data.get("lecture_title", f"ლექცია #{lec}")
 
-    summary_path = MERGED_DIR / f"g{g}_l{l}_summary.txt"
-    transcript_path = MERGED_DIR / f"g{g}_l{l}_transcript.txt"
+    summary_path = MERGED_DIR / f"g{g}_l{lec}_summary.txt"
+    transcript_path = MERGED_DIR / f"g{g}_l{lec}_transcript.txt"
     summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
     transcript = transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else ""
 
@@ -407,8 +405,8 @@ def _generate_lecture_note(
     for c in concepts:
         concept_by_cat[c.get("category", "concept")].append(c)
 
-    prev_link = f"[[ლექცია {l - 1}]]" if l > 1 else "---"
-    next_link = f"[[ლექცია {l + 1}]]" if l < 15 else "---"
+    prev_link = f"[[ლექცია {lec - 1}]]" if lec > 1 else "---"
+    next_link = f"[[ლექცია {lec + 1}]]" if lec < 15 else "---"
 
     related = set()
     for r in relationships:
@@ -420,12 +418,12 @@ def _generate_lecture_note(
 tags: [ლექცია, ჯგუფი-{g}]
 date: {date}
 group: {g}
-lecture: {l}
+lecture: {lec}
 ---
 
 # {title}
 
-> ჯგუფი #{g} -- ლექცია #{l}
+> ჯგუფი #{g} -- ლექცია #{lec}
 > თარიღი: {date}
 
 ---
@@ -493,10 +491,10 @@ lecture: {l}
     return note
 
 
-def _generate_analysis_note(g: int, l: int) -> str | None:
+def _generate_analysis_note(g: int, lec: int) -> str | None:
     """Generate analysis note from gap + deep analysis files."""
-    gap_path = MERGED_DIR / f"g{g}_l{l}_gap_analysis.txt"
-    deep_path = MERGED_DIR / f"g{g}_l{l}_deep_analysis.txt"
+    gap_path = MERGED_DIR / f"g{g}_l{lec}_gap_analysis.txt"
+    deep_path = MERGED_DIR / f"g{g}_l{lec}_deep_analysis.txt"
 
     gap = gap_path.read_text(encoding="utf-8") if gap_path.exists() else ""
     deep = deep_path.read_text(encoding="utf-8") if deep_path.exists() else ""
@@ -504,18 +502,18 @@ def _generate_analysis_note(g: int, l: int) -> str | None:
     if not gap and not deep:
         return None
 
-    date = _compute_lecture_date(g, l)
+    date = _compute_lecture_date(g, lec)
 
     return f"""---
 tags: [ანალიზი, ჯგუფი-{g}]
 date: {date}
 group: {g}
-lecture: {l}
+lecture: {lec}
 ---
 
-# ანალიზი -- ლექცია #{l} (ჯგუფი #{g})
+# ანალიზი -- ლექცია #{lec} (ჯგუფი #{g})
 
-> დაკავშირებული ლექცია: [[ლექცია {l}]]
+> დაკავშირებული ლექცია: [[ლექცია {lec}]]
 
 ---
 
@@ -551,7 +549,7 @@ def _generate_concept_note(name: str, info: dict) -> str:
     best_desc = max(descriptions, key=len) if descriptions else ""
 
     lecture_lines = [
-        f"- [[ლექცია {l}]] (ჯგუფი {g})" for g, l in sorted(set(lectures))
+        f"- [[ლექცია {lec}]] (ჯგუფი {g})" for g, lec in sorted(set(lectures))
     ]
 
     rel_targets: set[str] = set()
@@ -681,7 +679,7 @@ tags: [MOC, ინდექსი]
     moc += "\n---\n\n## ძირითადი კონცეფციები (რამდენიმე ლექციაში განხილული)\n\n"
     for c in multi[:30]:
         info = concept_index[c]
-        ls = ", ".join(f"G{g}L{l}" for g, l in sorted(set(info["lectures"])))
+        ls = ", ".join(f"G{g}L{lec}" for g, lec in sorted(set(info["lectures"])))
         moc += f"- {_wikilink(c)} ({ls})\n"
 
     # Determine progress
@@ -858,10 +856,10 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
     # Practical examples index
     examples_note = "---\ntags: [ინდექსი, პრაქტიკა]\n---\n\n# პრაქტიკული მაგალითები\n\n"
     for lk in sorted(all_entities.keys()):
-        g, l = _parse_lecture_key(lk)
+        g, lec = _parse_lecture_key(lk)
         examples = all_entities[lk].get("practical_examples", [])
         if examples:
-            examples_note += f"## ჯგუფი {g}, ლექცია {l}\n\n"
+            examples_note += f"## ჯგუფი {g}, ლექცია {lec}\n\n"
             for ex in examples:
                 examples_note += f"- {_wikilink(ex.get('tool', ''))} -- {ex.get('use_case', '')}\n"
             examples_note += "\n"
@@ -917,31 +915,31 @@ def sync_full() -> dict[str, int]:
     # Check all possible lectures
     existing_lectures: list[tuple[int, int]] = []
     for g in [1, 2]:
-        for l in range(1, 16):
-            prefix = f"g{g}_l{l}_summary_"
+        for lec in range(1, 16):
+            prefix = f"g{g}_l{lec}_summary_"
             ids = []
             for page in idx.list(prefix=prefix, limit=1):
                 ids.extend(page)
             if ids:
-                existing_lectures.append((g, l))
+                existing_lectures.append((g, lec))
             else:
                 # Also check transcript
-                prefix = f"g{g}_l{l}_transcript_"
+                prefix = f"g{g}_l{lec}_transcript_"
                 for page in idx.list(prefix=prefix, limit=1):
                     ids.extend(page)
                 if ids:
-                    existing_lectures.append((g, l))
+                    existing_lectures.append((g, lec))
 
     logger.info("Found %d lectures in Pinecone: %s", len(existing_lectures), existing_lectures)
 
-    for g, l in existing_lectures:
+    for g, lec in existing_lectures:
         try:
-            result = sync_lecture(g, l)
+            result = sync_lecture(g, lec)
             for k in total:
                 total[k] += result.get(k, 0)
             time.sleep(2)  # Rate limiting for Gemini
         except Exception as e:
-            logger.error("Failed to sync G%d L%d: %s", g, l, e)
+            logger.error("Failed to sync G%d L%d: %s", g, lec, e)
 
     # Generate WhatsApp placeholder
     wa_note = """---
@@ -1041,7 +1039,6 @@ group: {group_num}
                 sender = msg.get("senderName", msg.get("senderId", "?"))
                 text = msg.get("textMessage", msg.get("caption", ""))
                 msg_type = msg.get("typeMessage", "")
-                timestamp = msg.get("timestamp", 0)
 
                 if msg_type == "textMessage" and text:
                     note += f"**{sender}**: {text}\n\n"
