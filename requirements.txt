@@ -30,6 +30,10 @@ anthropic==0.84.0
 # Pinecone (vector DB for course knowledge RAG)
 pinecone==8.1.0
 
+# Mem0 (personal memory for WhatsApp assistant)
+mem0ai>=1.0.7
+langchain-neo4j>=0.8.0            # Required by mem0 graph memory (Neo4j AuraDB)
+rank-bm25>=0.2.2                  # Required by mem0 graph memory (BM25 reranking)
+
 # Development (install via: pip install -r requirements-dev.txt)
 # pytest, pytest-asyncio, pytest-cov, ruff
-mem0ai>=1.0.7

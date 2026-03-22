@@ -122,42 +122,97 @@ class WhatsAppAssistant:
         # Lazily populated chat-ID → group-number mapping
         self._group_map: dict[str, int] = _build_group_chat_map()
 
-        # Mem0 graph memory — learns from feedback and conversations
+        # Mem0 personal memory — learns from feedback and conversations.
+        # Cloud mode: Qdrant Cloud (vectors) + Neo4j AuraDB (graph).
+        # Fallback: local SQLite + in-memory vectors if cloud vars not set.
+        # Uses Gemini for LLM and embeddings (no OpenAI key required).
         self._memory = None
+        self._mem0_mode = "disabled"
         try:
             from mem0 import Memory
-            mem0_config = {
-                "graph_store": {
-                    "provider": "falkordb",
-                    "config": {
-                        "url": os.environ.get("FALKORDB_URL", ""),
-                    },
+
+            qdrant_url = os.environ.get("QDRANT_URL", "")
+            qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
+            neo4j_url = os.environ.get("NEO4J_URL", "")
+            neo4j_username = os.environ.get("NEO4J_USERNAME", "")
+            neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
+
+            mem0_config: dict = {"version": "v1.1"}
+
+            # --- LLM: use Gemini (already configured in this project) ---
+            mem0_config["llm"] = {
+                "provider": "gemini",
+                "config": {
+                    "model": "gemini-2.5-flash",
+                    "api_key": gemini_key,
                 },
-                "vector_store": {
+            }
+
+            # --- Embedder: use Gemini embeddings (768 dims) ---
+            _embedding_dims = 768
+            mem0_config["embedder"] = {
+                "provider": "gemini",
+                "config": {
+                    "model": "models/gemini-embedding-001",
+                    "embedding_dims": _embedding_dims,
+                    "api_key": gemini_key,
+                },
+            }
+
+            # --- Vector store: Qdrant Cloud or local ---
+            _has_cloud_qdrant = bool(qdrant_url and qdrant_api_key)
+            if _has_cloud_qdrant:
+                mem0_config["vector_store"] = {
                     "provider": "qdrant",
                     "config": {
-                        "host": "localhost",
-                        "port": 6333,
+                        "url": qdrant_url,
+                        "api_key": qdrant_api_key,
+                        "embedding_model_dims": _embedding_dims,
                     },
-                },
-                "version": "v1.1",
-            }
-            # Use simpler in-memory config if external stores not available
-            falkordb_url = os.environ.get("FALKORDB_URL", "")
-            if not falkordb_url:
-                # Local-only mode: uses SQLite + in-memory vector store
-                mem0_config = {"version": "v1.1"}
+                }
+            else:
+                # Local Qdrant with correct dims (default is 1536 for OpenAI)
+                mem0_config["vector_store"] = {
+                    "provider": "qdrant",
+                    "config": {
+                        "embedding_model_dims": _embedding_dims,
+                    },
+                }
+
+            # --- Graph store: Neo4j AuraDB ---
+            _has_cloud_neo4j = bool(neo4j_url and neo4j_username and neo4j_password)
+            if _has_cloud_neo4j:
+                mem0_config["graph_store"] = {
+                    "provider": "neo4j",
+                    "config": {
+                        "url": neo4j_url,
+                        "username": neo4j_username,
+                        "password": neo4j_password,
+                    },
+                }
+
+            # Determine mode
+            if _has_cloud_qdrant and _has_cloud_neo4j:
+                self._mem0_mode = "cloud-full"
+            elif _has_cloud_qdrant:
+                self._mem0_mode = "cloud-qdrant"
+            elif _has_cloud_neo4j:
+                self._mem0_mode = "cloud-neo4j"
+            else:
+                self._mem0_mode = "local"
+
             self._memory = Memory.from_config(mem0_config)
-            logger.info("Mem0 graph memory initialized")
+            logger.info("Mem0 memory initialized (mode=%s)", self._mem0_mode)
         except Exception as exc:
             logger.warning("Mem0 not available (non-critical): %s", exc)
             self._memory = None
+            self._mem0_mode = "disabled"
 
         logger.info(
             "WhatsAppAssistant initialised — Claude: %s | Gemini: %s | Memory: %s",
             ASSISTANT_CLAUDE_MODEL,
             self._gemini_model,
-            "Mem0" if self._memory else "disabled",
+            self._mem0_mode if self._memory else "disabled",
         )
 
     # ------------------------------------------------------------------
