@@ -1,0 +1,12 @@
+# Default owner for everything
+* @tornikebolokadze
+
+# Critical configuration
+.env.example @tornikebolokadze
+CLAUDE.md @tornikebolokadze
+Dockerfile @tornikebolokadze
+railway.toml @tornikebolokadze
+
+# Core tools
+tools/core/ @tornikebolokadze
+tools/app/ @tornikebolokadze
