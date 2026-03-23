@@ -612,7 +612,7 @@ class WhatsAppAssistant:
             from google.genai import types
 
             response = self._genai_client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=f"Search the web and provide factual, up-to-date information about: {query}",
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
