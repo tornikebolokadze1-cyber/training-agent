@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,6 +46,13 @@ from tools.integrations.gdrive_manager import (
     upload_file,
 )
 from tools.integrations.whatsapp_sender import alert_operator
+from tools.core.pipeline_state import (
+    is_pipeline_active,
+    is_pipeline_done,
+    create_pipeline,
+    list_active_pipelines,
+    cleanup_completed,
+)
 from tools.services.transcribe_lecture import transcribe_and_index
 
 try:
@@ -66,6 +73,21 @@ STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
 
 def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
+
+
+def _rebuild_task_cache() -> None:
+    """Rebuild in-memory task cache from persistent pipeline state files."""
+    active = list_active_pipelines()
+    with _processing_lock:
+        for pipeline in active:
+            key = _task_key(pipeline.group, pipeline.lecture)
+            if key not in _processing_tasks:
+                try:
+                    _processing_tasks[key] = datetime.fromisoformat(pipeline.started_at)
+                except (ValueError, TypeError):
+                    _processing_tasks[key] = datetime.now()
+    if active:
+        logger.info("[dedup] Rebuilt task cache from %d active pipeline state files", len(active))
 
 
 def _evict_stale_tasks() -> list[str]:
@@ -128,11 +150,13 @@ async def _check_unprocessed_recordings() -> None:
         return
 
     today = datetime.now(TBILISI_TZ).date()
+    # Check last 3 days for missed recordings (not just today)
+    from_date = (today - timedelta(days=2)).isoformat()
     today_str = today.isoformat()
 
     try:
         meetings = await asyncio.to_thread(
-            zm.list_user_recordings, today_str, today_str,
+            zm.list_user_recordings, from_date, today_str,
         )
     except Exception as exc:
         logger.warning("[startup-recovery] Failed to list recordings: %s", exc)
@@ -170,6 +194,14 @@ async def _check_unprocessed_recordings() -> None:
             if key in _processing_tasks:
                 logger.info("[startup-recovery] %s already processing — skipping", key)
                 continue
+
+        # Check pipeline state file first (cheaper than Pinecone query)
+        if is_pipeline_done(group_number, lecture_number):
+            logger.info("[startup-recovery] G%d L%d already COMPLETE per state file — skipping", group_number, lecture_number)
+            continue
+        if is_pipeline_active(group_number, lecture_number):
+            logger.info("[startup-recovery] G%d L%d already active per state file — resuming handled by orchestrator", group_number, lecture_number)
+            continue
 
         # Check if already indexed in Pinecone (any vectors for this lecture)
         already_indexed = False
@@ -214,9 +246,13 @@ async def _check_unprocessed_recordings() -> None:
 
         with _processing_lock:
             # Re-check under lock
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
             _processing_tasks[key] = datetime.now()
+            try:
+                create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         logger.info(
             "[startup-recovery] Starting pipeline for UNPROCESSED recording: "
@@ -244,6 +280,12 @@ async def _lifespan(application: FastAPI):  # noqa: ARG001
         await _check_unprocessed_recordings()
     except Exception as exc:
         logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
+
+    # Rebuild in-memory dedup cache from persistent pipeline state files
+    _rebuild_task_cache()
+
+    # Clean up old completed pipeline state files
+    cleanup_completed(max_age_hours=24)
 
     try:
         yield
@@ -891,10 +933,14 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     _evict_stale_tasks()
     with _processing_lock:
         key = _task_key(group_number, lecture_number)
-        if key in _processing_tasks:
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             logger.info("[meeting.ended] %s already processing — skipping", key)
             return {"status": "duplicate", "message": f"{key} already processing"}
         _processing_tasks[key] = datetime.now()
+        try:
+            create_pipeline(group_number, lecture_number, meeting_id=str(meeting_uuid or meeting_id))
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     # Use meeting UUID for polling (Zoom recordings API needs UUID, not numeric ID)
     poll_id = meeting_uuid if meeting_uuid else meeting_id
@@ -964,9 +1010,13 @@ async def zoom_webhook(
         _evict_stale_tasks()
         with _processing_lock:
             key = _task_key(ctx["group_number"], ctx["lecture_number"])
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]):
                 return {"status": "duplicate", "message": f"{key} already processing"}
             _processing_tasks[key] = datetime.now()
+            try:
+                create_pipeline(ctx["group_number"], ctx["lecture_number"], meeting_id="")
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         proc_payload = ProcessRecordingRequest(
             download_url=ctx["download_url"],
@@ -1008,18 +1058,23 @@ async def process_recording(
 
     key = _task_key(payload.group_number, payload.lecture_number)
     with _processing_lock:
-        if key in _processing_tasks:
-            started = _processing_tasks[key]
+        if key in _processing_tasks or is_pipeline_active(payload.group_number, payload.lecture_number):
+            started = _processing_tasks.get(key)
+            started_str = started.isoformat() if started else "unknown"
             logger.warning(
                 "Duplicate request rejected: Group %d, Lecture #%d (in progress since %s)",
-                payload.group_number, payload.lecture_number, started.isoformat(),
+                payload.group_number, payload.lecture_number, started_str,
             )
             raise HTTPException(
                 status_code=409,
                 detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                       f"is already being processed (started {started.isoformat()})",
+                       f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now()
+        try:
+            create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     logger.info(
         "Received recording request: Group %d, Lecture #%d",
@@ -1167,11 +1222,13 @@ async def retry_latest(
         if lecture_number == 0:
             continue
 
-        # Check dedup
+        # Check dedup (in-memory cache + persistent pipeline state)
         key = _task_key(group_number, lecture_number)
         with _processing_lock:
             if key in _processing_tasks:
                 continue
+        if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
+            continue
 
         # Check Pinecone
         already_indexed = False
@@ -1207,9 +1264,13 @@ async def retry_latest(
 
         _evict_stale_tasks()
         with _processing_lock:
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
             _processing_tasks[key] = datetime.now()
+            try:
+                create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         logger.info(
             "[retry-latest] Starting pipeline for Group %d, Lecture #%d (poll_id=%s)",
@@ -1322,14 +1383,19 @@ async def manual_trigger(
 
     key = _task_key(payload.group_number, payload.lecture_number)
     with _processing_lock:
-        if key in _processing_tasks:
-            started = _processing_tasks[key]
+        if key in _processing_tasks or is_pipeline_active(payload.group_number, payload.lecture_number):
+            started = _processing_tasks.get(key)
+            started_str = started.isoformat() if started else "unknown"
             raise HTTPException(
                 status_code=409,
                 detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                       f"is already being processed (started {started.isoformat()})",
+                       f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now()
+        try:
+            create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     logger.info(
         "Manual trigger: Group %d, Lecture #%d, Drive file: %s",

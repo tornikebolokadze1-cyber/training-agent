@@ -103,10 +103,16 @@ def _make_recording_body(topic: str = "ჯგუფი #1 lecture") -> dict:
 
 @pytest.fixture(autouse=True)
 def clear_processing_tasks():
-    """Reset the in-flight task registry before every test."""
+    """Reset the in-flight task registry and pipeline state files before every test."""
     _processing_tasks.clear()
+    # Also clean up any pipeline state files from previous tests
+    from tools.core.config import TMP_DIR
+    for state_file in TMP_DIR.glob("pipeline_state_*.json"):
+        state_file.unlink(missing_ok=True)
     yield
     _processing_tasks.clear()
+    for state_file in TMP_DIR.glob("pipeline_state_*.json"):
+        state_file.unlink(missing_ok=True)
 
 
 @pytest.fixture(autouse=True)

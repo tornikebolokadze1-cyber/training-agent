@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: []
-category: platform
+category: tool
 ---
 
 # Claude
@@ -21,18 +21,18 @@ Anthropic-ის AI მოდელი, რომელიც ლიდერო
 
 ## დაკავშირებული
 
-- [[Anthropic]]
-- [[რეალურ დროში კვლევა]]
-- [[Agentic behavior]]
-- [[Python script]]
-- [[Personalization]]
-- [[Memory Management]]
-- [[Deep Research]]
-- [[Claude Desktop Application]]
-- [[Excel]]
-- [[Copilot]]
+- [[MCP (Model Context Protocol) Servers]]
+- [[Claude Desktop (Coworker)]]
+- [[Claude Extension "Teach" function]]
+- [[ChatGPT]]
+- [[Gemini]]
+- [[Grok]]
+- [[Perplexity]]
 - [[Claude Skills]]
 - [[MCP (Model Context Protocol) Server]]
 - [[Chrome Browser]]
-- [[MCP (Model Context Protocol) Servers]]
-- [[Claude Desktop (Coworker)]]
+- [[Excel]]
+- [[Copilot]]
+- [[Anthropic]]
+- [[რეალურ დროში კვლევა]]
+- [[Agentic behavior]]

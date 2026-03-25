@@ -6,7 +6,7 @@ category: concept
 
 # Compliance
 
-> ქართულად: **შესაბამისობა (Compliance)**
+> ქართულად: **შესაბამისობა**
 
 ## აღწერა
 

@@ -1,10 +1,12 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: []
+aliases: [CRISPE ფრეიმვორკი]
 category: methodology
 ---
 
 # CRISPE framework
+
+> ქართულად: **CRISPE ფრეიმვორკი**
 
 ## აღწერა
 
@@ -15,9 +17,10 @@ category: methodology
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
 
 ---
 
 ## დაკავშირებული
 
-- _კავშირები არ არის_
+- [[Prompt Engineering]]

@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [Vibe Coding (ვაიბ კოდირება)]
-category: methodology
+category: concept
 ---
 
 # Vibe Coding

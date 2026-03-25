@@ -24,6 +24,13 @@ AI სისტემა, რომელსაც შეუძლია ავ�
 
 ## დაკავშირებული
 
+- [[Vibe Coding]]
+- [[Automated Meeting Organization]]
+- [[Server Deployment]]
+- [[MCP (Model Context Protocol) Server]]
+- [[AI Training]]
+- [[SME (Small and Medium-sized Enterprises)]]
+- [[Prompt Engineering Fundamentals]]
 - [[API Access]]
 - [[Chatbot]]
 - [[ChatGPT]]
@@ -32,13 +39,6 @@ AI სისტემა, რომელსაც შეუძლია ავ�
 - [[Railway]]
 - [[Vercel]]
 - [[Python Code]]
-- [[n8n]]
-- [[Claude Code]]
-- [[API]]
-- [[Computer Use]]
-- [[Feature Engineering]]
-- [[Model Context Protocol]]
-- [[Retrieval-Augmented Generation]]
 
 ---
 

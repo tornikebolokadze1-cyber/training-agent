@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: []
-category: tool
+category: platform
 ---
 
 # Gmail
@@ -22,6 +22,6 @@ Google-ის უფასო ელექტრონული ფოსტი�
 
 ## დაკავშირებული
 
-- [[MCP (Model Context Protocol)]]
-- [[Rube MCP Server]]
 - [[Rube]]
+- [[Rube MCP Server]]
+- [[MCP (Model Context Protocol)]]

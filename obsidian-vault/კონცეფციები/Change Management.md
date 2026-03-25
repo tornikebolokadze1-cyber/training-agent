@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [ცვლილებების მართვა]
-category: methodology
+category: concept
 ---
 
 # Change Management

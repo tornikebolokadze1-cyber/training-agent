@@ -1,0 +1,79 @@
+- generic [ref=e1]:
+  - generic [ref=e6]:
+    - log [ref=e7]: Loading
+    - log
+  - generic [ref=e2]:
+    - link "Accessibility overview" [ref=e4] [cursor=pointer]:
+      - /url: https://explore.zoom.us/en/accessibility?ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+      - text: Accessibility Overview
+    - main "main content" [ref=e8]:
+      - generic [ref=e10]:
+        - generic [ref=e11]:
+          - link "Zoom Logo" [ref=e12] [cursor=pointer]:
+            - /url: https://zoom.us/?ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+            - img "Zoom Logo" [ref=e13]
+          - generic [ref=e14]:
+            - generic [ref=e15]: New to Zoom?
+            - button "Sign Up Free" [ref=e16] [cursor=pointer]:
+              - generic [ref=e17]: Sign Up Free
+            - link "Support" [ref=e18] [cursor=pointer]:
+              - /url: https://support.zoom.us/hc/en-us?ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+              - generic [ref=e19]: Support
+            - generic [ref=e20]:
+              - generic [ref=e21]: Press Shift+F10 or menu key for more options
+              - button "Language English" [ref=e22] [cursor=pointer]:
+                - img [ref=e24]
+                - generic [ref=e26]: English
+        - generic [ref=e27]:
+          - link "Register now" [ref=e29] [cursor=pointer]:
+            - /url: https://ev.zoom.com/webinars-events/beyond-friction-in-collaboration-how-ai-and-human-connection-move-work-forward-2/?utm_source=websignin&utm_medium=webportal&utm_campaign=FY27_Q1_EMEA_EC_Keynote_Wbr_Beyond_Friction_in_collab_EM79544&utm_zcid=29545&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&optimizely_user_id=99bd15b0418443a095867aa3c2594bc7&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+            - img "Register now" [ref=e30]
+          - generic [ref=e32]:
+            - generic [ref=e34]:
+              - heading "Sign in" [level=1] [ref=e36]
+              - generic [ref=e37]:
+                - generic [ref=e43]:
+                  - textbox "Email or phone number" [active] [ref=e44]:
+                    - /placeholder: ""
+                  - generic: Email or phone number
+                - button "Next" [ref=e47] [cursor=pointer]:
+                  - generic [ref=e48]: Next
+              - generic [ref=e50]:
+                - paragraph [ref=e51]:
+                  - generic [ref=e52]: Or sign in with
+                - generic [ref=e53]:
+                  - button "Sign in with SSO" [ref=e54] [cursor=pointer]:
+                    - img [ref=e57]
+                    - text: SSO
+                  - button "Sign in with Apple" [ref=e59] [cursor=pointer]:
+                    - img [ref=e62]
+                    - text: Apple
+                  - button "Sign in with Google" [ref=e64] [cursor=pointer]:
+                    - img [ref=e67]
+                    - text: Google
+                  - button "Sign in with Facebook" [ref=e72] [cursor=pointer]:
+                    - img [ref=e75]
+                    - text: Facebook
+                  - button "Sign in with Microsoft" [ref=e77] [cursor=pointer]:
+                    - img [ref=e80]
+                    - text: Microsoft
+            - button "Forgot email?" [ref=e87] [cursor=pointer]:
+              - generic [ref=e88]: Forgot email?
+            - generic [ref=e90]:
+              - generic [ref=e91]:
+                - button "Get help from Chat with Bot" [ref=e92] [cursor=pointer]:
+                  - generic [ref=e93]: Help
+                - link "Terms" [ref=e94] [cursor=pointer]:
+                  - /url: https://zoom.us/terms?ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+                  - generic [ref=e95]: Terms
+                - link "Privacy" [ref=e96] [cursor=pointer]:
+                  - /url: https://zoom.us/privacy?ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784&ampDeviceId=5d621f5b-8e3c-4683-beae-6c5a46971aee&ampSessionId=1773991525784
+                  - generic [ref=e97]: Privacy
+              - generic [ref=e104]:
+                - text: Zoom is protected by reCAPTCHA and the Google
+                - link "Privacy Policy" [ref=e105] [cursor=pointer]:
+                  - /url: https://policies.google.com/privacy
+                - text: and
+                - link "Terms of Service" [ref=e106] [cursor=pointer]:
+                  - /url: https://policies.google.com/terms
+                - text: apply.

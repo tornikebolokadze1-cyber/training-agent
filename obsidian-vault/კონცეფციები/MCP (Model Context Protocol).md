@@ -23,10 +23,10 @@ category: protocol
 
 ## დაკავშირებული
 
-- [[n8n]]
 - [[Claude Code]]
 - [[მონაცემთა ბაზები]]
 - [[Slack]]
 - [[Google Sheets]]
 - [[Gmail]]
 - [[CLI (Command Line Interface)]]
+- [[n8n]]

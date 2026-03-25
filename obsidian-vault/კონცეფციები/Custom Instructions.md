@@ -23,6 +23,6 @@ category: technique
 
 ## დაკავშირებული
 
+- [[Settings Management]]
 - [[Personalization]]
 - [[Prompt]]
-- [[Settings Management]]

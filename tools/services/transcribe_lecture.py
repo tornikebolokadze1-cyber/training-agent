@@ -21,6 +21,16 @@ from tools.core.config import (
     get_drive_file_url,
     get_lecture_folder_name,
 )
+from tools.core.pipeline_state import (
+    load_state,
+    transition,
+    mark_complete,
+    mark_failed,
+    TRANSCRIBING,
+    UPLOADING_DOCS,
+    NOTIFYING,
+    INDEXING,
+)
 from tools.core.retry import safe_operation
 from tools.integrations.gdrive_manager import (
     create_google_doc,
@@ -241,18 +251,22 @@ def transcribe_and_index(
 
     Workflow:
     1. Transcribe lecture video multimodally with Gemini 2.5 Pro (45-min chunks)
-    2. Analyze with Claude Opus (reasoning) + Gemini (Georgian writing)
-    3. Upload summary to Google Drive (same folder as video recording)
-    4. Upload private analysis to Drive (📊 ანალიზი folder, owner-only)
-    5. Send WhatsApp notification to training group (video + summary ready)
-    6. Send private report link to Tornike via WhatsApp
-    7. Index text content into Pinecone for RAG
+    1.5. Extract and persist scores to analytics DB
+    2. Upload summary to Google Drive (same folder as video recording)
+    3. Upload private analysis to Drive (📊 ანალიზი folder, owner-only)
+    4. Send WhatsApp notification to training group (video + summary ready)
+    5. Send private report link to Tornike via WhatsApp
+    6. Index text content into Pinecone for RAG
+    7. Sync Obsidian knowledge vault
 
     Automatically resumes from existing transcript if found in .tmp/.
     """
     video_path = Path(video_path)
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
+
+    # Load pipeline state if it exists (created by server.py or scheduler.py)
+    pipeline = load_state(group_number, lecture_number)
 
     logger.info(
         "Starting full pipeline for Group %d, Lecture #%d (%s)",
@@ -276,114 +290,131 @@ def transcribe_and_index(
                 len(candidate),
             )
 
-    # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
-    logger.info("Step 1: Running analysis pipeline...")
-    results = analyze_lecture(
-        video_path,
-        existing_transcript=existing_transcript,
-        group=group_number,
-        lecture=lecture_number,
-    )
-
-    # Save raw outputs to .tmp immediately (crash resilience)
-    for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-        text = results.get(content_type, "")
-        if text:
-            out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
-            out_path.write_text(text, encoding="utf-8")
-            logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
-
-    # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
     try:
-        from tools.services.analytics import save_scores_from_analysis
-        if results.get("deep_analysis"):
-            saved = save_scores_from_analysis(
-                group_number, lecture_number, results["deep_analysis"]
-            )
-            if not saved:
-                logger.warning(
-                    "Score extraction returned no data for Group %d Lecture #%d "
-                    "(score table missing or malformed in deep analysis)",
-                    group_number, lecture_number,
+        # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
+        if pipeline:
+            pipeline = transition(pipeline, TRANSCRIBING)
+        logger.info("Step 1: Running analysis pipeline...")
+        results = analyze_lecture(
+            video_path,
+            existing_transcript=existing_transcript,
+            group=group_number,
+            lecture=lecture_number,
+        )
+
+        # Save raw outputs to .tmp immediately (crash resilience)
+        for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
+            text = results.get(content_type, "")
+            if text:
+                out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
+                out_path.write_text(text, encoding="utf-8")
+                logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
+
+        # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
+        try:
+            from tools.services.analytics import save_scores_from_analysis
+            if results.get("deep_analysis"):
+                saved = save_scores_from_analysis(
+                    group_number, lecture_number, results["deep_analysis"]
                 )
-    except Exception as _analytics_err:
-        logger.error("Score persistence failed (non-fatal): %s", _analytics_err)
+                if not saved:
+                    logger.warning(
+                        "Score extraction returned no data for Group %d Lecture #%d "
+                        "(score table missing or malformed in deep analysis)",
+                        group_number, lecture_number,
+                    )
+        except Exception as _analytics_err:
+            logger.error("Score persistence failed (non-fatal): %s", _analytics_err)
 
-    # Step 2: Upload summary to Google Drive
-    summary = results.get("summary", "")
-    summary_doc_id = None
-    if summary:
-        logger.info("Step 2: Uploading summary to Google Drive...")
-        summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
+        # Step 2: Upload summary to Google Drive
+        if pipeline:
+            pipeline = transition(pipeline, UPLOADING_DOCS)
+        summary = results.get("summary", "")
+        summary_doc_id = None
+        if summary:
+            logger.info("Step 2: Uploading summary to Google Drive...")
+            summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
 
-    # Step 3: Send WhatsApp notification to group (video + summary are ready)
-    logger.info("Step 3: Notifying WhatsApp group...")
-    recording_file_id = _find_recording_in_drive(group_number, lecture_number)
-    _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
+        # Step 3: Upload private report to Drive (📊 ანალიზი folder, owner-only)
+        gap_analysis = results.get("gap_analysis", "")
+        deep_analysis = results.get("deep_analysis", "")
+        report_doc_id = None
+        if gap_analysis or deep_analysis:
+            logger.info("Step 3: Uploading private analysis to Drive...")
+            report_doc_id = _upload_private_report_to_drive(
+                group_number, lecture_number, gap_analysis, deep_analysis,
+            )
 
-    # Step 4: Upload private report to Drive (📊 ანალიზი folder, owner-only)
-    gap_analysis = results.get("gap_analysis", "")
-    deep_analysis = results.get("deep_analysis", "")
-    report_doc_id = None
-    if gap_analysis or deep_analysis:
-        logger.info("Step 4: Uploading private analysis to Drive...")
-        report_doc_id = _upload_private_report_to_drive(
-            group_number, lecture_number, gap_analysis, deep_analysis,
-        )
+        # Step 4: Send WhatsApp notification to group (video + summary are ready)
+        if pipeline:
+            pipeline = transition(pipeline, NOTIFYING)
+        logger.info("Step 4: Notifying WhatsApp group...")
+        recording_file_id = _find_recording_in_drive(group_number, lecture_number)
+        _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
 
-    # Step 5: Send private report link to Tornike via WhatsApp
-    logger.info("Step 5: Sending private report link to Tornike...")
-    _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
+        # Step 5: Send private report link to Tornike via WhatsApp
+        logger.info("Step 5: Sending private report link to Tornike...")
+        _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
 
-    # Step 6: Index all content types into Pinecone
-    logger.info("Step 6: Indexing into Pinecone...")
-    index_counts: dict[str, int] = {}
-    for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-        text = results.get(content_type, "")
-        if not text:
-            logger.warning("No %s content to index", content_type)
-            continue
+        # Step 6: Index all content types into Pinecone
+        if pipeline:
+            pipeline = transition(pipeline, INDEXING)
+        logger.info("Step 6: Indexing into Pinecone...")
+        index_counts: dict[str, int] = {}
+        for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
+            text = results.get(content_type, "")
+            if not text:
+                logger.warning("No %s content to index", content_type)
+                continue
 
-        count = _safe_index(group_number, lecture_number, text, content_type)
-        index_counts[content_type] = count
-        if count:
-            logger.info("Indexed %d vectors for %s", count, content_type)
+            count = _safe_index(group_number, lecture_number, text, content_type)
+            index_counts[content_type] = count
+            if count:
+                logger.info("Indexed %d vectors for %s", count, content_type)
 
-    # Quality gate: warn if critical analysis outputs are empty
-    empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
-    if empty_analyses:
-        warning_msg = (
-            f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
-            f"{', '.join(empty_analyses)}"
-        )
-        logger.warning(warning_msg)
-        _safe_alert(warning_msg)
+        # Quality gate: warn if critical analysis outputs are empty
+        empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
+        if empty_analyses:
+            warning_msg = (
+                f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
+                f"{', '.join(empty_analyses)}"
+            )
+            logger.warning(warning_msg)
+            _safe_alert(warning_msg)
 
-    # Clean up checkpoint files now that the full pipeline succeeded
-    deleted = cleanup_checkpoints(group_number, lecture_number)
-    if deleted:
-        logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
+        # Clean up checkpoint files now that the full pipeline succeeded
+        deleted = cleanup_checkpoints(group_number, lecture_number)
+        if deleted:
+            logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
-    # Step 7: Sync Obsidian knowledge vault (non-fatal)
-    try:
-        from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
-        logger.info("Step 7: Syncing Obsidian vault...")
-        sync_result = obsidian_sync(group_number, lecture_number)
+        # Step 7: Sync Obsidian knowledge vault (non-fatal)
+        try:
+            from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
+            logger.info("Step 7: Syncing Obsidian vault...")
+            sync_result = obsidian_sync(group_number, lecture_number)
+            logger.info(
+                "Obsidian sync: %d concepts, %d relationships, %d files updated",
+                sync_result.get("concepts", 0),
+                sync_result.get("relationships", 0),
+                sync_result.get("files_updated", 0),
+            )
+        except Exception as _obsidian_err:
+            logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+
+        if pipeline:
+            pipeline = mark_complete(pipeline)
+
+        total = sum(index_counts.values())
         logger.info(
-            "Obsidian sync: %d concepts, %d relationships, %d files updated",
-            sync_result.get("concepts", 0),
-            sync_result.get("relationships", 0),
-            sync_result.get("files_updated", 0),
+            "Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
+            group_number, lecture_number, total,
         )
-    except Exception as _obsidian_err:
-        logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+        return index_counts
 
-    total = sum(index_counts.values())
-    logger.info(
-        "Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
-        group_number, lecture_number, total,
-    )
-    return index_counts
+    except Exception as e:
+        if pipeline:
+            mark_failed(pipeline, str(e))
+        raise
 
 
 if __name__ == "__main__":

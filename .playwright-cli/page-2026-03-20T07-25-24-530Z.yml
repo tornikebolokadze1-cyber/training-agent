@@ -1,0 +1,9 @@
+- generic [ref=e2]:
+  - link "Skip to main content" [ref=e3] [cursor=pointer]:
+    - /url: "#nested"
+    - text: Skip to Main Content
+  - link "Accessibility overview" [ref=e4] [cursor=pointer]:
+    - /url: https://explore.zoom.us/en/accessibility
+    - text: Accessibility Overview
+  - generic [ref=e5]:
+    - main "main content"

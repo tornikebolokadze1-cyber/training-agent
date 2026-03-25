@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<title>Training Agent — არქიტექტურა</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a1b26;font-family:'Inter',system-ui,sans-serif}
+
+/* scale wrapper */
+#wrap{
+  position:fixed;top:0;left:0;
+  transform-origin:top left;
+  /* JS sets transform */
+}
+
+/* design canvas = 1600×900 */
+#cv{
+  position:relative;
+  width:1600px;height:900px;
+  overflow:hidden;
+  background:#1a1b26;
+}
+/* grid */
+#cv::before{
+  content:'';position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(255,255,255,.028)1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.028)1px,transparent 1px);
+  background-size:36px 36px;pointer-events:none;z-index:0
+}
+
+/* ─── header ─── */
+#hdr{
+  position:absolute;top:0;left:0;right:0;height:44px;z-index:20;
+  background:#13141f;border-bottom:1px solid #252638;
+  display:flex;align-items:center;padding:0 22px;gap:14px;
+}
+.ht{font-size:13px;font-weight:700;letter-spacing:.04em;color:#fff}
+.ht b{color:#7aa2f7}
+.hs{font-size:9px;color:#3d4166;letter-spacing:.12em;text-transform:uppercase}
+.hsp{flex:1}
+.leg{display:flex;align-items:center;gap:4px;font-size:8px;color:#3d4166;letter-spacing:.08em;text-transform:uppercase}
+.ld{width:6px;height:6px;border-radius:50%}
+
+/* ─── svg arrows ─── */
+#ar{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+
+/* ─── lane labels ─── */
+.ll{
+  position:absolute;font-size:7.5px;font-weight:600;
+  letter-spacing:.2em;text-transform:uppercase;color:#252638;z-index:3
+}
+
+/* ─── NODE ─── */
+.nd{
+  position:absolute;z-index:5;
+  width:148px;height:42px;
+  border-radius:5px;border:1px solid #252638;
+  background:#1e1f30;
+  display:flex;align-items:stretch;
+  cursor:default;transition:border-color .12s,box-shadow .12s;
+}
+.nd:hover{z-index:30}
+.nd .ac{width:4px;border-radius:4px 0 0 4px;flex-shrink:0}
+.nd .ic{width:30px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
+.nd .tx{display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 2px;min-width:0}
+.nd .nm{font-size:9.5px;font-weight:600;color:#c0caf5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nd .tg{font-size:7.5px;color:#3d4166;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ─── type colors ─── */
+.trig .ac{background:#2ac3de}.trig:hover{border-color:#2ac3de55;box-shadow:0 0 10px rgba(42,195,222,.15)}
+.srv  .ac{background:#7aa2f7}.srv:hover {border-color:#7aa2f755;box-shadow:0 0 10px rgba(122,162,247,.15)}
+.pip  .ac{background:#9ece6a}.pip:hover {border-color:#9ece6a55;box-shadow:0 0 10px rgba(158,206,106,.15)}
+.ai   .ac{background:#bb9af7}.ai:hover  {border-color:#bb9af755;box-shadow:0 0 10px rgba(187,154,247,.15)}
+.sto  .ac{background:#73daca}.sto:hover {border-color:#73daca55;box-shadow:0 0 10px rgba(115,218,202,.15)}
+.del  .ac{background:#ff9e64}.del:hover {border-color:#ff9e6455;box-shadow:0 0 10px rgba(255,158,100,.15)}
+.inf  .ac{background:#565f89}.inf:hover {border-color:#565f8955;box-shadow:0 0 10px rgba(86,95,137,.12)}
+
+/* ─── pipeline wrapper box ─── */
+.pw{
+  position:absolute;z-index:2;
+  border:1px solid rgba(158,206,106,.16);
+  border-radius:7px;background:rgba(158,206,106,.025)
+}
+.pw-lbl{
+  position:absolute;top:-9px;left:10px;
+  font-size:7px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+  color:rgba(158,206,106,.4);background:#1a1b26;padding:0 5px
+}
+
+/* ─── bottom band ─── */
+#bot{
+  position:absolute;bottom:0;left:0;right:0;height:158px;
+  background:#13141f;border-top:1px solid #252638;z-index:10;
+  padding:12px 22px 0;
+}
+#bot .bt{font-size:7.5px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#252638;margin-bottom:10px}
+#bot .row{display:flex;gap:9px}
+
+/* ─── bottom nodes ─── */
+.bn2{
+  width:148px;flex-shrink:0;
+  border-radius:5px;border:1px solid #252638;background:#1e1f30;overflow:hidden
+}
+.bn2 .bh{height:28px;display:flex;align-items:center;gap:5px;padding:0 8px;border-bottom:1px solid #252638}
+.bn2 .bic{font-size:10px}
+.bn2 .bnm{font-size:8.5px;font-weight:600;color:#c0caf5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bn2 .bb{padding:6px 8px}
+.bn2 .bt2{font-size:7px;color:#3d4166;display:block;margin-bottom:2px;letter-spacing:.06em;text-transform:uppercase}
+.bn2 .bd{font-size:7.5px;color:#565f89;line-height:1.5}
+.bn2:hover{border-color:#565f8966}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="cv">
+
+<!-- ─────────── SVG ARROWS ─────────── -->
+<svg id="ar" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <!-- arrowheads per color -->
+  <marker id="mc" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#2ac3de66"/></marker>
+  <marker id="ms" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#7aa2f766"/></marker>
+  <marker id="mp" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#9ece6a66"/></marker>
+  <marker id="ma" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#bb9af766"/></marker>
+  <marker id="mt" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#73daca66"/></marker>
+  <marker id="md" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5Z" fill="#ff9e6466"/></marker>
+</defs>
+
+<!--
+  Column x reference (node left edge):
+  C1=18, C2=196, C3=374, C4=752, C5=930, C6=1108
+  Node w=148, h=42
+  Right of C1=166, C2=344, C3=522 (pipeline node w=334 → right=708), C4=900, C5=1078, C6=1256
+
+  Row y (node top):  R1=62, R2=130, R3=198, R4=266, R5=334, R6=402
+  Node center-y = top + 21
+-->
+
+<!-- C1 → C2  (teal) -->
+<!-- zoom → zoom-webhook:  166→196, cy=83 -->
+<path d="M166,83 C181,83 181,83 196,83" stroke="#2ac3de55" stroke-width="1.5" fill="none" marker-end="url(#mc)"/>
+<!-- n8n → process-recording: 166→196, cy=151 -->
+<path d="M166,151 C181,151 181,151 196,151" stroke="#2ac3de55" stroke-width="1.5" fill="none" marker-end="url(#mc)"/>
+<!-- WA → wa-incoming: cy=219 -->
+<path d="M166,219 C181,219 181,219 196,219" stroke="#2ac3de55" stroke-width="1.5" fill="none" marker-end="url(#mc)"/>
+<!-- scheduler → pre_meeting_job: cy=287 -->
+<path d="M166,287 C181,287 181,287 196,287" stroke="#2ac3de55" stroke-width="1.5" fill="none" marker-end="url(#mc)"/>
+
+<!-- C2 → C3  (blue) -->
+<!-- zoom-webhook → Download+Upload: 344→374, cy=83 -->
+<path d="M344,83 C359,83 359,83 374,83" stroke="#7aa2f755" stroke-width="1.5" fill="none" marker-end="url(#ms)"/>
+<!-- process-recording → Download+Upload: cy=151→83, curved -->
+<path d="M344,151 C360,151 360,95 374,95" stroke="#7aa2f755" stroke-width="1.5" fill="none" marker-end="url(#ms)"/>
+<!-- wa-incoming → WA Assistant: 344→374, cy=219→287+21=266 wait no...
+     WA Assistant is at y=266, center=287. cy source=219 -->
+<path d="M344,219 C360,219 360,287 374,287" stroke="#7aa2f755" stroke-width="1.5" fill="none" marker-end="url(#ms)"/>
+<!-- pre_meeting_job passes through to delivery -->
+
+<!-- Download+Upload → transcribe (inside pipeline col) -->
+<!-- Download bottom is 83+42=125, center cx=374+74=448 → transcribe top=152 center=163 -->
+<path d="M448,125 C448,138 448,138 448,151" stroke="#9ece6a55" stroke-width="1.5" fill="none" marker-end="url(#mp)"/>
+
+<!-- transcribe → AI models (C4) -->
+<!-- transcribe right = 374+334=708, cy ~168 (mid of tall node 151..258=204) -->
+<!-- Gemini 2.5 at y=62, center=83 -->
+<path d="M708,180 C730,180 730,83 752,83" stroke="#bb9af755" stroke-width="1.5" fill="none" marker-end="url(#ma)"/>
+<!-- Claude Opus at y=130, center=151 -->
+<path d="M708,190 C730,190 730,151 752,151" stroke="#bb9af755" stroke-width="1.5" fill="none" marker-end="url(#ma)"/>
+<!-- Gemini 3.1 at y=198, center=219 -->
+<path d="M708,200 C730,200 730,219 752,219" stroke="#bb9af755" stroke-width="1.5" fill="none" marker-end="url(#ma)"/>
+<!-- Gemini Embed at y=266, center=287 -->
+<path d="M708,210 C730,210 730,287 752,287" stroke="#bb9af733" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#ma)"/>
+
+<!-- transcribe → Storage (C5) — skip C4 -->
+<!-- Google Drive at y=62, center=83 -->
+<path d="M708,175 C820,175 820,83 930,83" stroke="#73daca44" stroke-width="1.5" fill="none" marker-end="url(#mt)"/>
+<!-- Pinecone at y=130, center=151 -->
+<path d="M708,185 C820,185 820,151 930,151" stroke="#73daca44" stroke-width="1.5" fill="none" marker-end="url(#mt)"/>
+<!-- Analytics at y=198, center=219 -->
+<path d="M708,195 C820,195 820,219 930,219" stroke="#73daca44" stroke-width="1.4" fill="none" marker-end="url(#mt)"/>
+
+<!-- WA Assistant → Pinecone (RAG) dashed -->
+<path d="M522,287 C620,287 620,162 930,162" stroke="#73daca33" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#mt)"/>
+
+<!-- Storage → Delivery (C6) -->
+<!-- Drive → WA Group (y=62, cy=83) -->
+<path d="M1078,83 C1093,83 1093,83 1108,83" stroke="#ff9e6455" stroke-width="1.5" fill="none" marker-end="url(#md)"/>
+<!-- Drive → Private WA (y=130, cy=151) — private comes from pipeline not just drive -->
+<path d="M1078,90 C1093,90 1093,151 1108,151" stroke="#ff9e6455" stroke-width="1.5" fill="none" marker-end="url(#md)"/>
+<!-- transcribe → n8n Callback (y=198, cy=219) dashed -->
+<path d="M708,220 C900,220 900,219 1108,219" stroke="#ff9e6433" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#md)"/>
+<!-- pre_meeting_job (C2 y=266, cy=287) → Email (C6 y=266, cy=287) -->
+<path d="M344,287 C726,287 726,287 1108,287" stroke="#ff9e6433" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#md)"/>
+<!-- pre_meeting_job → WA Group also -->
+<path d="M344,280 C726,280 726,94 1108,94" stroke="#ff9e6422" stroke-width="1" stroke-dasharray="3,4" fill="none" marker-end="url(#md)"/>
+<!-- alert_operator (pipeline y=334) → Operator Alert (del y=334) -->
+<path d="M522,355 C810,355 810,355 1108,355" stroke="#ff9e6433" stroke-width="1" stroke-dasharray="3,4" fill="none" marker-end="url(#md)"/>
+</svg>
+
+<!-- ═══ HEADER ═══ -->
+<div id="hdr">
+  <div class="ht">Training <b>Agent</b></div>
+  <div class="hs">სისტემის არქიტექტურა · v1.0</div>
+  <div class="hsp"></div>
+  <div class="leg"><div class="ld" style="background:#2ac3de"></div>Triggers</div>
+  <div class="leg"><div class="ld" style="background:#7aa2f7"></div>Server</div>
+  <div class="leg"><div class="ld" style="background:#9ece6a"></div>Pipeline</div>
+  <div class="leg"><div class="ld" style="background:#bb9af7"></div>AI</div>
+  <div class="leg"><div class="ld" style="background:#73daca"></div>Storage</div>
+  <div class="leg"><div class="ld" style="background:#ff9e64"></div>Delivery</div>
+</div>
+
+<!-- ═══ LANE LABELS ═══ -->
+<!-- C1=18, C2=196, C3=374, C4=752, C5=930, C6=1108 -->
+<div class="ll" style="left:18px;top:52px">Triggers</div>
+<div class="ll" style="left:196px;top:52px">Server · Endpoints</div>
+<div class="ll" style="left:374px;top:52px">Pipeline</div>
+<div class="ll" style="left:752px;top:52px">AI Models</div>
+<div class="ll" style="left:930px;top:52px">Storage</div>
+<div class="ll" style="left:1108px;top:52px">Delivery</div>
+
+<!-- ═══ PIPELINE WRAPPER: x=366 top=54 w=352 h=360 ═══ -->
+<div class="pw" style="left:366px;top:54px;width:352px;height:360px">
+  <div class="pw-lbl">transcribe_and_index · pipeline</div>
+</div>
+
+<!-- ════════════ COL 1 — TRIGGERS  x=18 ════════════ -->
+<!-- R1=62 R2=130 R3=198 R4=266 R5=334 -->
+
+<div class="nd trig" style="left:18px;top:62px">
+  <div class="ac"></div><div class="ic">🎥</div>
+  <div class="tx"><div class="nm">Zoom Cloud</div><div class="tg">recording.completed · S2S</div></div>
+</div>
+
+<div class="nd trig" style="left:18px;top:130px">
+  <div class="ac"></div><div class="ic">⚙️</div>
+  <div class="tx"><div class="nm">n8n Workflow</div><div class="tg">POST /process-recording</div></div>
+</div>
+
+<div class="nd trig" style="left:18px;top:198px">
+  <div class="ac"></div><div class="ic">💬</div>
+  <div class="tx"><div class="nm">WhatsApp</div><div class="tg">Green API · incoming msg</div></div>
+</div>
+
+<div class="nd trig" style="left:18px;top:266px">
+  <div class="ac"></div><div class="ic">⏰</div>
+  <div class="tx"><div class="nm">APScheduler</div><div class="tg">cron · 18:00 GMT+4</div></div>
+</div>
+
+<div class="nd trig" style="left:18px;top:334px">
+  <div class="ac"></div><div class="ic">💻</div>
+  <div class="tx"><div class="nm">CLI / Manual</div><div class="tg">process_recording.py</div></div>
+</div>
+
+<!-- ════════════ COL 2 — SERVER  x=196 ════════════ -->
+
+<div class="nd srv" style="left:196px;top:62px">
+  <div class="ac"></div><div class="ic">🔗</div>
+  <div class="tx"><div class="nm">/zoom-webhook</div><div class="tg">POST · HMAC-SHA256</div></div>
+</div>
+
+<div class="nd srv" style="left:196px;top:130px">
+  <div class="ac"></div><div class="ic">🔗</div>
+  <div class="tx"><div class="nm">/process-recording</div><div class="tg">POST · Bearer token</div></div>
+</div>
+
+<div class="nd srv" style="left:196px;top:198px">
+  <div class="ac"></div><div class="ic">🔗</div>
+  <div class="tx"><div class="nm">/whatsapp-incoming</div><div class="tg">POST · background task</div></div>
+</div>
+
+<div class="nd srv" style="left:196px;top:266px">
+  <div class="ac"></div><div class="ic">📅</div>
+  <div class="tx"><div class="nm">pre_meeting_job</div><div class="tg">scheduler.py · cron</div></div>
+</div>
+
+<div class="nd srv" style="left:196px;top:334px">
+  <div class="ac"></div><div class="ic">📊</div>
+  <div class="tx"><div class="nm">Ops Endpoints</div><div class="tg">/health · /status · /dashboard</div></div>
+</div>
+
+<!-- ════════════ COL 3 — PIPELINE  x=374 ════════════ -->
+
+<!-- Download + Upload (process_recording_task) -->
+<div class="nd pip" style="left:374px;top:62px">
+  <div class="ac"></div><div class="ic">⬇️</div>
+  <div class="tx"><div class="nm">Download + Upload</div><div class="tg">Zoom DL → Drive · SSRF guard</div></div>
+</div>
+
+<!-- transcribe_and_index — wide multi-step node -->
+<div class="nd pip" style="left:374px;top:130px;width:334px;height:104px;flex-direction:column;align-items:stretch">
+  <div style="display:flex;align-items:center;height:34px;border-bottom:1px solid #252638">
+    <div class="ac" style="height:100%;border-radius:4px 0 0 0;flex-shrink:0"></div>
+    <div class="ic" style="font-size:11px">🔄</div>
+    <div style="font-size:9.5px;font-weight:600;color:#c0caf5">transcribe_and_index()</div>
+    <div style="font-size:7.5px;color:#3d4166;margin-left:7px">transcribe_lecture.py</div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;padding:7px 10px 0 12px;gap:2px 14px;font-size:7.5px;color:#565f89">
+    <div><span style="color:#9ece6a;font-weight:700">1</span> Gemini transcription</div>
+    <div><span style="color:#9ece6a;font-weight:700">4</span> Private Drive report</div>
+    <div><span style="color:#9ece6a;font-weight:700">1.5</span> Analytics scores</div>
+    <div><span style="color:#9ece6a;font-weight:700">5</span> Tornike WA notify</div>
+    <div><span style="color:#9ece6a;font-weight:700">2</span> Summary → Drive</div>
+    <div><span style="color:#9ece6a;font-weight:700">6</span> Pinecone text index</div>
+    <div><span style="color:#9ece6a;font-weight:700">3</span> WhatsApp group</div>
+    <div><span style="color:#9ece6a;font-weight:700">7</span> Pinecone frame index</div>
+  </div>
+</div>
+
+<!-- WA Assistant -->
+<div class="nd pip" style="left:374px;top:266px">
+  <div class="ac"></div><div class="ic">🤖</div>
+  <div class="tx"><div class="nm">WA Assistant</div><div class="tg">„მრჩეველო" · RAG + Claude</div></div>
+</div>
+
+<!-- alert_operator -->
+<div class="nd pip" style="left:374px;top:334px">
+  <div class="ac"></div><div class="ic">🚨</div>
+  <div class="tx"><div class="nm">alert_operator()</div><div class="tg">fallback · private WA</div></div>
+</div>
+
+<!-- gemini_analyzer -->
+<div class="nd pip" style="left:374px;top:402px">
+  <div class="ac"></div><div class="ic">🎬</div>
+  <div class="tx"><div class="nm">gemini_analyzer.py</div><div class="tg">ffmpeg chunks · file upload</div></div>
+</div>
+
+<!-- ════════════ COL 4 — AI MODELS  x=752 ════════════ -->
+
+<div class="nd ai" style="left:752px;top:62px">
+  <div class="ac"></div><div class="ic">✨</div>
+  <div class="tx"><div class="nm">Gemini 2.5 Pro</div><div class="tg">video transcription · 1M ctx</div></div>
+</div>
+
+<div class="nd ai" style="left:752px;top:130px">
+  <div class="ac"></div><div class="ic">🧠</div>
+  <div class="tx"><div class="nm">Claude Opus 4.6</div><div class="tg">extended thinking · 32K</div></div>
+</div>
+
+<div class="nd ai" style="left:752px;top:198px">
+  <div class="ac"></div><div class="ic">✍️</div>
+  <div class="tx"><div class="nm">Gemini 3.1 Pro</div><div class="tg">Georgian writing · analysis</div></div>
+</div>
+
+<div class="nd ai" style="left:752px;top:266px">
+  <div class="ac"></div><div class="ic">🔢</div>
+  <div class="tx"><div class="nm">Gemini Embedding</div><div class="tg">3072-dim · multimodal</div></div>
+</div>
+
+<!-- ════════════ COL 5 — STORAGE  x=930 ════════════ -->
+
+<div class="nd sto" style="left:930px;top:62px">
+  <div class="ac"></div><div class="ic">📁</div>
+  <div class="tx"><div class="nm">Google Drive</div><div class="tg">OAuth2 · ლექცია folders</div></div>
+</div>
+
+<div class="nd sto" style="left:930px;top:130px">
+  <div class="ac"></div><div class="ic">🔍</div>
+  <div class="tx"><div class="nm">Pinecone</div><div class="tg">training-course · RAG index</div></div>
+</div>
+
+<div class="nd sto" style="left:930px;top:198px">
+  <div class="ac"></div><div class="ic">📈</div>
+  <div class="tx"><div class="nm">Analytics DB</div><div class="tg">SQLite · 5-dim scores</div></div>
+</div>
+
+<div class="nd sto" style="left:930px;top:266px">
+  <div class="ac"></div><div class="ic">💾</div>
+  <div class="tx"><div class="nm">.tmp/ Cache</div><div class="tg">crash resilience · 6h TTL</div></div>
+</div>
+
+<!-- ════════════ COL 6 — DELIVERY  x=1108 ════════════ -->
+
+<div class="nd del" style="left:1108px;top:62px">
+  <div class="ac"></div><div class="ic">📣</div>
+  <div class="tx"><div class="nm">WA Group Msg</div><div class="tg">ჯგუფი #1 / #2 · Green API</div></div>
+</div>
+
+<div class="nd del" style="left:1108px;top:130px">
+  <div class="ac"></div><div class="ic">🔐</div>
+  <div class="tx"><div class="nm">Private WA</div><div class="tg">Tornike · analysis link</div></div>
+</div>
+
+<div class="nd del" style="left:1108px;top:198px">
+  <div class="ac"></div><div class="ic">↩️</div>
+  <div class="tx"><div class="nm">n8n Callback</div><div class="tg">3-retry · backoff</div></div>
+</div>
+
+<div class="nd del" style="left:1108px;top:266px">
+  <div class="ac"></div><div class="ic">📧</div>
+  <div class="tx"><div class="nm">Email Reminder</div><div class="tg">Gmail OAuth2 · pre-meeting</div></div>
+</div>
+
+<div class="nd del" style="left:1108px;top:334px">
+  <div class="ac"></div><div class="ic">⚠️</div>
+  <div class="tx"><div class="nm">Operator Alert</div><div class="tg">last-resort · private WA</div></div>
+</div>
+
+<!-- ════════════════════════ BOTTOM BAND ════════════════════════ -->
+<div id="bot">
+  <div class="bt">Infrastructure &amp; Config</div>
+  <div class="row">
+
+    <div class="bn2" style="border-left:3px solid #565f89">
+      <div class="bh"><div class="bic">🎛</div><div class="bnm">orchestrator.py</div></div>
+      <div class="bb">
+        <span class="bt2">Entry Point</span>
+        <div class="bd">APScheduler + uvicorn<br>single asyncio loop</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #565f89">
+      <div class="bh"><div class="bic">⚙️</div><div class="bnm">config.py</div></div>
+      <div class="bb">
+        <span class="bt2">Shared Config</span>
+        <div class="bd">Groups · .env · Railway<br>base64 credentials</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #565f89">
+      <div class="bh"><div class="bic">🔑</div><div class="bnm">zoom_manager.py</div></div>
+      <div class="bb">
+        <span class="bt2">Zoom S2S OAuth</span>
+        <div class="bd">meeting:write<br>recording:read</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #2ac3de">
+      <div class="bh"><div class="bic">👥</div><div class="bnm">Training Groups</div></div>
+      <div class="bb">
+        <span class="bt2">15 lectures each</span>
+        <div class="bd">#1 Tue+Fri 20:00<br>#2 Mon+Thu 20:00 GMT+4</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #565f89">
+      <div class="bh"><div class="bic">🛡</div><div class="bnm">Security</div></div>
+      <div class="bb">
+        <span class="bt2">server.py</span>
+        <div class="bd">HMAC-SHA256 (Zoom)<br>Bearer · rate-limit</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #565f89">
+      <div class="bh"><div class="bic">🚂</div><div class="bnm">Railway Deploy</div></div>
+      <div class="bb">
+        <span class="bt2">Dockerfile · git push</span>
+        <div class="bd">GitHub Actions<br>logs 10MB × 5</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #7aa2f7">
+      <div class="bh"><div class="bic">🌐</div><div class="bnm">knowledge_indexer.py</div></div>
+      <div class="bb">
+        <span class="bt2">RAG Pipeline</span>
+        <div class="bd">chunk → embed → upsert<br>text + frame vectors</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #bb9af7">
+      <div class="bh"><div class="bic">📝</div><div class="bnm">prompts.py</div></div>
+      <div class="bb">
+        <span class="bt2">Georgian Prompts</span>
+        <div class="bd">transcript · summary<br>gap · deep analysis</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #ff9e64">
+      <div class="bh"><div class="bic">📱</div><div class="bnm">whatsapp_sender.py</div></div>
+      <div class="bb">
+        <span class="bt2">Green API</span>
+        <div class="bd">group · private<br>alert_operator fallback</div>
+      </div>
+    </div>
+
+    <div class="bn2" style="border-left:3px solid #73daca">
+      <div class="bh"><div class="bic">📄</div><div class="bnm">gdrive_manager.py</div></div>
+      <div class="bb">
+        <span class="bt2">Google Drive OAuth2</span>
+        <div class="bd">resumable &gt;10MB<br>Doc create · ensure folder</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</div><!-- #cv -->
+</div><!-- #wrap -->
+
+<script>
+(function() {
+  // Scale the 1600×900 design canvas to fit the actual viewport
+  function fit() {
+    var wrap = document.getElementById('wrap');
+    var sx = window.innerWidth  / 1600;
+    var sy = window.innerHeight / 900;
+    var s  = Math.min(sx, sy);
+    wrap.style.transform = 'scale(' + s + ')';
+    // Center if there's leftover space
+    var ox = (window.innerWidth  - 1600 * s) / 2;
+    var oy = (window.innerHeight - 900  * s) / 2;
+    wrap.style.left = Math.max(0, ox) + 'px';
+    wrap.style.top  = Math.max(0, oy) + 'px';
+  }
+  fit();
+  window.addEventListener('resize', fit);
+})();
+</script>
+</body>
+</html>

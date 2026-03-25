@@ -22,5 +22,5 @@ Microsoft-ის ფრეიმვორკი, რომელიც საშ
 
 ## დაკავშირებული
 
-- [[AI Agent Orchestration]]
 - [[Multi-agent Orchestration]]
+- [[AI Agent Orchestration]]

@@ -1,0 +1,1425 @@
+- generic [ref=e3]:
+  - banner [ref=e5]:
+    - link "Go to the homepage" [ref=e6] [cursor=pointer]:
+      - img [ref=e8]
+    - generic [ref=e12]:
+      - generic "Search a published app" [ref=e13]:
+        - img [ref=e15]
+        - textbox "Search" [ref=e18]:
+          - /placeholder: Search a published app
+      - generic [ref=e19]:
+        - button "Develop" [ref=e21] [cursor=pointer]:
+          - text: Develop
+          - img [ref=e23]
+        - generic [ref=e25]:
+          - button "Manage" [ref=e26] [cursor=pointer]
+          - button "Current User is Tornike Bolokadze" [ref=e28] [cursor=pointer]:
+            - generic "Current User is Tornike Bolokadze" [ref=e29]:
+              - img [ref=e30]
+  - generic [ref=e31]:
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - button "Categories" [expanded] [ref=e36] [cursor=pointer]:
+            - generic [ref=e38]: Categories
+          - region [ref=e42]:
+            - generic [ref=e44]:
+              - link "Analytics" [ref=e45] [cursor=pointer]:
+                - /url: /apps?category=analytics
+                - generic [ref=e47]: Analytics
+              - link "Broadcasting & Streaming" [ref=e48] [cursor=pointer]:
+                - /url: /apps?category=broadcasting-streaming
+                - generic [ref=e50]: Broadcasting & Streaming
+              - link "Business System Integrator" [ref=e51] [cursor=pointer]:
+                - /url: /apps?category=business-system-integrator
+                - generic [ref=e53]: Business System Integrator
+              - link "CRM" [ref=e54] [cursor=pointer]:
+                - /url: /apps?category=crm
+                - generic [ref=e56]: CRM
+              - link "Carrier Provider Exchange" [ref=e57] [cursor=pointer]:
+                - /url: /apps?category=carrier-provider-exchange
+                - generic [ref=e59]: Carrier Provider Exchange
+              - link "Collaboration" [ref=e60] [cursor=pointer]:
+                - /url: /apps?category=team-collaborations
+                - generic [ref=e62]: Collaboration
+              - link:
+                - /url: /apps?category=customer-service
+              - link:
+                - /url: /apps?category=eCommerce
+              - link:
+                - /url: /apps?category=education
+              - link:
+                - /url: /apps?category=eventmanagement
+              - link:
+                - /url: /apps?category=financialServices
+              - link:
+                - /url: /apps?category=games
+              - link:
+                - /url: /apps?category=government
+              - link:
+                - /url: /apps?category=health-wellness
+              - link:
+                - /url: /apps?category=health-care
+              - link:
+                - /url: /apps?category=human-resources
+              - link:
+                - /url: /apps?category=learning-development
+              - link:
+                - /url: /apps?category=marketing
+              - link:
+                - /url: /apps?category=note-taking
+              - link:
+                - /url: /apps?category=presentations
+              - link:
+                - /url: /apps?category=productivity
+              - link:
+                - /url: /apps?category=project-management
+              - link:
+                - /url: /apps?category=recording-transcriptions
+              - link:
+                - /url: /apps?category=sales-automation
+              - link:
+                - /url: /apps?category=scheduling-calendar
+              - link:
+                - /url: /apps?category=content-and-compliance
+              - link:
+                - /url: /apps?category=social-activities
+              - link:
+                - /url: /apps?category=surveys-polls
+              - link:
+                - /url: /apps?category=transcription-translation
+              - link:
+                - /url: /apps?category=virtual-backgrounds-scenes
+              - link:
+                - /url: /apps?category=whiteboards
+              - link:
+                - /url: /apps?category=workflow-automation
+              - generic [ref=e64]:
+                - img [ref=e66]
+                - generic [ref=e69]: More
+        - generic [ref=e70]:
+          - button "Featured" [expanded] [ref=e71] [cursor=pointer]:
+            - generic [ref=e73]: Featured
+          - region [ref=e77]:
+            - generic [ref=e79]:
+              - link "New" [ref=e80] [cursor=pointer]:
+                - /url: /apps?curatedCategory=new
+                - generic [ref=e82]: New
+              - link "Paid Apps" [ref=e83] [cursor=pointer]:
+                - /url: /apps?curatedCategory=paid-apps
+                - generic [ref=e85]: Paid Apps
+              - link "Document Collaboration" [ref=e86] [cursor=pointer]:
+                - /url: /apps?curatedCategory=document-collaboration
+                - generic [ref=e88]: Document Collaboration
+              - link "AI Apps" [ref=e89] [cursor=pointer]:
+                - /url: /apps?curatedCategory=ai-apps
+                - generic [ref=e91]: AI Apps
+              - link "Customer Experience" [ref=e92] [cursor=pointer]:
+                - /url: /apps?curatedCategory=customer-experience
+                - generic [ref=e94]: Customer Experience
+              - link "Communications & Scheduling" [ref=e95] [cursor=pointer]:
+                - /url: /apps?curatedCategory=communications-and-scheduling
+                - generic [ref=e97]: Communications & Scheduling
+              - link:
+                - /url: /apps?curatedCategory=microsoft-apps
+              - link:
+                - /url: /apps?curatedCategory=apps-built-by-zoom
+              - link:
+                - /url: /apps?curatedCategory=sales-and-marketing
+              - link:
+                - /url: /apps?curatedCategory=employee-engagement
+              - link:
+                - /url: /apps?curatedCategory=apps-for-zoom-rooms
+              - link:
+                - /url: /apps?curatedCategory=apps-for-education
+              - link:
+                - /url: /apps?curatedCategory=apps-for-team-chat
+              - link:
+                - /url: /apps?curatedCategory=apps-for-zoom-events
+              - generic [ref=e99]:
+                - img [ref=e101]
+                - generic [ref=e104]: More
+      - generic [ref=e106]:
+        - generic [ref=e107]: Filters
+        - generic [ref=e108]:
+          - button "App Types" [expanded] [ref=e109] [cursor=pointer]:
+            - generic [ref=e111]: App Types
+            - img [ref=e114]
+          - region [ref=e120]:
+            - generic [ref=e122]:
+              - generic [ref=e124] [cursor=pointer]:
+                - radio "Zoom Apps 446" [ref=e126]
+                - generic [ref=e129]:
+                  - generic [ref=e130]: Zoom Apps
+                  - generic [ref=e131]: "446"
+              - generic [ref=e133] [cursor=pointer]:
+                - radio "Integrations 2774" [ref=e135]
+                - generic [ref=e138]:
+                  - generic [ref=e139]: Integrations
+                  - generic [ref=e140]: "2774"
+              - generic [ref=e142] [cursor=pointer]:
+                - radio "Connectors 52" [ref=e144]
+                - generic [ref=e147]:
+                  - generic [ref=e148]: Connectors
+                  - generic [ref=e149]: "52"
+        - generic [ref=e150]:
+          - button "Zoom Products" [expanded] [ref=e151] [cursor=pointer]:
+            - generic [ref=e153]: Zoom Products
+            - img [ref=e156]
+          - region [ref=e162]:
+            - generic [ref=e164]:
+              - generic [ref=e166] [cursor=pointer]:
+                - checkbox "Zoom Meetings 2556" [ref=e168]
+                - generic [ref=e171]:
+                  - generic [ref=e172]: Zoom Meetings
+                  - generic [ref=e173]: "2556"
+              - generic [ref=e175] [cursor=pointer]:
+                - checkbox "Zoom Webinars 393" [ref=e177]
+                - generic [ref=e180]:
+                  - generic [ref=e181]: Zoom Webinars
+                  - generic [ref=e182]: "393"
+              - generic [ref=e184] [cursor=pointer]:
+                - checkbox "Zoom Rooms 75" [ref=e186]
+                - generic [ref=e189]:
+                  - generic [ref=e190]: Zoom Rooms
+                  - generic [ref=e191]: "75"
+              - generic [ref=e193] [cursor=pointer]:
+                - checkbox "Zoom Phone 203" [ref=e195]
+                - generic [ref=e198]:
+                  - generic [ref=e199]: Zoom Phone
+                  - generic [ref=e200]: "203"
+              - generic [ref=e202] [cursor=pointer]:
+                - checkbox "Zoom Team Chat 117" [ref=e204]
+                - generic [ref=e207]:
+                  - generic [ref=e208]: Zoom Team Chat
+                  - generic [ref=e209]: "117"
+              - generic [ref=e211] [cursor=pointer]:
+                - checkbox "Zoom Contact Center 48" [ref=e213]
+                - generic [ref=e216]:
+                  - generic [ref=e217]: Zoom Contact Center
+                  - generic [ref=e218]: "48"
+              - generic [ref=e220] [cursor=pointer]:
+                - checkbox "Zoom Whiteboard 6" [ref=e222]
+                - generic [ref=e225]:
+                  - generic [ref=e226]: Zoom Whiteboard
+                  - generic [ref=e227]: "6"
+              - generic [ref=e229] [cursor=pointer]:
+                - checkbox "Zoom Revenue Accelerator 3" [ref=e231]
+                - generic [ref=e234]:
+                  - generic [ref=e235]: Zoom Revenue Accelerator
+                  - generic [ref=e236]: "3"
+              - generic [ref=e238] [cursor=pointer]:
+                - checkbox "Zoom Virtual Agent 15" [ref=e240]
+                - generic [ref=e243]:
+                  - generic [ref=e244]: Zoom Virtual Agent
+                  - generic [ref=e245]: "15"
+              - generic [ref=e247] [cursor=pointer]:
+                - checkbox "Zoom Events 42" [ref=e249]
+                - generic [ref=e252]:
+                  - generic [ref=e253]: Zoom Events
+                  - generic [ref=e254]: "42"
+              - generic [ref=e256] [cursor=pointer]:
+                - checkbox "Zoom Mail 5" [ref=e258]
+                - generic [ref=e261]:
+                  - generic [ref=e262]: Zoom Mail
+                  - generic [ref=e263]: "5"
+              - generic [ref=e265] [cursor=pointer]:
+                - checkbox "Zoom Workflows 15" [ref=e267]
+                - generic [ref=e270]:
+                  - generic [ref=e271]: Zoom Workflows
+                  - generic [ref=e272]: "15"
+              - generic [ref=e274] [cursor=pointer]:
+                - checkbox "Zoom AI Companion 22" [ref=e276]
+                - generic [ref=e279]:
+                  - generic [ref=e280]: Zoom AI Companion
+                  - generic [ref=e281]: "22"
+        - generic [ref=e282]:
+          - button "User Role" [expanded] [ref=e283] [cursor=pointer]:
+            - generic [ref=e285]: User Role
+            - img [ref=e288]
+          - region [ref=e294]:
+            - generic [ref=e296]:
+              - generic [ref=e298] [cursor=pointer]:
+                - radio "Admins 977" [ref=e300]
+                - generic [ref=e303]:
+                  - generic [ref=e304]: Admins
+                  - generic [ref=e305]: "977"
+              - generic [ref=e307] [cursor=pointer]:
+                - radio "Any user 2253" [ref=e309]
+                - generic [ref=e312]:
+                  - generic [ref=e313]: Any user
+                  - generic [ref=e314]: "2253"
+        - generic [ref=e315]:
+          - button "Approved Apps" [expanded] [ref=e316] [cursor=pointer]:
+            - generic [ref=e318]: Approved Apps
+            - img [ref=e321]
+          - region [ref=e327]:
+            - generic [ref=e329]:
+              - generic [ref=e331] [cursor=pointer]:
+                - radio "Public apps 3230" [ref=e333]
+                - generic [ref=e336]:
+                  - generic [ref=e337]: Public apps
+                  - generic [ref=e338]: "3230"
+              - generic [ref=e340] [cursor=pointer]:
+                - radio "Internal apps 0" [ref=e342]
+                - generic [ref=e345]:
+                  - generic [ref=e346]: Internal apps
+                  - generic [ref=e347]: "0"
+    - generic [ref=e348]:
+      - generic [ref=e350]:
+        - heading "Discover apps" [level=1] [ref=e351]
+        - generic [ref=e352]: Explore 3,230 apps in Zoom App Marketplace.
+        - generic [ref=e353]:
+          - generic [ref=e354]:
+            - list [ref=e355]:
+              - listitem [ref=e357]:
+                - link "Paid Apps Enhance your Zoom experience with premium apps" [ref=e358] [cursor=pointer]:
+                  - /url: /apps?curatedCategory=paid-apps
+                  - generic [ref=e359]:
+                    - generic [ref=e361]:
+                      - img [ref=e364]
+                      - img [ref=e367]
+                      - img [ref=e370]
+                      - img [ref=e373]
+                      - img [ref=e376]
+                      - img [ref=e379]
+                    - generic [ref=e380]:
+                      - generic [ref=e383]: Paid Apps
+                      - generic [ref=e385]: Enhance your Zoom experience with premium apps
+              - listitem [ref=e387]:
+                - link "AI Apps These virtual assistants help you capture context and insight in your daily conversations." [ref=e388] [cursor=pointer]:
+                  - /url: /apps?curatedCategory=ai-apps
+                  - generic [ref=e389]:
+                    - generic [ref=e391]:
+                      - img [ref=e394]
+                      - img [ref=e397]
+                      - img [ref=e400]
+                      - img [ref=e403]
+                      - img [ref=e406]
+                      - img [ref=e409]
+                    - generic [ref=e410]:
+                      - generic [ref=e413]: AI Apps
+                      - generic [ref=e415]: These virtual assistants help you capture context and insight in your daily conversations.
+              - listitem [ref=e417]:
+                - link [ref=e418] [cursor=pointer]:
+                  - /url: /apps?curatedCategory=customer-experience
+                  - generic [ref=e419]:
+                    - generic [ref=e421]:
+                      - img [ref=e424]
+                      - img [ref=e427]
+                      - img [ref=e430]
+                      - img [ref=e433]
+                      - img [ref=e436]
+                      - img [ref=e439]
+                    - generic [ref=e440]:
+                      - generic [ref=e443]: Customer Experience
+                      - generic [ref=e445]: Improve CX and contact center operations
+              - listitem [ref=e447]:
+                - link [ref=e448] [cursor=pointer]:
+                  - /url: /apps?curatedCategory=apps-for-education
+                  - generic [ref=e449]:
+                    - generic [ref=e451]:
+                      - img [ref=e454]
+                      - img [ref=e457]
+                      - img [ref=e460]
+                      - img [ref=e463]
+                      - img [ref=e466]
+                      - img [ref=e469]
+                    - generic [ref=e470]:
+                      - generic [ref=e473]: Apps for Education
+                      - generic [ref=e475]: Apps and integrations for education
+              - listitem [ref=e477]:
+                - link [ref=e478] [cursor=pointer]:
+                  - /url: /apps?curatedCategory=apps-for-team-chat
+                  - generic [ref=e479]:
+                    - generic [ref=e481]:
+                      - img [ref=e484]
+                      - img [ref=e487]
+                      - img [ref=e490]
+                      - img [ref=e493]
+                      - img [ref=e496]
+                      - img [ref=e499]
+                    - generic [ref=e500]:
+                      - generic [ref=e503]: Apps for Team Chat
+                      - generic [ref=e505]: Boost productivity when collaborating in Team Chat
+            - button "Next carousel page" [ref=e506] [cursor=pointer]:
+              - img [ref=e508]
+          - listbox [ref=e511]:
+            - option "Page 1" [selected] [ref=e512] [cursor=pointer]
+            - option "Page 2" [ref=e514] [cursor=pointer]
+            - option "Page 3" [ref=e516] [cursor=pointer]
+            - option "Page 4" [ref=e518] [cursor=pointer]
+        - generic [ref=e520]:
+          - generic [ref=e522]:
+            - heading "Document Collaboration" [level=2] [ref=e523]
+            - button "Show All" [ref=e524] [cursor=pointer]
+          - generic [ref=e525]: Access, create, and collaborate on shared documents
+          - generic [ref=e527]:
+            - link "Google Drive 5.0 By Zoom Collaborate on Google Drive files & receive smart notifications Meetings Team Chat" [ref=e530] [cursor=pointer]:
+              - /url: /apps/epJsq-eFTl-O-PIriFckcg
+              - generic [ref=e532]:
+                - img [ref=e535]
+                - img [ref=e538]
+                - generic [ref=e540]:
+                  - generic [ref=e541]:
+                    - heading "Google Drive" [level=6] [ref=e542]:
+                      - generic [ref=e544]: Google Drive
+                    - generic [ref=e545]:
+                      - img [ref=e546]:
+                        - img [ref=e547]
+                      - generic [ref=e549]: "5.0"
+                    - paragraph [ref=e550]: By Zoom
+                    - paragraph [ref=e551]: Collaborate on Google Drive files & receive smart notifications
+                  - generic [ref=e552]:
+                    - generic "Meetings" [ref=e553]:
+                      - img "Video On" [ref=e554]:
+                        - img [ref=e555]
+                    - generic "Team Chat" [ref=e557]:
+                      - img "Team Chat" [ref=e558]:
+                        - img [ref=e559]
+            - link "Microsoft 365 2.3 By Zoom Seamlessly collaborate on Microsoft Office files in meetings. Meetings Team Chat" [ref=e563] [cursor=pointer]:
+              - /url: /apps/_9cgrHvRT9iKiRF4QC1H-w
+              - generic [ref=e565]:
+                - img [ref=e568]
+                - img [ref=e571]
+                - generic [ref=e573]:
+                  - generic [ref=e574]:
+                    - heading "Microsoft 365" [level=6] [ref=e575]:
+                      - generic [ref=e577]: Microsoft 365
+                    - generic [ref=e578]:
+                      - img [ref=e579]:
+                        - img [ref=e580]
+                      - generic [ref=e582]: "2.3"
+                    - paragraph [ref=e583]: By Zoom
+                    - paragraph [ref=e584]: Seamlessly collaborate on Microsoft Office files in meetings.
+                  - generic [ref=e585]:
+                    - generic "Meetings" [ref=e586]:
+                      - img "Video On" [ref=e587]:
+                        - img [ref=e588]
+                    - generic "Team Chat" [ref=e590]:
+                      - img "Team Chat" [ref=e591]:
+                        - img [ref=e592]
+            - link "Figma Rate this app By Figma Collaborate on Figma and FigJam files in Zoom. Jam on ideas, run design meetings, and get feedback in real-time. Meetings Team Chat" [ref=e596] [cursor=pointer]:
+              - /url: /apps/uD_G75csQlOKq3uGCfmu1g
+              - generic [ref=e598]:
+                - img [ref=e601]
+                - img [ref=e604]
+                - generic [ref=e606]:
+                  - generic [ref=e607]:
+                    - heading "Figma" [level=6] [ref=e608]:
+                      - generic [ref=e610]: Figma
+                    - generic [ref=e611]:
+                      - img [ref=e612]:
+                        - img [ref=e613]
+                      - generic [ref=e615]: Rate this app
+                    - paragraph [ref=e616]: By Figma
+                    - paragraph [ref=e617]: Collaborate on Figma and FigJam files in Zoom. Jam on ideas, run design meetings, and get feedback in real-time.
+                  - generic [ref=e618]:
+                    - generic "Meetings" [ref=e619]:
+                      - img "Video On" [ref=e620]:
+                        - img [ref=e621]
+                    - generic "Team Chat" [ref=e623]:
+                      - img "Team Chat" [ref=e624]:
+                        - img [ref=e625]
+            - link "Confluence for Zoom Rate this app By Zoom Confluence is a collaboration tool that helps teams create, share, organize content and automate content management workflow. Team Chat AI Companion Workflows" [ref=e629] [cursor=pointer]:
+              - /url: /apps/H2oeO22wTzuVI-ON0SaPXA
+              - generic [ref=e631]:
+                - img [ref=e634]
+                - img [ref=e637]
+                - generic [ref=e639]:
+                  - generic [ref=e640]:
+                    - heading "Confluence for Zoom" [level=6] [ref=e641]:
+                      - generic [ref=e643]: Confluence for Zoom
+                    - generic [ref=e644]:
+                      - img [ref=e645]:
+                        - img [ref=e646]
+                      - generic [ref=e648]: Rate this app
+                    - paragraph [ref=e649]: By Zoom
+                    - paragraph [ref=e650]: Confluence is a collaboration tool that helps teams create, share, organize content and automate content management workflow.
+                  - generic [ref=e651]:
+                    - generic "Team Chat" [ref=e652]:
+                      - img "Team Chat" [ref=e653]:
+                        - img [ref=e654]
+                    - generic "AI Companion" [ref=e656]:
+                      - img "AI Companion" [ref=e657]:
+                        - img [ref=e658]
+                    - generic "Workflows" [ref=e661]:
+                      - img "Flow" [ref=e662]:
+                        - img [ref=e663]
+            - link "Notion Rate this app By Notion Add Zoom meetings to Notion docs so that team members can see and join meetings directly from Notion" [ref=e667] [cursor=pointer]:
+              - /url: /apps/aL32OF-NQRuNAIrAo9thKA
+              - generic [ref=e669]:
+                - img [ref=e672]
+                - img [ref=e675]
+                - generic [ref=e678]:
+                  - heading "Notion" [level=6] [ref=e679]:
+                    - generic [ref=e680]:
+                      - generic [ref=e681]: Notion
+                      - img [ref=e685]
+                  - generic [ref=e689]:
+                    - img [ref=e690]:
+                      - img [ref=e691]
+                    - generic [ref=e693]: Rate this app
+                  - paragraph [ref=e694]: By Notion
+                  - paragraph [ref=e695]: Add Zoom meetings to Notion docs so that team members can see and join meetings directly from Notion
+            - link "Coda Rate this app By Coda Project, Inc. Coda - Brings all your meeting notes, project specs, action itemsーand teammatesーin one organized doc. Meetings" [ref=e698] [cursor=pointer]:
+              - /url: /apps/WKaSrQ6rS2ez0vgfhAUVHg
+              - generic [ref=e700]:
+                - img [ref=e703]
+                - img [ref=e706]
+                - generic [ref=e708]:
+                  - generic [ref=e709]:
+                    - heading "Coda" [level=6] [ref=e710]:
+                      - generic [ref=e711]:
+                        - generic [ref=e712]: Coda
+                        - img [ref=e714]
+                    - generic [ref=e717]:
+                      - img [ref=e718]:
+                        - img [ref=e719]
+                      - generic [ref=e721]: Rate this app
+                    - paragraph [ref=e722]: By Coda Project, Inc.
+                    - paragraph [ref=e723]: Coda - Brings all your meeting notes, project specs, action itemsーand teammatesーin one organized doc.
+                  - generic "Meetings" [ref=e725]:
+                    - img "Video On" [ref=e726]:
+                      - img [ref=e727]
+        - generic [ref=e729]:
+          - generic [ref=e731]:
+            - heading "New" [level=2] [ref=e732]
+            - button "Show All" [ref=e733] [cursor=pointer]
+          - generic [ref=e734]: New or recently updated Apps and Integrations
+          - generic [ref=e736]:
+            - link "Condo Control Virtual Meeting Rate this app By Condo Control Condo Control Zoom Application for use with Condo Controls' Virtual Meetings" [ref=e739] [cursor=pointer]:
+              - /url: /apps/DQ5UpJoKQ7e_ROr4v4ok3g
+              - generic [ref=e741]:
+                - img [ref=e744]
+                - generic [ref=e747]:
+                  - heading "Condo Control Virtual Meeting" [level=6] [ref=e748]:
+                    - generic [ref=e749]:
+                      - generic [ref=e750]: Condo Control Virtual Meeting
+                      - img [ref=e754]
+                  - generic [ref=e758]:
+                    - img [ref=e759]:
+                      - img [ref=e760]
+                    - generic [ref=e762]: Rate this app
+                  - paragraph [ref=e763]: By Condo Control
+                  - paragraph [ref=e764]: Condo Control Zoom Application for use with Condo Controls' Virtual Meetings
+            - link "freee IT Management Rate this app By freee K.K. freee IT Management is a service that allows you to centrally manage multiple SaaS accounts." [ref=e767] [cursor=pointer]:
+              - /url: /apps/3Z0I-V7DRnaIaglSxuI3Ag
+              - generic [ref=e769]:
+                - img [ref=e772]
+                - generic [ref=e775]:
+                  - heading "freee IT Management" [level=6] [ref=e776]:
+                    - generic [ref=e777]:
+                      - generic [ref=e778]: freee IT Management
+                      - img [ref=e782]
+                  - generic [ref=e786]:
+                    - img [ref=e787]:
+                      - img [ref=e788]
+                    - generic [ref=e790]: Rate this app
+                  - paragraph [ref=e791]: By freee K.K.
+                  - paragraph [ref=e792]: freee IT Management is a service that allows you to centrally manage multiple SaaS accounts.
+            - link "PL NoteTaker Rate this app By PureLogics This goal is to integrate Zoom with Recall AI to add scheduled bots in the meeting that take notes." [ref=e795] [cursor=pointer]:
+              - /url: /apps/D-1tRFcATH6x6UxtHWDWyQ
+              - generic [ref=e797]:
+                - img [ref=e800]
+                - generic [ref=e803]:
+                  - heading "PL NoteTaker" [level=6] [ref=e804]:
+                    - generic [ref=e805]:
+                      - generic [ref=e806]: PL NoteTaker
+                      - img [ref=e810]
+                  - generic [ref=e814]:
+                    - img [ref=e815]:
+                      - img [ref=e816]
+                    - generic [ref=e818]: Rate this app
+                  - paragraph [ref=e819]: By PureLogics
+                  - paragraph [ref=e820]: This goal is to integrate Zoom with Recall AI to add scheduled bots in the meeting that take notes.
+            - link "Voiceitt Captions Rate this app By Technologies of Voice Interface, LTD Voiceitt Captions links your Voiceitt account to your Zoom meetings to give live transcriptions of non-standard speech during video calls. Meetings" [ref=e823] [cursor=pointer]:
+              - /url: /apps/8VLIMV1KTwGOtd99HfwsAA
+              - generic [ref=e825]:
+                - img [ref=e828]
+                - generic [ref=e830]:
+                  - generic [ref=e831]:
+                    - heading "Voiceitt Captions" [level=6] [ref=e832]:
+                      - generic [ref=e834]: Voiceitt Captions
+                    - generic [ref=e835]:
+                      - img [ref=e836]:
+                        - img [ref=e837]
+                      - generic [ref=e839]: Rate this app
+                    - paragraph [ref=e840]: By Technologies of Voice Interface, LTD
+                    - paragraph [ref=e841]: Voiceitt Captions links your Voiceitt account to your Zoom meetings to give live transcriptions of non-standard speech during video calls.
+                  - generic "Meetings" [ref=e843]:
+                    - img "Video On" [ref=e844]:
+                      - img [ref=e845]
+            - link "Albato Rate this app By Albato A single service for all integrations." [ref=e849] [cursor=pointer]:
+              - /url: /apps/IdC2d4zuS6mkGKDRPDv0Rw
+              - generic [ref=e851]:
+                - img [ref=e854]
+                - generic [ref=e857]:
+                  - heading "Albato" [level=6] [ref=e858]:
+                    - generic [ref=e859]:
+                      - generic [ref=e860]: Albato
+                      - img [ref=e864]
+                  - generic [ref=e868]:
+                    - img [ref=e869]:
+                      - img [ref=e870]
+                    - generic [ref=e872]: Rate this app
+                  - paragraph [ref=e873]: By Albato
+                  - paragraph [ref=e874]: A single service for all integrations.
+            - link "Cronofy Meeting Agent Rate this app By Cronofy Transform your scheduling workflows by capturing meeting recordings and transcripts" [ref=e877] [cursor=pointer]:
+              - /url: /apps/lAPxtLfdQPCD0S6bNnIP3w
+              - generic [ref=e879]:
+                - img [ref=e882]
+                - generic [ref=e885]:
+                  - heading "Cronofy Meeting Agent" [level=6] [ref=e886]:
+                    - generic [ref=e887]:
+                      - generic [ref=e888]: Cronofy Meeting Agent
+                      - img [ref=e892]
+                  - generic [ref=e896]:
+                    - img [ref=e897]:
+                      - img [ref=e898]
+                    - generic [ref=e900]: Rate this app
+                  - paragraph [ref=e901]: By Cronofy
+                  - paragraph [ref=e902]: Transform your scheduling workflows by capturing meeting recordings and transcripts
+        - generic [ref=e903]:
+          - generic [ref=e905]:
+            - heading "Communications & Scheduling" [level=2] [ref=e906]
+            - button "Show All" [ref=e907] [cursor=pointer]
+          - generic [ref=e908]: Streamline communications and scheduling
+          - generic [ref=e910]:
+            - link "Microsoft Teams 4.8 By Zoom Start, schedule, join Zoom meetings and make Zoom Phone calls right from your Team space." [ref=e913] [cursor=pointer]:
+              - /url: /apps/BI00RjkzRFaozN9J5-qQ6w
+              - generic [ref=e915]:
+                - img [ref=e918]
+                - generic [ref=e921]:
+                  - heading "Microsoft Teams" [level=6] [ref=e922]:
+                    - generic [ref=e923]:
+                      - generic [ref=e924]: Microsoft Teams
+                      - img [ref=e928]
+                  - generic [ref=e932]:
+                    - img [ref=e933]:
+                      - img [ref=e934]
+                    - generic [ref=e936]: "4.8"
+                  - paragraph [ref=e937]: By Zoom
+                  - paragraph [ref=e938]: Start, schedule, join Zoom meetings and make Zoom Phone calls right from your Team space.
+            - link "Google Workspace 4.3 By Zoom Use Zoom to easily schedule, join, manage, and customize meetings and calls from Gmail and Google Calendar." [ref=e941] [cursor=pointer]:
+              - /url: /apps/VG_p3Bb_TwWe_bgZmPUaXw
+              - generic [ref=e943]:
+                - img [ref=e946]
+                - generic [ref=e949]:
+                  - heading "Google Workspace" [level=6] [ref=e950]:
+                    - generic [ref=e951]:
+                      - generic [ref=e952]: Google Workspace
+                      - img [ref=e956]
+                  - generic [ref=e960]:
+                    - img [ref=e961]:
+                      - img [ref=e962]
+                    - generic [ref=e964]: "4.3"
+                  - paragraph [ref=e965]: By Zoom
+                  - paragraph [ref=e966]: Use Zoom to easily schedule, join, manage, and customize meetings and calls from Gmail and Google Calendar.
+            - link "Google Calendar Notifications Rate this app By Zoom Get calendar notification in your chat so you never miss a meeting again. Team Chat AI Companion Workflows" [ref=e969] [cursor=pointer]:
+              - /url: /apps/-V4lGCrFS8Kp-Nns7uLl1Q
+              - generic [ref=e971]:
+                - img [ref=e974]
+                - generic [ref=e976]:
+                  - generic [ref=e977]:
+                    - heading "Google Calendar Notifications" [level=6] [ref=e978]:
+                      - generic [ref=e980]: Google Calendar Notifications
+                    - generic [ref=e981]:
+                      - img [ref=e982]:
+                        - img [ref=e983]
+                      - generic [ref=e985]: Rate this app
+                    - paragraph [ref=e986]: By Zoom
+                    - paragraph [ref=e987]: Get calendar notification in your chat so you never miss a meeting again.
+                  - generic [ref=e988]:
+                    - generic "Team Chat" [ref=e989]:
+                      - img "Team Chat" [ref=e990]:
+                        - img [ref=e991]
+                    - generic "AI Companion" [ref=e993]:
+                      - img "AI Companion" [ref=e994]:
+                        - img [ref=e995]
+                    - generic "Workflows" [ref=e998]:
+                      - img "Flow" [ref=e999]:
+                        - img [ref=e1000]
+            - link "Slack 3.3 By Zoom Bring together two great solutions with Zoom and Slack to improve your team's collaboration." [ref=e1004] [cursor=pointer]:
+              - /url: /apps/wstjUWFST7WGSHObVoA3EA
+              - generic [ref=e1006]:
+                - img [ref=e1009]
+                - generic [ref=e1012]:
+                  - heading "Slack" [level=6] [ref=e1013]:
+                    - generic [ref=e1014]:
+                      - generic [ref=e1015]: Slack
+                      - img [ref=e1019]
+                  - generic [ref=e1023]:
+                    - img [ref=e1024]:
+                      - img [ref=e1025]
+                    - generic [ref=e1027]: "3.3"
+                  - paragraph [ref=e1028]: By Zoom
+                  - paragraph [ref=e1029]: Bring together two great solutions with Zoom and Slack to improve your team's collaboration.
+            - link "Calendly for Zoom 2.1 By Calendly Save time when Calendly automatically schedules meetings for you and includes your video conference details for every scheduled meeting." [ref=e1032] [cursor=pointer]:
+              - /url: /apps/BF4eht18S3a0KTLiKM3P0A
+              - generic [ref=e1034]:
+                - img [ref=e1037]
+                - generic [ref=e1040]:
+                  - heading "Calendly for Zoom" [level=6] [ref=e1041]:
+                    - generic [ref=e1042]:
+                      - generic [ref=e1043]: Calendly for Zoom
+                      - img [ref=e1047]
+                  - generic [ref=e1051]:
+                    - img [ref=e1052]:
+                      - img [ref=e1053]
+                    - generic [ref=e1055]: "2.1"
+                  - paragraph [ref=e1056]: By Calendly
+                  - paragraph [ref=e1057]: Save time when Calendly automatically schedules meetings for you and includes your video conference details for every scheduled meeting.
+            - link "Notion Calendar Rate this app By Notion Beautifully designed, modern-day calendar for professionals and teams" [ref=e1060] [cursor=pointer]:
+              - /url: /apps/GrqMaKk8T0Oq37TtM38fYA
+              - generic [ref=e1062]:
+                - img [ref=e1065]
+                - generic [ref=e1068]:
+                  - heading "Notion Calendar" [level=6] [ref=e1069]:
+                    - generic [ref=e1070]:
+                      - generic [ref=e1071]: Notion Calendar
+                      - img [ref=e1075]
+                  - generic [ref=e1079]:
+                    - img [ref=e1080]:
+                      - img [ref=e1081]
+                    - generic [ref=e1083]: Rate this app
+                  - paragraph [ref=e1084]: By Notion
+                  - paragraph [ref=e1085]: Beautifully designed, modern-day calendar for professionals and teams
+        - generic [ref=e1086]:
+          - heading "Microsoft Apps" [level=2] [ref=e1089]
+          - generic [ref=e1090]: Work happy with Zoom and Microsoft
+          - generic [ref=e1092]:
+            - link "Microsoft 365 2.3 By Zoom Seamlessly collaborate on Microsoft Office files in meetings. Meetings Team Chat" [ref=e1095] [cursor=pointer]:
+              - /url: /apps/_9cgrHvRT9iKiRF4QC1H-w
+              - generic [ref=e1097]:
+                - img [ref=e1100]
+                - generic [ref=e1102]:
+                  - generic [ref=e1103]:
+                    - heading "Microsoft 365" [level=6] [ref=e1104]:
+                      - generic [ref=e1106]: Microsoft 365
+                    - generic [ref=e1107]:
+                      - img [ref=e1108]:
+                        - img [ref=e1109]
+                      - generic [ref=e1111]: "2.3"
+                    - paragraph [ref=e1112]: By Zoom
+                    - paragraph [ref=e1113]: Seamlessly collaborate on Microsoft Office files in meetings.
+                  - generic [ref=e1114]:
+                    - generic "Meetings" [ref=e1115]:
+                      - img "Video On" [ref=e1116]:
+                        - img [ref=e1117]
+                    - generic "Team Chat" [ref=e1119]:
+                      - img "Team Chat" [ref=e1120]:
+                        - img [ref=e1121]
+            - link "Microsoft OneDrive for Zoom Rate this app By Zoom Create, Share, and Access documents from Microsoft OneDrive all from within Zoom Team Chat AI Companion" [ref=e1125] [cursor=pointer]:
+              - /url: /apps/LwPEkaa3TGS6fACkSiQZdg
+              - generic [ref=e1127]:
+                - img [ref=e1130]
+                - generic [ref=e1132]:
+                  - generic [ref=e1133]:
+                    - heading "Microsoft OneDrive for Zoom" [level=6] [ref=e1134]:
+                      - generic [ref=e1136]: Microsoft OneDrive for Zoom
+                    - generic [ref=e1137]:
+                      - img [ref=e1138]:
+                        - img [ref=e1139]
+                      - generic [ref=e1141]: Rate this app
+                    - paragraph [ref=e1142]: By Zoom
+                    - paragraph [ref=e1143]: Create, Share, and Access documents from Microsoft OneDrive all from within Zoom
+                  - generic [ref=e1144]:
+                    - generic "Team Chat" [ref=e1145]:
+                      - img "Team Chat" [ref=e1146]:
+                        - img [ref=e1147]
+                    - generic "AI Companion" [ref=e1149]:
+                      - img "AI Companion" [ref=e1150]:
+                        - img [ref=e1151]
+            - link "Microsoft Teams 4.8 By Zoom Start, schedule, join Zoom meetings and make Zoom Phone calls right from your Team space." [ref=e1156] [cursor=pointer]:
+              - /url: /apps/BI00RjkzRFaozN9J5-qQ6w
+              - generic [ref=e1158]:
+                - img [ref=e1161]
+                - generic [ref=e1164]:
+                  - heading "Microsoft Teams" [level=6] [ref=e1165]:
+                    - generic [ref=e1166]:
+                      - generic [ref=e1167]: Microsoft Teams
+                      - img [ref=e1171]
+                  - generic [ref=e1175]:
+                    - img [ref=e1176]:
+                      - img [ref=e1177]
+                    - generic [ref=e1179]: "4.8"
+                  - paragraph [ref=e1180]: By Zoom
+                  - paragraph [ref=e1181]: Start, schedule, join Zoom meetings and make Zoom Phone calls right from your Team space.
+            - link "Microsoft Dynamics 365 Rate this app By Zoom Initiate and receive Zoom Phone calls, add and manage contacts, and automatically log calls directly from Microsoft Dynamics 365 CRM." [ref=e1184] [cursor=pointer]:
+              - /url: /apps/LhUCLvnlSc-TkNIkREQXOw
+              - generic [ref=e1186]:
+                - img [ref=e1189]
+                - generic [ref=e1192]:
+                  - heading "Microsoft Dynamics 365" [level=6] [ref=e1193]:
+                    - generic [ref=e1194]:
+                      - generic [ref=e1195]: Microsoft Dynamics 365
+                      - img [ref=e1199]
+                  - generic [ref=e1203]:
+                    - img [ref=e1204]:
+                      - img [ref=e1205]
+                    - generic [ref=e1207]: Rate this app
+                  - paragraph [ref=e1208]: By Zoom
+                  - paragraph [ref=e1209]: Initiate and receive Zoom Phone calls, add and manage contacts, and automatically log calls directly from Microsoft Dynamics 365 CRM.
+        - generic [ref=e1210]:
+          - generic [ref=e1212]:
+            - heading "Apps built by Zoom" [level=2] [ref=e1213]
+            - button "Show All" [ref=e1214] [cursor=pointer]
+          - generic [ref=e1215]: Timer, Virtual Backgrounds, Music, Group Photo and more
+          - generic [ref=e1217]:
+            - link "Google Workspace 4.3 By Zoom Use Zoom to easily schedule, join, manage, and customize meetings and calls from Gmail and Google Calendar." [ref=e1220] [cursor=pointer]:
+              - /url: /apps/VG_p3Bb_TwWe_bgZmPUaXw
+              - generic [ref=e1222]:
+                - img [ref=e1225]
+                - generic [ref=e1228]:
+                  - heading "Google Workspace" [level=6] [ref=e1229]:
+                    - generic [ref=e1230]:
+                      - generic [ref=e1231]: Google Workspace
+                      - img [ref=e1235]
+                  - generic [ref=e1239]:
+                    - img [ref=e1240]:
+                      - img [ref=e1241]
+                    - generic [ref=e1243]: "4.3"
+                  - paragraph [ref=e1244]: By Zoom
+                  - paragraph [ref=e1245]: Use Zoom to easily schedule, join, manage, and customize meetings and calls from Gmail and Google Calendar.
+            - link "Azure Identity Rate this app By Zoom Integrate for Azure Provisioning" [ref=e1248] [cursor=pointer]:
+              - /url: /apps/juKT4DzgTyuB2-ssYFmjUg
+              - generic [ref=e1250]:
+                - img [ref=e1253]
+                - generic [ref=e1256]:
+                  - heading "Azure Identity" [level=6] [ref=e1257]:
+                    - generic [ref=e1258]:
+                      - generic [ref=e1259]: Azure Identity
+                      - img [ref=e1263]
+                  - generic [ref=e1267]:
+                    - img [ref=e1268]:
+                      - img [ref=e1269]
+                    - generic [ref=e1271]: Rate this app
+                  - paragraph [ref=e1272]: By Zoom
+                  - paragraph [ref=e1273]: Integrate for Azure Provisioning
+            - link "Incoming Webhook Rate this app By Zoom Utilize HTTP POST requests to send external messages directly to any Zoom Chat channel. Team Chat" [ref=e1276] [cursor=pointer]:
+              - /url: /apps/eH_dLuquRd-VYcOsNGy-hQ
+              - generic [ref=e1278]:
+                - img [ref=e1281]
+                - generic [ref=e1283]:
+                  - generic [ref=e1284]:
+                    - heading "Incoming Webhook" [level=6] [ref=e1285]:
+                      - generic [ref=e1287]: Incoming Webhook
+                    - generic [ref=e1288]:
+                      - img [ref=e1289]:
+                        - img [ref=e1290]
+                      - generic [ref=e1292]: Rate this app
+                    - paragraph [ref=e1293]: By Zoom
+                    - paragraph [ref=e1294]: Utilize HTTP POST requests to send external messages directly to any Zoom Chat channel.
+                  - generic "Team Chat" [ref=e1296]:
+                    - img "Team Chat" [ref=e1297]:
+                      - img [ref=e1298]
+            - link "LTI Pro Rate this app By Zoom The Zoom LTI Pro app supports the ability to schedule/join/manage meetings within your learning management system (LMS)" [ref=e1302] [cursor=pointer]:
+              - /url: /apps/f8JUB3eeQv2lXsjKq5B2FA
+              - generic [ref=e1304]:
+                - img [ref=e1307]
+                - generic [ref=e1310]:
+                  - heading "LTI Pro" [level=6] [ref=e1311]:
+                    - generic [ref=e1312]:
+                      - generic [ref=e1313]: LTI Pro
+                      - img [ref=e1317]
+                  - generic [ref=e1321]:
+                    - img [ref=e1322]:
+                      - img [ref=e1323]
+                    - generic [ref=e1325]: Rate this app
+                  - paragraph [ref=e1326]: By Zoom
+                  - paragraph [ref=e1327]: The Zoom LTI Pro app supports the ability to schedule/join/manage meetings within your learning management system (LMS)
+            - link "Zoom Phone Smart Embed Rate this app By Zoom Simplify the development of 3rd Party integrations with the Zoom Phone Smart Embed App." [ref=e1330] [cursor=pointer]:
+              - /url: /apps/jnMbv3s2TaCBYMFz5yvzkA
+              - generic [ref=e1332]:
+                - img [ref=e1335]
+                - generic [ref=e1338]:
+                  - heading "Zoom Phone Smart Embed" [level=6] [ref=e1339]:
+                    - generic [ref=e1340]:
+                      - generic [ref=e1341]: Zoom Phone Smart Embed
+                      - img [ref=e1345]
+                  - generic [ref=e1349]:
+                    - img [ref=e1350]:
+                      - img [ref=e1351]
+                    - generic [ref=e1353]: Rate this app
+                  - paragraph [ref=e1354]: By Zoom
+                  - paragraph [ref=e1355]: Simplify the development of 3rd Party integrations with the Zoom Phone Smart Embed App.
+            - link "Zoom Phone for HubSpot Rate this app By Zoom Bring voice and messaging into your HubSpot workflows with Zoom Phone and simplify how your teams communicate, collaborate, and track engagement." [ref=e1358] [cursor=pointer]:
+              - /url: /apps/KuxZ_4QzSXWSwWiKiHFYYA
+              - generic [ref=e1360]:
+                - img [ref=e1363]
+                - generic [ref=e1366]:
+                  - heading "Zoom Phone for HubSpot" [level=6] [ref=e1367]:
+                    - generic [ref=e1368]:
+                      - generic [ref=e1369]: Zoom Phone for HubSpot
+                      - img [ref=e1373]
+                  - generic [ref=e1377]:
+                    - img [ref=e1378]:
+                      - img [ref=e1379]
+                    - generic [ref=e1381]: Rate this app
+                  - paragraph [ref=e1382]: By Zoom
+                  - paragraph [ref=e1383]: Bring voice and messaging into your HubSpot workflows with Zoom Phone and simplify how your teams communicate, collaborate, and track engagement.
+        - generic [ref=e1384]:
+          - generic [ref=e1386]:
+            - heading "Sales & Marketing" [level=2] [ref=e1387]
+            - button "Show All" [ref=e1388] [cursor=pointer]
+          - generic [ref=e1389]: Amplify sales and marketing efforts
+          - generic [ref=e1391]:
+            - link "Salesforce Sales Cloud 360 Rate this app By Salesforce Eliminate manual logging and boost productivity with automatic capture of Zoom meeting details into your Salesforce records" [ref=e1394] [cursor=pointer]:
+              - /url: /apps/zoAx1iWyRa-6a9POHIz_DQ
+              - generic [ref=e1396]:
+                - img [ref=e1399]
+                - generic [ref=e1402]:
+                  - heading "Salesforce Sales Cloud 360" [level=6] [ref=e1403]:
+                    - generic [ref=e1404]:
+                      - generic [ref=e1405]: Salesforce Sales Cloud 360
+                      - img [ref=e1409]
+                  - generic [ref=e1413]:
+                    - img [ref=e1414]:
+                      - img [ref=e1415]
+                    - generic [ref=e1417]: Rate this app
+                  - paragraph [ref=e1418]: By Salesforce
+                  - paragraph [ref=e1419]: Eliminate manual logging and boost productivity with automatic capture of Zoom meeting details into your Salesforce records
+            - link "Pardot Rate this app By Zoom Easily capture Zoom Webinar prospects directly into Pardot where standard marketing automation processes can be used to follow up." [ref=e1422] [cursor=pointer]:
+              - /url: /apps/FXW6cSzQSaW8LaGMDeVSKw
+              - generic [ref=e1424]:
+                - img [ref=e1427]
+                - generic [ref=e1430]:
+                  - heading "Pardot" [level=6] [ref=e1431]:
+                    - generic [ref=e1432]:
+                      - generic [ref=e1433]: Pardot
+                      - img [ref=e1437]
+                  - generic [ref=e1441]:
+                    - img [ref=e1442]:
+                      - img [ref=e1443]
+                    - generic [ref=e1445]: Rate this app
+                  - paragraph [ref=e1446]: By Zoom
+                  - paragraph [ref=e1447]: Easily capture Zoom Webinar prospects directly into Pardot where standard marketing automation processes can be used to follow up.
+            - link "HubSpot App for Zoom Meetings Rate this app By Hubspot.com HubSpot App for Zoom Meetings boosts productivity and help you stay focused by keeping your workflow going before, during, and after a meeting Meetings" [ref=e1450] [cursor=pointer]:
+              - /url: /apps/zOtDDW6CRL-2y3XaT_Qi1w
+              - generic [ref=e1452]:
+                - img [ref=e1455]
+                - generic [ref=e1457]:
+                  - generic [ref=e1458]:
+                    - heading "HubSpot App for Zoom Meetings" [level=6] [ref=e1459]:
+                      - generic [ref=e1461]: HubSpot App for Zoom Meetings
+                    - generic [ref=e1462]:
+                      - img [ref=e1463]:
+                        - img [ref=e1464]
+                      - generic [ref=e1466]: Rate this app
+                    - paragraph [ref=e1467]: By Hubspot.com
+                    - paragraph [ref=e1468]: HubSpot App for Zoom Meetings boosts productivity and help you stay focused by keeping your workflow going before, during, and after a meeting
+                  - generic "Meetings" [ref=e1470]:
+                    - img "Video On" [ref=e1471]:
+                      - img [ref=e1472]
+            - link "Zoom Webinars and Events for HubSpot Rate this app By Zoom Power your marketing and sales workflows with the Zoom Events for HubSpot Integration." [ref=e1476] [cursor=pointer]:
+              - /url: /apps/ha2sNgsJQ3CT6pSJuL0wNg
+              - generic [ref=e1478]:
+                - img [ref=e1481]
+                - generic [ref=e1484]:
+                  - heading "Zoom Webinars and Events for HubSpot" [level=6] [ref=e1485]:
+                    - generic [ref=e1486]:
+                      - generic [ref=e1487]: Zoom Webinars and Events for HubSpot
+                      - img [ref=e1491]
+                  - generic [ref=e1495]:
+                    - img [ref=e1496]:
+                      - img [ref=e1497]
+                    - generic [ref=e1499]: Rate this app
+                  - paragraph [ref=e1500]: By Zoom
+                  - paragraph [ref=e1501]: Power your marketing and sales workflows with the Zoom Events for HubSpot Integration.
+            - link "Zoom Phone for HubSpot Rate this app By Zoom Bring voice and messaging into your HubSpot workflows with Zoom Phone and simplify how your teams communicate, collaborate, and track engagement." [ref=e1504] [cursor=pointer]:
+              - /url: /apps/KuxZ_4QzSXWSwWiKiHFYYA
+              - generic [ref=e1506]:
+                - img [ref=e1509]
+                - generic [ref=e1512]:
+                  - heading "Zoom Phone for HubSpot" [level=6] [ref=e1513]:
+                    - generic [ref=e1514]:
+                      - generic [ref=e1515]: Zoom Phone for HubSpot
+                      - img [ref=e1519]
+                  - generic [ref=e1523]:
+                    - img [ref=e1524]:
+                      - img [ref=e1525]
+                    - generic [ref=e1527]: Rate this app
+                  - paragraph [ref=e1528]: By Zoom
+                  - paragraph [ref=e1529]: Bring voice and messaging into your HubSpot workflows with Zoom Phone and simplify how your teams communicate, collaborate, and track engagement.
+            - link "HubSpot app for Zoom Rate this app By HubSpot Build stronger relationships with your prospects and leads using Zoom and HubSpot." [ref=e1532] [cursor=pointer]:
+              - /url: /apps/o8JuTnfNQ3mS5URt2qjp1Q
+              - generic [ref=e1534]:
+                - img [ref=e1537]
+                - generic [ref=e1540]:
+                  - heading "HubSpot app for Zoom" [level=6] [ref=e1541]:
+                    - generic [ref=e1542]:
+                      - generic [ref=e1543]: HubSpot app for Zoom
+                      - img [ref=e1547]
+                  - generic [ref=e1551]:
+                    - img [ref=e1552]:
+                      - img [ref=e1553]
+                    - generic [ref=e1555]: Rate this app
+                  - paragraph [ref=e1556]: By HubSpot
+                  - paragraph [ref=e1557]: Build stronger relationships with your prospects and leads using Zoom and HubSpot.
+        - generic [ref=e1558]:
+          - generic [ref=e1560]:
+            - heading "Employee Engagement" [level=2] [ref=e1561]
+            - button "Show All" [ref=e1562] [cursor=pointer]
+          - generic [ref=e1563]: Make work more fun, engaging, and inclusive
+          - generic [ref=e1565]:
+            - 'link "StreamAlive - Polls, Word Clouds & Spinner Wheels 5.0 By StreamAlive FREE: Polls, word clouds, spinner wheels, Q&As, reports, and more, all powered by the Zoom chat Meetings Webinars Events" [ref=e1568] [cursor=pointer]':
+              - /url: /apps/DyWJwpPIS429BoBLdEsWKw
+              - generic [ref=e1570]:
+                - img [ref=e1573]
+                - generic [ref=e1575]:
+                  - generic [ref=e1576]:
+                    - heading "StreamAlive - Polls, Word Clouds & Spinner Wheels" [level=6] [ref=e1577]:
+                      - generic [ref=e1579]: StreamAlive - Polls, Word Clouds & Spinner Wheels
+                    - generic [ref=e1580]:
+                      - img [ref=e1581]:
+                        - img [ref=e1582]
+                      - generic [ref=e1584]: "5.0"
+                    - paragraph [ref=e1585]: By StreamAlive
+                    - paragraph [ref=e1586]: "FREE: Polls, word clouds, spinner wheels, Q&As, reports, and more, all powered by the Zoom chat"
+                  - generic [ref=e1587]:
+                    - generic "Meetings" [ref=e1588]:
+                      - img "Video On" [ref=e1589]:
+                        - img [ref=e1590]
+                    - generic "Webinars" [ref=e1592]:
+                      - img "Webinars" [ref=e1593]:
+                        - img [ref=e1594]
+                    - generic "Events" [ref=e1596]:
+                      - img "Events" [ref=e1597]:
+                        - img [ref=e1598]
+            - link "Kahoot! 3.8 By Kahoot! Energize meetings, training, and presentations through interactive and game-based elements Meetings Webinars" [ref=e1602] [cursor=pointer]:
+              - /url: /apps/A0sB0dqISbKae5vrcr0csQ
+              - generic [ref=e1604]:
+                - img [ref=e1607]
+                - generic [ref=e1609]:
+                  - generic [ref=e1610]:
+                    - heading "Kahoot!" [level=6] [ref=e1611]:
+                      - generic [ref=e1612]:
+                        - generic [ref=e1613]: Kahoot!
+                        - img [ref=e1615]
+                    - generic [ref=e1618]:
+                      - img [ref=e1619]:
+                        - img [ref=e1620]
+                      - generic [ref=e1622]: "3.8"
+                    - paragraph [ref=e1623]: By Kahoot!
+                    - paragraph [ref=e1624]: Energize meetings, training, and presentations through interactive and game-based elements
+                  - generic [ref=e1625]:
+                    - generic "Meetings" [ref=e1626]:
+                      - img "Video On" [ref=e1627]:
+                        - img [ref=e1628]
+                    - generic "Webinars" [ref=e1630]:
+                      - img "Webinars" [ref=e1631]:
+                        - img [ref=e1632]
+            - link "Mentimeter Rate this app By Mentimeter Create meaningful engagement with live Polls, Q&A & Wordclouds for students and meeting participants with interactive presentations directly in Zoom. Meetings" [ref=e1636] [cursor=pointer]:
+              - /url: /apps/D6gsxPEXS8eNr9d6gNFCIg
+              - generic [ref=e1638]:
+                - img [ref=e1641]
+                - generic [ref=e1643]:
+                  - generic [ref=e1644]:
+                    - heading "Mentimeter" [level=6] [ref=e1645]:
+                      - generic [ref=e1647]: Mentimeter
+                    - generic [ref=e1648]:
+                      - img [ref=e1649]:
+                        - img [ref=e1650]
+                      - generic [ref=e1652]: Rate this app
+                    - paragraph [ref=e1653]: By Mentimeter
+                    - paragraph [ref=e1654]: Create meaningful engagement with live Polls, Q&A & Wordclouds for students and meeting participants with interactive presentations directly in Zoom.
+                  - generic "Meetings" [ref=e1656]:
+                    - img "Video On" [ref=e1657]:
+                      - img [ref=e1658]
+            - link "Donut Rate this app By Donut Donut’s native Zoom app sets up your Donut meetings and promotes better, more engaging, meetings—from anywhere. Meetings" [ref=e1662] [cursor=pointer]:
+              - /url: /apps/FuysGnszTeCF6mZugM4pjg
+              - generic [ref=e1664]:
+                - img [ref=e1667]
+                - generic [ref=e1669]:
+                  - generic [ref=e1670]:
+                    - heading "Donut" [level=6] [ref=e1671]:
+                      - generic [ref=e1673]: Donut
+                    - generic [ref=e1674]:
+                      - img [ref=e1675]:
+                        - img [ref=e1676]
+                      - generic [ref=e1678]: Rate this app
+                    - paragraph [ref=e1679]: By Donut
+                    - paragraph [ref=e1680]: Donut’s native Zoom app sets up your Donut meetings and promotes better, more engaging, meetings—from anywhere.
+                  - generic "Meetings" [ref=e1682]:
+                    - img "Video On" [ref=e1683]:
+                      - img [ref=e1684]
+            - link "Slido - Polling and Q&A Rate this app By Slido Engage everyone with polls, surveys, quizzes and Q&A. Meetings Webinars Events" [ref=e1688] [cursor=pointer]:
+              - /url: /apps/fziJj2hFQhGSlFyg6Jn7sQ
+              - generic [ref=e1690]:
+                - img [ref=e1693]
+                - generic [ref=e1695]:
+                  - generic [ref=e1696]:
+                    - heading "Slido - Polling and Q&A" [level=6] [ref=e1697]:
+                      - generic [ref=e1699]: Slido - Polling and Q&A
+                    - generic [ref=e1700]:
+                      - img [ref=e1701]:
+                        - img [ref=e1702]
+                      - generic [ref=e1704]: Rate this app
+                    - paragraph [ref=e1705]: By Slido
+                    - paragraph [ref=e1706]: Engage everyone with polls, surveys, quizzes and Q&A.
+                  - generic [ref=e1707]:
+                    - generic "Meetings" [ref=e1708]:
+                      - img "Video On" [ref=e1709]:
+                        - img [ref=e1710]
+                    - generic "Webinars" [ref=e1712]:
+                      - img "Webinars" [ref=e1713]:
+                        - img [ref=e1714]
+                    - generic "Events" [ref=e1716]:
+                      - img "Events" [ref=e1717]:
+                        - img [ref=e1718]
+            - link "Korbyt Anywhere Rate this app By Korbyt Enable Digital Signage for your Zoom Rooms Meetings" [ref=e1722] [cursor=pointer]:
+              - /url: /apps/MHwUDQEJQe2LDa614-Dl_g
+              - generic [ref=e1724]:
+                - img [ref=e1727]
+                - generic [ref=e1729]:
+                  - generic [ref=e1730]:
+                    - heading "Korbyt Anywhere" [level=6] [ref=e1731]:
+                      - generic [ref=e1733]: Korbyt Anywhere
+                    - generic [ref=e1734]:
+                      - img [ref=e1735]:
+                        - img [ref=e1736]
+                      - generic [ref=e1738]: Rate this app
+                    - paragraph [ref=e1739]: By Korbyt
+                    - paragraph [ref=e1740]: Enable Digital Signage for your Zoom Rooms
+                  - generic "Meetings" [ref=e1742]:
+                    - img "Video On" [ref=e1743]:
+                      - img [ref=e1744]
+        - generic [ref=e1746]:
+          - heading "Apps for Zoom Rooms" [level=2] [ref=e1749]
+          - generic [ref=e1750]: Zoom Apps for Digital Signage and Zoom Rooms devices
+          - generic [ref=e1752]:
+            - link "Enplug for Zoom Rooms Rate this app By Spectrio Zoom Rooms application for Enplug dashboard Rooms" [ref=e1755] [cursor=pointer]:
+              - /url: /apps/0ZfDDBrCTIGmKXGzn1H-vA
+              - generic [ref=e1757]:
+                - img [ref=e1760]
+                - generic [ref=e1762]:
+                  - generic [ref=e1763]:
+                    - heading "Enplug for Zoom Rooms" [level=6] [ref=e1764]:
+                      - generic [ref=e1766]: Enplug for Zoom Rooms
+                    - generic [ref=e1767]:
+                      - img [ref=e1768]:
+                        - img [ref=e1769]
+                      - generic [ref=e1771]: Rate this app
+                    - paragraph [ref=e1772]: By Spectrio
+                    - paragraph [ref=e1773]: Zoom Rooms application for Enplug dashboard
+                  - generic "Rooms" [ref=e1775]:
+                    - img "Rooms" [ref=e1776]:
+                      - img [ref=e1777]
+            - link "Korbyt Anywhere Rate this app By Korbyt Enable Digital Signage for your Zoom Rooms Meetings" [ref=e1781] [cursor=pointer]:
+              - /url: /apps/MHwUDQEJQe2LDa614-Dl_g
+              - generic [ref=e1783]:
+                - img [ref=e1786]
+                - generic [ref=e1788]:
+                  - generic [ref=e1789]:
+                    - heading "Korbyt Anywhere" [level=6] [ref=e1790]:
+                      - generic [ref=e1792]: Korbyt Anywhere
+                    - generic [ref=e1793]:
+                      - img [ref=e1794]:
+                        - img [ref=e1795]
+                      - generic [ref=e1797]: Rate this app
+                    - paragraph [ref=e1798]: By Korbyt
+                    - paragraph [ref=e1799]: Enable Digital Signage for your Zoom Rooms
+                  - generic "Meetings" [ref=e1801]:
+                    - img "Video On" [ref=e1802]:
+                      - img [ref=e1803]
+            - link "Extron Control Rate this app By Extron Control App for Any Zoom Rooms Controller" [ref=e1807] [cursor=pointer]:
+              - /url: /apps/Kl_jdMjOThC_zGxCayShJA
+              - generic [ref=e1809]:
+                - img [ref=e1812]
+                - generic [ref=e1815]:
+                  - heading "Extron Control" [level=6] [ref=e1816]:
+                    - generic [ref=e1818]: Extron Control
+                  - generic [ref=e1819]:
+                    - img [ref=e1820]:
+                      - img [ref=e1821]
+                    - generic [ref=e1823]: Rate this app
+                  - paragraph [ref=e1824]: By Extron
+                  - paragraph [ref=e1825]: Control App for Any Zoom Rooms Controller
+            - link "Crestron Control for Zoom Rooms Rate this app By Crestron Electronics, Inc Crestron Control natively unifies your Zoom Room, with any space and any peripherals. Meetings" [ref=e1828] [cursor=pointer]:
+              - /url: /apps/aO93dK-FRW-fiBbwX6YYGw
+              - generic [ref=e1830]:
+                - img [ref=e1833]
+                - generic [ref=e1835]:
+                  - generic [ref=e1836]:
+                    - heading "Crestron Control for Zoom Rooms" [level=6] [ref=e1837]:
+                      - generic [ref=e1839]: Crestron Control for Zoom Rooms
+                    - generic [ref=e1840]:
+                      - img [ref=e1841]:
+                        - img [ref=e1842]
+                      - generic [ref=e1844]: Rate this app
+                    - paragraph [ref=e1845]: By Crestron Electronics, Inc
+                    - paragraph [ref=e1846]: Crestron Control natively unifies your Zoom Room, with any space and any peripherals.
+                  - generic "Meetings" [ref=e1848]:
+                    - img "Video On" [ref=e1849]:
+                      - img [ref=e1850]
+            - link "Q-SYS Control Rate this app By Q-SYS (QSC) The Q-SYS Control for Zoom Rooms app enhances the deployed Zoom Rooms Controller with the ability to display Q-SYS Room Controls. Rooms" [ref=e1854] [cursor=pointer]:
+              - /url: /apps/XwC6dSoER4K7bax8XWGEWQ
+              - generic [ref=e1856]:
+                - img [ref=e1859]
+                - generic [ref=e1861]:
+                  - generic [ref=e1862]:
+                    - heading "Q-SYS Control" [level=6] [ref=e1863]:
+                      - generic [ref=e1865]: Q-SYS Control
+                    - generic [ref=e1866]:
+                      - img [ref=e1867]:
+                        - img [ref=e1868]
+                      - generic [ref=e1870]: Rate this app
+                    - paragraph [ref=e1871]: By Q-SYS (QSC)
+                    - paragraph [ref=e1872]: The Q-SYS Control for Zoom Rooms app enhances the deployed Zoom Rooms Controller with the ability to display Q-SYS Room Controls.
+                  - generic "Rooms" [ref=e1874]:
+                    - img "Rooms" [ref=e1875]:
+                      - img [ref=e1876]
+            - link "Digital Signage Content Rate this app By Seenspire Engage Your Audience with Always Fresh, Automated Content Rooms" [ref=e1880] [cursor=pointer]:
+              - /url: /apps/6qfgRELKQEe9LmEXyWc2AA
+              - generic [ref=e1882]:
+                - img [ref=e1885]
+                - generic [ref=e1887]:
+                  - generic [ref=e1888]:
+                    - heading "Digital Signage Content" [level=6] [ref=e1889]:
+                      - generic [ref=e1891]: Digital Signage Content
+                    - generic [ref=e1892]:
+                      - img [ref=e1893]:
+                        - img [ref=e1894]
+                      - generic [ref=e1896]: Rate this app
+                    - paragraph [ref=e1897]: By Seenspire
+                    - paragraph [ref=e1898]: Engage Your Audience with Always Fresh, Automated Content
+                  - generic "Rooms" [ref=e1900]:
+                    - img "Rooms" [ref=e1901]:
+                      - img [ref=e1902]
+        - generic [ref=e1904]:
+          - generic [ref=e1906]:
+            - heading "Apps for Zoom Events" [level=2] [ref=e1907]
+            - button "Show All" [ref=e1908] [cursor=pointer]
+          - generic [ref=e1909]: Drive more ROI for your virtual and hybrid events
+          - generic [ref=e1911]:
+            - link "Tiles for Zoom Rate this app By Zoom Create customized Zoom audience galleries with highly configurable branding and interactive components, optimized hybrid events and live streams." [ref=e1914] [cursor=pointer]:
+              - /url: /apps/MPW5uVNgRuepjba7OOURpA
+              - generic [ref=e1916]:
+                - img [ref=e1919]
+                - generic [ref=e1922]:
+                  - heading "Tiles for Zoom" [level=6] [ref=e1923]:
+                    - generic [ref=e1924]:
+                      - generic [ref=e1925]: Tiles for Zoom
+                      - img [ref=e1929]
+                  - generic [ref=e1933]:
+                    - img [ref=e1934]:
+                      - img [ref=e1935]
+                    - generic [ref=e1937]: Rate this app
+                  - paragraph [ref=e1938]: By Zoom
+                  - paragraph [ref=e1939]: Create customized Zoom audience galleries with highly configurable branding and interactive components, optimized hybrid events and live streams.
+            - 'link "StreamAlive - Polls, Word Clouds & Spinner Wheels 5.0 By StreamAlive FREE: Polls, word clouds, spinner wheels, Q&As, reports, and more, all powered by the Zoom chat Meetings Webinars Events" [ref=e1942] [cursor=pointer]':
+              - /url: /apps/DyWJwpPIS429BoBLdEsWKw
+              - generic [ref=e1944]:
+                - img [ref=e1947]
+                - generic [ref=e1949]:
+                  - generic [ref=e1950]:
+                    - heading "StreamAlive - Polls, Word Clouds & Spinner Wheels" [level=6] [ref=e1951]:
+                      - generic [ref=e1953]: StreamAlive - Polls, Word Clouds & Spinner Wheels
+                    - generic [ref=e1954]:
+                      - img [ref=e1955]:
+                        - img [ref=e1956]
+                      - generic [ref=e1958]: "5.0"
+                    - paragraph [ref=e1959]: By StreamAlive
+                    - paragraph [ref=e1960]: "FREE: Polls, word clouds, spinner wheels, Q&As, reports, and more, all powered by the Zoom chat"
+                  - generic [ref=e1961]:
+                    - generic "Meetings" [ref=e1962]:
+                      - img "Video On" [ref=e1963]:
+                        - img [ref=e1964]
+                    - generic "Webinars" [ref=e1966]:
+                      - img "Webinars" [ref=e1967]:
+                        - img [ref=e1968]
+                    - generic "Events" [ref=e1970]:
+                      - img "Events" [ref=e1971]:
+                        - img [ref=e1972]
+            - link "Remote Settings Control Rate this app By Zoom Remotely control and monitor the AV settings of participants over Zoom. Meetings Webinars" [ref=e1976] [cursor=pointer]:
+              - /url: /apps/gRH2tRF_TRmOTx3nydn3nQ
+              - generic [ref=e1978]:
+                - img [ref=e1981]
+                - generic [ref=e1983]:
+                  - generic [ref=e1984]:
+                    - heading "Remote Settings Control" [level=6] [ref=e1985]:
+                      - generic [ref=e1987]: Remote Settings Control
+                    - generic [ref=e1988]:
+                      - img [ref=e1989]:
+                        - img [ref=e1990]
+                      - generic [ref=e1992]: Rate this app
+                    - paragraph [ref=e1993]: By Zoom
+                    - paragraph [ref=e1994]: Remotely control and monitor the AV settings of participants over Zoom.
+                  - generic [ref=e1995]:
+                    - generic "Meetings" [ref=e1996]:
+                      - img "Video On" [ref=e1997]:
+                        - img [ref=e1998]
+                    - generic "Webinars" [ref=e2000]:
+                      - img "Webinars" [ref=e2001]:
+                        - img [ref=e2002]
+            - link "Relay.app Rate this app By Relay.app Inc. Relay.app is a modern, crafted automation tool with deeper integrations, better features, and more flexibility." [ref=e2006] [cursor=pointer]:
+              - /url: /apps/06S5jrB-R-KSKexJE-Cigw
+              - generic [ref=e2008]:
+                - img [ref=e2011]
+                - generic [ref=e2014]:
+                  - heading "Relay.app" [level=6] [ref=e2015]:
+                    - generic [ref=e2016]:
+                      - generic [ref=e2017]: Relay.app
+                      - img [ref=e2021]
+                  - generic [ref=e2025]:
+                    - img [ref=e2026]:
+                      - img [ref=e2027]
+                    - generic [ref=e2029]: Rate this app
+                  - paragraph [ref=e2030]: By Relay.app Inc.
+                  - paragraph [ref=e2031]: Relay.app is a modern, crafted automation tool with deeper integrations, better features, and more flexibility.
+            - link "Pardot Rate this app By Zoom Easily capture Zoom Webinar prospects directly into Pardot where standard marketing automation processes can be used to follow up." [ref=e2034] [cursor=pointer]:
+              - /url: /apps/FXW6cSzQSaW8LaGMDeVSKw
+              - generic [ref=e2036]:
+                - img [ref=e2039]
+                - generic [ref=e2042]:
+                  - heading "Pardot" [level=6] [ref=e2043]:
+                    - generic [ref=e2044]:
+                      - generic [ref=e2045]: Pardot
+                      - img [ref=e2049]
+                  - generic [ref=e2053]:
+                    - img [ref=e2054]:
+                      - img [ref=e2055]
+                    - generic [ref=e2057]: Rate this app
+                  - paragraph [ref=e2058]: By Zoom
+                  - paragraph [ref=e2059]: Easily capture Zoom Webinar prospects directly into Pardot where standard marketing automation processes can be used to follow up.
+            - link "SPX Graphics - Overlays Nametag Logo GIF Agenda QR 3.7 By Softpix Upgrade your branding, engagement, and meeting productivity with animated graphics Meetings Webinars Events" [ref=e2062] [cursor=pointer]:
+              - /url: /apps/lZ9-Aq4_QbKWPy638baO3Q
+              - generic [ref=e2064]:
+                - img [ref=e2067]
+                - generic [ref=e2069]:
+                  - generic [ref=e2070]:
+                    - heading "SPX Graphics - Overlays Nametag Logo GIF Agenda QR" [level=6] [ref=e2071]:
+                      - generic [ref=e2073]: SPX Graphics - Overlays Nametag Logo GIF Agenda QR
+                    - generic [ref=e2074]:
+                      - img [ref=e2075]:
+                        - img [ref=e2076]
+                      - generic [ref=e2078]: "3.7"
+                    - paragraph [ref=e2079]: By Softpix
+                    - paragraph [ref=e2080]: Upgrade your branding, engagement, and meeting productivity with animated graphics
+                  - generic [ref=e2081]:
+                    - generic "Meetings" [ref=e2082]:
+                      - img "Video On" [ref=e2083]:
+                        - img [ref=e2084]
+                    - generic "Webinars" [ref=e2086]:
+                      - img "Webinars" [ref=e2087]:
+                        - img [ref=e2088]
+                    - generic "Events" [ref=e2090]:
+                      - img "Events" [ref=e2091]:
+                        - img [ref=e2092]
+      - generic [ref=e2096]:
+        - img [ref=e2098]
+        - generic [ref=e2100]:
+          - generic [ref=e2101]:
+            - generic [ref=e2102]:
+              - link "About" [ref=e2104] [cursor=pointer]:
+                - /url: https://zoom.us/about
+              - generic [ref=e2105]:
+                - link "Blog" [ref=e2106] [cursor=pointer]:
+                  - /url: https://www.zoom.com/blog/
+                - link "Customers" [ref=e2107] [cursor=pointer]:
+                  - /url: https://zoom.us/customer/all
+                - link "Our Team" [ref=e2108] [cursor=pointer]:
+                  - /url: https://zoom.us/team
+                - link "Why Zoom" [ref=e2109] [cursor=pointer]:
+                  - /url: https://zoom.us/zoomisbetter
+                - link "Features" [ref=e2110] [cursor=pointer]:
+                  - /url: https://zoom.us/feature
+                - link "Careers" [ref=e2111] [cursor=pointer]:
+                  - /url: https://zoom.us/careers
+                - link "Integrations" [ref=e2112] [cursor=pointer]:
+                  - /url: https://zoom.us/integrations
+                - link "Partners" [ref=e2113] [cursor=pointer]:
+                  - /url: https://zoom.us/partners
+                - link "Resources" [ref=e2114] [cursor=pointer]:
+                  - /url: https://zoom.us/resources
+                - link "Press" [ref=e2115] [cursor=pointer]:
+                  - /url: https://news.zoom.us/
+            - generic [ref=e2116]:
+              - link "Download" [ref=e2118] [cursor=pointer]:
+                - /url: https://zoom.us/download
+              - generic [ref=e2119]:
+                - link "Meetings Client" [ref=e2120] [cursor=pointer]:
+                  - /url: https://zoom.us/download#client_4meeting
+                - link "Zoom Rooms Client" [ref=e2121] [cursor=pointer]:
+                  - /url: https://zoom.us/download#room_client
+                - link "Browser Extension" [ref=e2122] [cursor=pointer]:
+                  - /url: https://zoom.us/download#chrome_ext
+                - link "Outlook Plug-in" [ref=e2123] [cursor=pointer]:
+                  - /url: https://zoom.us/download#outlook_plugin
+                - link "Lync Plug-in" [ref=e2124] [cursor=pointer]:
+                  - /url: https://zoom.us/download#lync_plugin
+                - link "iPhone/iPad App" [ref=e2125] [cursor=pointer]:
+                  - /url: https://zoom.us/download#client_iphone
+                - link "Android App" [ref=e2126] [cursor=pointer]:
+                  - /url: https://zoom.us/download#mobile_app
+            - generic [ref=e2127]:
+              - link "Sales" [ref=e2129] [cursor=pointer]:
+                - /url: https://zoom.us/contactsales
+              - generic [ref=e2130]:
+                - link "1 888 799 9666" [ref=e2131] [cursor=pointer]:
+                  - /url: tel:18887999666
+                - link "Contact Sales" [ref=e2132] [cursor=pointer]:
+                  - /url: https://zoom.us/contactsales
+                - link "Plans & Pricing" [ref=e2133] [cursor=pointer]:
+                  - /url: https://zoom.us/pricing
+                - link "Request a Demo" [ref=e2134] [cursor=pointer]:
+                  - /url: https://zoom.us/livedemo
+                - link "Webinars and Events" [ref=e2135] [cursor=pointer]:
+                  - /url: https://zoom.us/events
+            - generic [ref=e2136]:
+              - link "Support" [ref=e2138] [cursor=pointer]:
+                - /url: http://support.zoom.us/
+              - generic [ref=e2139]:
+                - link "Test Zoom" [ref=e2140] [cursor=pointer]:
+                  - /url: https://zoom.us/test
+                - link "Account" [ref=e2141] [cursor=pointer]:
+                  - /url: https://zoom.us/account
+                - link "Support Center" [ref=e2142] [cursor=pointer]:
+                  - /url: http://support.zoom.us/
+                - link "Live Training" [ref=e2143] [cursor=pointer]:
+                  - /url: https://zoom.us/livetraining
+                - link "Feedback" [ref=e2144] [cursor=pointer]:
+                  - /url: https://zoom.us/feed
+                - link "Contact Us" [ref=e2145] [cursor=pointer]:
+                  - /url: https://zoom.us/contact
+                - link "Accessibility" [ref=e2146] [cursor=pointer]:
+                  - /url: https://zoom.us/accessibility
+            - generic [ref=e2147]:
+              - generic [ref=e2148]: Language
+              - generic [ref=e2150]:
+                - combobox "Change language" [ref=e2151] [cursor=pointer]: English
+                - textbox: en-US
+                - generic:
+                  - img
+                - group
+          - generic [ref=e2152]:
+            - link "Follow Zoom on Linkedin" [ref=e2153] [cursor=pointer]:
+              - /url: http://www.linkedin.com/company/2532259
+              - img "Linked In" [ref=e2155]:
+                - img [ref=e2156]
+            - link "Follow Zoom on Twitter" [ref=e2158] [cursor=pointer]:
+              - /url: https://twitter.com/zoom
+              - img "X" [ref=e2160]:
+                - img [ref=e2161]
+            - link "Follow Zoom on Youtube" [ref=e2163] [cursor=pointer]:
+              - /url: http://www.youtube.com/zoommeetings
+              - img "You Tube" [ref=e2165]:
+                - img [ref=e2166]
+            - link "Follow Zoom on Facebook" [ref=e2168] [cursor=pointer]:
+              - /url: https://www.facebook.com/zoomvideocommunications
+              - img "Facebook" [ref=e2170]:
+                - img [ref=e2171]
+            - link "Zoom on Blog" [ref=e2173] [cursor=pointer]:
+              - /url: http://blog.zoom.us/
+              - img [ref=e2176]
+          - generic [ref=e2179]:
+            - text: Copyright ©2026 Zoom Video Communications, Inc. All rights reserved.
+            - link "Privacy Policy" [ref=e2180] [cursor=pointer]:
+              - /url: https://zoom.us/privacy
+            - text: ·
+            - link "Terms" [ref=e2181] [cursor=pointer]:
+              - /url: https://explore.zoom.us/terms
+            - button "Do Not Sell My Personal Information" [ref=e2182] [cursor=pointer]
+            - text: "|"
+            - button "Cookies Settings" [ref=e2183] [cursor=pointer]

@@ -1,0 +1,2 @@
+[     245ms] ReferenceError: Chart is not defined
+    at http://localhost:8765/dashboard_preview.html:715:1

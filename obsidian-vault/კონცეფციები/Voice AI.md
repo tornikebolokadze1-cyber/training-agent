@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [ხმოვანი AI]
-category: technique
+category: concept
 ---
 
 # Voice AI
@@ -23,6 +23,6 @@ category: technique
 
 ## დაკავშირებული
 
-- [[Enagram AI]]
 - [[ElevenLabs]]
 - [[OpenAI Voice Mode]]
+- [[Enagram AI]]

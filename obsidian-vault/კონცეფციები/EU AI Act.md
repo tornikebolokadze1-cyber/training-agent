@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [ევროკავშირის AI აქტი]
-category: regulation
+category: policy
 ---
 
 # EU AI Act
@@ -25,6 +25,6 @@ category: regulation
 
 ## დაკავშირებული
 
-- [[AI Governance]]
 - [[Compliance]]
 - [[Georgian Business Scale]]
+- [[AI Governance]]

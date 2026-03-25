@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: []
-category: platform
+aliases: [ნ8ნ]
+category: tool
 ---
 
 # n8n
@@ -16,6 +16,7 @@ category: platform
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 2]] (ჯგუფი 2)
 
@@ -23,14 +24,14 @@ category: platform
 
 ## დაკავშირებული
 
+- [[Workflow Automation]]
+- [[No-code/Low-code]]
+- [[Claude Code]]
 - [[AI Agent]]
 - [[Node (n8n)]]
-- [[Claude Code]]
 - [[Claude Desktop Application]]
 - [[MCP (Model Context Protocol)]]
 - [[Workflow Orchestration]]
-- [[No-code/Low-code]]
-- [[Workflow Automation]]
 
 ---
 

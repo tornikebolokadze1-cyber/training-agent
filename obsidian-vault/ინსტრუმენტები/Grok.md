@@ -22,14 +22,14 @@ xAI/Elon Musk-ის AI მოდელი, საუკეთესოა რ�
 
 ## დაკავშირებული
 
-- [[xAI]]
-- [[Elon Musk]]
-- [[Personalization]]
-- [[Deep Research]]
-- [[Large Language Models]]
 - [[X (Twitter)]]
 - [[Reddit]]
 - [[Claude]]
 - [[ChatGPT]]
 - [[Gemini]]
 - [[Perplexity]]
+- [[xAI]]
+- [[Elon Musk]]
+- [[Personalization]]
+- [[Deep Research]]
+- [[Large Language Models]]

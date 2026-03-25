@@ -1,0 +1,105 @@
+ERROR HANDLING AUDIT — QUICK REFERENCE
+========================================
+Date: 2026-03-18
+Location: /Users/tornikebolokadze/Desktop/Training Agent/ERROR_HANDLING_AUDIT.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+P0 — CRITICAL (Fix Before Next Lecture)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. GEMINI POLLING TIMEOUT ❌
+   File: tools/integrations/gemini_analyzer.py, lines 540–580
+   Issue: Infinite loop if Gemini hangs — no timeout enforced
+   Fix: Add elapsed timer, use FILE_POLL_TIMEOUT constant
+   Effort: 10 min
+
+2. DRIVE API NO TIMEOUT ❌
+   File: tools/integrations/gdrive_manager.py, lines 232–256
+   Issue: Resumable upload() can hang indefinitely
+   Fix: Wrap in asyncio.wait_for() or add timeout decorator
+   Effort: 15 min
+
+3. SILENT FAILURES ❌
+   File: tools/services/analytics.py, line 186
+   Issue: except Exception: pass — swallows errors silently
+   Fix: Add logger.error(..., exc_info=True)
+   Effort: 5 min
+
+   Also: tools/core/config.py, line 50 — returns {} on decode failure
+
+4. MISSING FINALLY CLEANUP ❌
+   File: tools/app/scheduler.py, lines 228–246 (_concatenate_segments)
+   Issue: concat_list temp file not deleted if ffmpeg fails
+   Fix: Wrap write_text() and subprocess.run() in try/finally
+   Effort: 5 min
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+P1 — MEDIUM PRIORITY (Improve)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. MISSING STACK TRACES 🟡
+   Files: tools/core/retry.py, tools/app/server.py
+   Fix: Add exc_info=True to logger.error() calls
+   Effort: 5 min
+
+6. PINECONE FAILURE NOT ALERTED 🟡
+   File: tools/integrations/knowledge_indexer.py, line 344
+   Fix: Add alert_operator() call on index failure
+   Effort: 5 min
+
+7. CONFIG LOAD ERRORS SILENT 🟡
+   File: tools/core/config.py, line 50
+   Issue: Returns {} instead of raising on credential decode fail
+   Fix: Return None, check at call sites
+   Effort: 10 min
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ THINGS DONE RIGHT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• Retry logic: Exponential backoff (2, 4, 8 sec) ✅
+  File: tools/core/retry.py
+
+• Operator alerts: Falls back to CRITICAL logs ✅
+  File: tools/integrations/whatsapp_sender.py, line 237–258
+
+• Stale task eviction: 4-hour timeout ✅
+  File: tools/app/server.py, line 62–90
+
+• API error classification: 429 vs 400s ✅
+  File: tools/integrations/whatsapp_sender.py
+  File: tools/integrations/zoom_manager.py
+
+• Background task cleanup: finally blocks ✅
+  File: tools/app/server.py, line 331–337
+  File: tools/app/scheduler.py, line 288–341
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SUMMARY TABLE (12 Issues Total)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Severity  Count  Issue                          Status
+────────  ─────  ──────────────────────────────  ──────────────
+🔴 P0      4     Timeouts + Silent Failures     FIX REQUIRED
+🟡 P1      3     Alerting + Error Context       IMPROVE
+🟢 P2      2     Jitter + Async Sleep           NICE-TO-HAVE
+✅ Info    5     Things Done Right              KEEP
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ESTIMATED EFFORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+P0: ~35 minutes (recommended before March 19 lecture)
+P1: ~20 minutes
+P2: ~10 minutes
+
+Total: ~65 minutes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+For full details, see: ERROR_HANDLING_AUDIT.md

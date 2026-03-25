@@ -6,7 +6,7 @@ category: concept
 
 # IDE (Integrated Development Environment)
 
-> ქართულად: **IDE (ინტეგრირებული განვითარების გარემო)**
+> ქართულად: **ინტეგრირებული განვითარების გარემო**
 
 ## აღწერა
 
@@ -23,7 +23,7 @@ category: concept
 
 ## დაკავშირებული
 
-- [[VS Code]]
 - [[VS Code (Visual Studio Code)]]
 - [[Google Project IDX]]
 - [[Google Antigravity]]
+- [[VS Code]]

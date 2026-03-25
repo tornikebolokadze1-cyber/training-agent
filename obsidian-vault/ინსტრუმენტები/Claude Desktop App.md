@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [Claude Desktop აპლიკაცია]
-category: platform
+category: tool
 ---
 
 # Claude Desktop App
@@ -23,16 +23,16 @@ Anthropic Claude-ის დესკტოპ აპლიკაცია, რ�
 
 ## დაკავშირებული
 
-- [[Chat Mode (Claude Desktop)]]
-- [[Cowork Mode (Claude Desktop)]]
-- [[Code Mode (Claude Desktop)]]
-- [[VS Code]]
 - [[Claude Chat]]
 - [[Claude Cowork]]
 - [[Claude Code]]
 - [[Scheduling (Tasks)]]
 - [[Claude Web Interface]]
 - [[Installation Guides]]
+- [[Chat Mode (Claude Desktop)]]
+- [[Cowork Mode (Claude Desktop)]]
+- [[Code Mode (Claude Desktop)]]
+- [[VS Code]]
 
 ---
 

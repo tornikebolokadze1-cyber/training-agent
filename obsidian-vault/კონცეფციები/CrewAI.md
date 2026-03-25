@@ -1,10 +1,12 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: []
+aliases: [ქრუეი]
 category: framework
 ---
 
 # CrewAI
+
+> ქართულად: **ქრუეი**
 
 ## აღწერა
 
@@ -16,12 +18,14 @@ category: framework
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- [[AI Agent Orchestration]]
+- [[AI Agents (structured)]]
 - [[Multi-agent Orchestration]]
 - [[Agentic AI Frameworks]]
+- [[AI Agent Orchestration]]

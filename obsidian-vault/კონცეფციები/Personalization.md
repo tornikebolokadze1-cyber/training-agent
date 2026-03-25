@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [პერსონალიზაცია]
-category: technique
+category: concept
 ---
 
 # Personalization

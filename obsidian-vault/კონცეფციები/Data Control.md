@@ -23,5 +23,5 @@ category: concept
 
 ## დაკავშირებული
 
-- [[Privacy]]
 - [[Settings Management]]
+- [[Privacy]]

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,10 @@ from tools.core.config import (
     TOTAL_LECTURES,
     get_lecture_folder_name,
     get_lecture_number,
+)
+from tools.core.pipeline_state import (
+    is_pipeline_active,
+    is_pipeline_done,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -82,7 +87,9 @@ def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
         "meeting_id": meeting_id,
         "fire_time": fire_time_iso,
     })
-    _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(jobs, indent=2))
+    tmp_path.rename(_PENDING_JOBS_FILE)
     logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
                 group_number, lecture_number, fire_time_iso)
 
@@ -381,6 +388,18 @@ def _run_post_meeting_pipeline(
     )
     from tools.services.transcribe_lecture import transcribe_and_index
 
+    # Disk space check — abort if less than 2GB free
+    disk_usage = shutil.disk_usage(str(TMP_DIR))
+    free_gb = disk_usage.free / (1024 ** 3)
+    if free_gb < 2.0:
+        logger.error("[post] Insufficient disk space: %.1f GB free (need 2+ GB). Aborting.", free_gb)
+        try:
+            alert_operator(f"⚠️ Disk space critically low: {free_gb:.1f} GB. Pipeline for G{group_number} L{lecture_number} aborted.")
+        except Exception:
+            pass
+        return
+    logger.info("[post] Disk space check: %.1f GB free — OK", free_gb)
+
     group = GROUPS[group_number]
     lecture_folder_name = get_lecture_folder_name(lecture_number)
     temp_files: list[Path] = []
@@ -488,17 +507,14 @@ def _run_post_meeting_pipeline(
             f"Error: {exc}"
         )
     finally:
-        # CRITICAL: Always remove the dedup key so other paths (recording.completed,
-        # manual-trigger, scheduler fallback) are not permanently blocked.
+        # Clean up in-memory cache (best-effort)
         try:
             from tools.app.server import _processing_tasks, _task_key
             key = _task_key(group_number, lecture_number)
             _processing_tasks.pop(key, None)
             logger.info("[post] Dedup key %s removed from _processing_tasks", key)
         except ImportError:
-            pass  # standalone scheduler mode — no server module
-
-        # Remove from persistent pending jobs store
+            pass
         _remove_pending_job(group_number, lecture_number)
 
         # Clean up all temp files (segments + merged)
@@ -671,6 +687,10 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
                     key,
                 )
                 return
+            # Also check persistent pipeline state
+            if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
+                logger.info("[post] Pipeline already active/complete for G%d L%d — skipping", group_number, lecture_number)
+                return
             # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
             # Atomic check-and-set under lock prevents webhook+scheduler race.
             _processing_tasks[key] = datetime.now()
@@ -796,7 +816,7 @@ def start_scheduler() -> AsyncIOScheduler:
 
     executors = {
         "default": AsyncIOExecutor(),
-        "threadpool": ThreadPoolExecutor(max_workers=4),
+        "threadpool": ThreadPoolExecutor(max_workers=6),
     }
     job_defaults = {
         "coalesce": True,        # merge multiple misfired instances into one

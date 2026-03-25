@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -45,6 +46,17 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
 RETRY_EMPTY_RESPONSE_DELAY = 45  # seconds — Gemini may still be processing
 MIN_MEANINGFUL_RESPONSE_CHARS = 100  # minimum chars for a valid response
+
+# Enhanced retry for empty responses (Gemini returns 200 OK with 0 output tokens)
+MAX_RETRIES_EMPTY = 5  # More retries for empty responses specifically
+RETRY_EMPTY_RESPONSE_DELAY_LONG = 120  # 2 minutes for truly empty (0 token) responses
+MAX_COST_PER_LECTURE = float(os.environ.get("MAX_COST_PER_LECTURE", "15.0"))
+
+# Fallback model when primary transcription model fails repeatedly
+GEMINI_FALLBACK_TRANSCRIPTION_MODEL = os.environ.get(
+    "GEMINI_FALLBACK_TRANSCRIPTION_MODEL", "gemini-2.5-pro"
+)
+
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
 GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
@@ -386,6 +398,23 @@ def _generate_with_retry(
             # Log cost for every generate_content call (even failed ones)
             _log_gemini_cost(model, response, purpose)
 
+            # Detect 0 output tokens (Gemini charged for input but produced nothing)
+            usage = getattr(response, "usage_metadata", None)
+            output_tokens = getattr(usage, "candidates_token_count", 0) or 0 if usage else 0
+            if output_tokens == 0:
+                logger.warning(
+                    "Gemini returned 0 output tokens for %s (attempt %d/%d) — "
+                    "charged for input but produced nothing",
+                    purpose, attempt, MAX_RETRIES,
+                )
+                # Use longer delay for zero-token responses
+                delay = RETRY_EMPTY_RESPONSE_DELAY_LONG
+                if attempt < MAX_RETRIES:
+                    logger.info("Waiting %ds before retry (Gemini may need processing time)...", delay)
+                    time.sleep(delay)
+                    continue
+                raise ValueError(f"Gemini returned 0 output tokens for {purpose} after {MAX_RETRIES} attempts")
+
             # response.text raises ValueError if blocked by safety filters
             try:
                 text = response.text
@@ -557,6 +586,16 @@ def transcribe_chunked_video(
                 "Transcription %d%% — chunk %d/%d transcribed: %d chars",
                 pct, i + 1, total_chunks, len(transcript),
             )
+
+            # Cost budget check (warn operator if exceeding budget)
+            # This is approximate — full precision is in the Gemini logs
+            chunk_count = len(transcripts)
+            estimated_cost = chunk_count * 1.5  # ~$1.50 per chunk on Flash
+            if estimated_cost > MAX_COST_PER_LECTURE:
+                logger.warning(
+                    "Cost estimate ($%.2f) exceeds budget ($%.2f) after %d/%d chunks",
+                    estimated_cost, MAX_COST_PER_LECTURE, chunk_count, total_chunks,
+                )
 
             # Clean up Gemini file immediately (success path)
             try:
@@ -773,22 +812,32 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         budget_tokens=16000,
     )
 
-    # Parse the three sections
+    # Parse the three sections — robust against minor variations
+    import re
     sections: dict[str, str] = {}
     for key, header in [
         ("summary", "===SUMMARY==="),
         ("gap_analysis", "===GAP_ANALYSIS==="),
         ("deep_analysis", "===DEEP_ANALYSIS==="),
     ]:
-        start = raw.find(header)
-        if start == -1:
-            logger.warning("Section %s not found in Claude response", header)
-            sections[key] = ""
-            continue
-        start += len(header)
+        # Match exact header or regex variants (===SUMMARY=== or === SUMMARY ===)
+        pattern = rf'={3,}\s*{key.upper().replace("_", "[_ ]")}\s*={3,}'
+        match = re.search(pattern, raw)
+        if match is None:
+            # Fallback: try exact string match
+            start = raw.find(header)
+            if start == -1:
+                logger.warning("Section %s not found in Claude response", header)
+                sections[key] = ""
+                continue
+            start += len(header)
+        else:
+            start = match.end()
+
         # Find next section or end
-        next_headers = [raw.find(h, start) for h in ["===SUMMARY===", "===GAP_ANALYSIS===", "===DEEP_ANALYSIS==="] if raw.find(h, start) != -1]
-        end = min(next_headers) if next_headers else len(raw)
+        next_pattern = r'={3,}\s*(?:SUMMARY|GAP[_ ]ANALYSIS|DEEP[_ ]ANALYSIS)\s*={3,}'
+        next_match = re.search(next_pattern, raw[start:])
+        end = start + next_match.start() if next_match else len(raw)
         sections[key] = raw[start:end].strip()
 
     return sections
@@ -907,10 +956,12 @@ def _load_checkpoint(name: str) -> str | None:
 
 
 def _save_checkpoint(name: str, content: str) -> None:
-    """Save content to a checkpoint file in .tmp/."""
+    """Save content to a checkpoint file in .tmp/ using atomic write."""
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     path = TMP_DIR / name
-    path.write_text(content, encoding="utf-8")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.rename(path)  # Atomic on POSIX
     logger.info("Checkpoint saved: %s (%d chars)", name, len(content))
 
 

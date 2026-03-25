@@ -18,7 +18,7 @@ tags: [MOC, ინდექსი]
 | 1 | [[ლექცია 1]] | 2026-03-13 | AI ლექციის ტრანსკრიპტის ანალიზი (არასრული შინაარსი) |
 | 2 | [[ლექცია 2]] | 2026-03-17 | AI მოდელების მიმოხილვა, მახასიათებლები და აგენტების შესავალი |
 | 3 | [[ლექცია 3]] | 2026-03-20 | AI აგენტები და აგენტური ხელოვნური ინტელექტი |
-| 4 | ლექცია 4 | -- | _მოლოდინში_ |
+| 4 | [[ლექცია 4]] | 2026-03-24 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი (ლექცია ~4-5) |
 | 5 | ლექცია 5 | -- | _მოლოდინში_ |
 | 6 | ლექცია 6 | -- | _მოლოდინში_ |
 | 7 | ლექცია 7 | -- | _მოლოდინში_ |
@@ -59,7 +59,6 @@ tags: [MOC, ინდექსი]
 - [[ChatGPT Atlas]]
 - [[Claude]]
 - [[Claude Chat]]
-- [[Claude Code]]
 - [[Claude Cowork]]
 - [[Claude Desktop (Coworker)]]
 - [[Claude Desktop App]]
@@ -68,13 +67,13 @@ tags: [MOC, ინდექსი]
 - [[Claude Web Interface]]
 - [[Claude ecosystem]]
 - [[DeepSeek]]
-- [[Gemini]]
 - [[Google Gemini]]
 - [[Google Workspace Gemini]]
 - [[Grok]]
 - [[Llama]]
 - [[Mistral]]
 - [[Ollama]]
+- [[OpenAI]]
 - [[Perplexity]]
 - [[Perplexity Comet]]
 - [[llama.cpp]]
@@ -96,6 +95,7 @@ tags: [MOC, ინდექსი]
 - [[Bolt.new]]
 - [[Booking.com]]
 - [[Brave browser]]
+- [[CLI-Anything]]
 - [[CRM მონაცემები]]
 - [[Canva]]
 - [[Chrome Browser]]
@@ -111,9 +111,8 @@ tags: [MOC, ინდექსი]
 - [[Excel]]
 - [[Excel ფაილები]]
 - [[Facebook]]
+- [[Facebook Posting Bot]]
 - [[Figma]]
-- [[Firecrawl]]
-- [[GitHub]]
 
 ---
 
@@ -121,19 +120,43 @@ tags: [MOC, ინდექსი]
 
 - [[AI]] (G1L1, G2L1)
 - [[AI Agent]] (G1L2, G2L1, G2L2)
+- [[AI Ethics]] (G1L2, G1L4)
 - [[AI Governance]] (G1L1, G1L2, G1L3, G2L1, G2L2)
 - [[AI Safety]] (G1L2, G1L3, G2L2)
+- [[AI Strategy]] (G1L3, G1L4)
 - [[Anthropic]] (G1L3, G2L2)
 - [[AutoGen]] (G1L2, G1L3, G2L2)
 - [[Bias]] (G1L2, G2L1)
+- [[Bias (AI)]] (G1L4, G2L2)
+- [[CRISPE framework]] (G1L2, G1L4)
+- [[Chain-of-thought prompting]] (G1L2, G1L4)
 - [[Change Management]] (G1L2, G1L3)
+- [[Claude Code]] (G1L2, G1L3, G1L4, G2L2, G2L3)
 - [[Compliance]] (G1L2, G1L3, G2L2)
-- [[CrewAI]] (G1L2, G1L3, G2L2)
+- [[CrewAI]] (G1L2, G1L3, G1L4, G2L2)
 - [[Custom Instructions]] (G1L2, G2L3)
 - [[Data Control]] (G1L2, G2L3)
 - [[Deep Research]] (G1L2, G2L3)
 - [[EU AI Act]] (G1L1, G1L2, G1L3, G2L2)
-- [[Google]] (G1L1, G2L2)
+- [[Gemini]] (G1L3, G2L3)
+- [[IDE (Integrated Development Environment)]] (G1L3, G2L2)
+- [[LangChain]] (G1L2, G1L4, G2L2)
+- [[LangGraph]] (G1L2, G1L3, G2L2)
+- [[MCP (Model Context Protocol)]] (G1L2, G1L3)
+- [[Multi-agent Orchestration]] (G1L3, G2L2)
+- [[Multimodal AI]] (G1L2, G1L4)
+- [[Multimodal Agents]] (G1L3, G2L2)
+- [[OpenAI Agents SDK]] (G1L4, G2L2)
+- [[Personalization]] (G1L2, G2L3)
+
+---
+
+## პროგრესი
+
+| ჯგუფი | ლექციები | სტატუსი |
+|-------|----------|---------|
+| #1 | 4/15 | მიმდინარე |
+| #2 | 3/15 | მიმდინარე |
 
 ---
 
@@ -143,20 +166,12 @@ tags: [MOC, ინდექსი]
 - [[ლექცია 1 -- ანალიზი]]
 - [[ლექცია 2 -- ანალიზი]]
 - [[ლექცია 3 -- ანალიზი]]
+- [[ლექცია 4 -- ანალიზი]]
 
 ### ჯგუფი 2
 - [[ლექცია 1 -- ანალიზი]]
 - [[ლექცია 2 -- ანალიზი]]
 - [[ლექცია 3 -- ანალიზი]]
-
----
-
-## პროგრესი
-
-| ჯგუფი | ლექციები | სტატუსი |
-|-------|----------|---------|
-| #1 | 3/15 | მიმდინარე |
-| #2 | 3/15 | მიმდინარე |
 
 ---
 

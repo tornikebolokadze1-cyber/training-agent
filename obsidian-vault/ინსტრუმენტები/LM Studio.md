@@ -21,5 +21,5 @@ category: tool
 
 ## დაკავშირებული
 
-- [[Local/On-Premise AI]]
 - [[Local/On-Premise AI Models]]
+- [[Local/On-Premise AI]]

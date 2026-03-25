@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: []
+aliases: [ზაპიერი]
 category: tool
 ---
 
@@ -15,6 +15,7 @@ category: tool
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
 
@@ -22,5 +23,6 @@ category: tool
 
 ## დაკავშირებული
 
-- [[Workflow Orchestration]]
 - [[MCP (Model Context Protocol) Servers]]
+- [[Workflow Automation]]
+- [[Workflow Orchestration]]

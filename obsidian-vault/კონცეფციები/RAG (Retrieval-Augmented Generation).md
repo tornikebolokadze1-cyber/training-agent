@@ -23,7 +23,7 @@ AI მეთოდი, რომელიც აერთიანებს ი�
 
 ## დაკავშირებული
 
-- [[Vector Database]]
-- [[Embeddings]]
 - [[Knowledge Bases]]
 - [[Hotel Monitoring Project]]
+- [[Vector Database]]
+- [[Embeddings]]

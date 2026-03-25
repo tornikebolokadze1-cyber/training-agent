@@ -22,6 +22,6 @@ category: framework
 
 ## დაკავშირებული
 
-- [[AI Agent Orchestration]]
 - [[Multi-agent Orchestration]]
 - [[Agentic AI Frameworks]]
+- [[AI Agent Orchestration]]

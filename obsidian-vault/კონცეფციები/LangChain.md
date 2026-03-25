@@ -1,10 +1,12 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: []
+aliases: [ლენგჩეინი]
 category: framework
 ---
 
 # LangChain
+
+> ქართულად: **ლენგჩეინი**
 
 ## აღწერა
 
@@ -15,10 +17,12 @@ category: framework
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
+- [[AI Agents (structured)]]
 - [[AI Agent Orchestration]]

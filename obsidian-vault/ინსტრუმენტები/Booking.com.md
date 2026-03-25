@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: []
-category: tool
+category: platform
 ---
 
 # Booking.com

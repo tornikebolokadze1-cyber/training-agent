@@ -1,12 +1,12 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [AI მართვა, AI მმართველობა]
-category: concept
+category: methodology
 ---
 
 # AI Governance
 
-> ქართულად: **AI მმართველობა**
+> ქართულად: **AI მართვა**
 
 ## აღწერა
 
@@ -26,7 +26,7 @@ category: concept
 
 ## დაკავშირებული
 
-- [[Leading AI courses]]
-- [[EU AI Act]]
 - [[Compliance]]
+- [[EU AI Act]]
+- [[Leading AI courses]]
 - [[კორპორატიული AI პოლიტიკა]]

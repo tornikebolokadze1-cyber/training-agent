@@ -1,0 +1,4 @@
+Total messages: 1 (Errors: 1, Warnings: 0)
+
+ReferenceError: Chart is not defined
+    at http://localhost:8765/dashboard_preview.html:715:1

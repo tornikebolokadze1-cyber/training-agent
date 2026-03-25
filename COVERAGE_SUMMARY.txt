@@ -1,0 +1,167 @@
+================================================================================
+                    TEST COVERAGE ANALYSIS — SUMMARY
+================================================================================
+
+PROJECT: Training Agent (AI training session automation)
+DATE: March 18, 2026
+TEST RUNNER: pytest --cov (320 passing tests, 2 failing — unrelated)
+
+================================================================================
+                         COVERAGE BY MODULE
+================================================================================
+
+Module                          Coverage    Status      Untested Lines
+─────────────────────────────────────────────────────────────────────────────
+tools/services/analytics.py        14%      🔴 CRITICAL      571/662
+tools/app/server.py                70%      🟡 HIGH           149/494
+tools/integrations/zoom_manager    83%      🟢 OK              26/150
+tools/services/transcribe_lecture  82%      🟢 OK              26/148
+tools/integrations/knowledge_idx   87%      🟢 OK              20/153
+─────────────────────────────────────────────────────────────────────────────
+OVERALL AVERAGE                    63%
+
+================================================================================
+                     CRITICAL GAPS — PRIORITY P0
+================================================================================
+
+FILE: tools/services/analytics.py (14% coverage)
+
+PROBLEM:
+  • NO TEST FILE EXISTS — completely untested module
+  • 571 lines of untested code in production analytics pipeline
+  • Silent score loss bugs can occur without detection
+
+MISSING TESTS (26/662 lines):
+  1. Score extraction from Georgian markdown (extract_scores)
+  2. Database persistence (upsert_scores, init_db, get_*_scores)
+  3. Statistical calculations (mean, median, stddev)
+  4. Dashboard aggregation (get_dashboard_data)
+  5. Backfill and Pinecone sync (backfill_from_tmp, sync_from_pinecone)
+
+EFFORT TO FIX: 7–8 hours
+TARGET COVERAGE: 50%+ (from 14%)
+IMPACT: Unlock analytics pipeline visibility, prevent score loss bugs
+
+================================================================================
+                      HIGH GAPS — PRIORITY P1
+================================================================================
+
+FILE: tools/app/server.py (70% coverage)
+
+MISSING ENDPOINT TESTS:
+  ✗ /process-recording validation (Drive folder ID regex)
+  ✗ /health degraded state (tmp_dir not writable)
+  ✗ /whatsapp-incoming message filtering (type, fromMe, empty)
+  ✗ /zoom-webhook recording extraction (no MP4 found)
+  ✗ /zoom-webhook duration gate (< 120 min vs ≥ 120 min)
+  ✗ /api/scores, /api/stats, /api/backfill-scores (API response format)
+  ✗ /dashboard (HTML cache, authorization)
+
+MISSING LOGIC TESTS:
+  ✗ Callback retry backoff (5s, 10s, 15s exponential)
+  ✗ Zoom signature verification edge cases (timestamp boundary)
+  ✗ Stale task eviction and operator alerts
+
+EFFORT TO FIX: 8–10 hours
+TARGET COVERAGE: 85%+ (from 70%)
+IMPACT: Catch webhook misconfigurations, API contract violations, auth issues
+
+================================================================================
+                   MEDIUM GAPS — PRIORITY P2
+================================================================================
+
+FILE: tools/integrations/knowledge_indexer.py (87%)
+  ✗ Pinecone index creation timeout (1 test, 0.5h)
+  ✗ Embedding retry exhaustion (1 test, 0.5h)
+  ✗ Stale vector cleanup failure (1 test, 0.5h)
+
+FILE: tools/services/transcribe_lecture.py (82%)
+  ✗ Transcript resume threshold: 2000 chars (1 test, 0.5h)
+  ✗ Missing Drive config handling (1 test, 0.5h)
+
+FILE: tools/integrations/zoom_manager.py (83%)
+  ✗ Mixed recording statuses in download_all_recordings (1 test, 1h)
+  ✗ Zoom API retry after 401 (1 test, 1h)
+
+EFFORT TO FIX: 4–5 hours total
+TARGET COVERAGE: 90%+ across all three
+IMPACT: Catch infrastructure timeout edge cases
+
+================================================================================
+                        IMPLEMENTATION PLAN
+================================================================================
+
+WEEK 1 — PHASE 1 & 2 (16 hours)
+  ▶ Create tools/tests/test_analytics.py (greenfield, 7.5h)
+    - Score extraction (5 tests)
+    - Database operations (8 tests)
+    - Statistics & dashboard (4 tests)
+    - Backfill/sync (4 tests)
+
+  ▶ Add tests to tools/tests/test_server.py (9h)
+    - Request validation (2 tests)
+    - Message filtering (3 tests)
+    - Duration gate (2 tests)
+    - API endpoints (5 tests)
+    - Callback retry logic (2 tests)
+
+RESULT: analytics 14%→50%, server 70%→85%, overall ~60%
+
+WEEK 2 — PHASE 3 (5 hours)
+  ▶ Add 7 quick-win tests to existing test files
+    - knowledge_indexer: 3 tests
+    - transcribe: 2 tests
+    - zoom_manager: 2 tests
+
+RESULT: integrations 83–87%→92%, overall 75%+
+
+================================================================================
+                       SUCCESS CRITERIA
+================================================================================
+
+✓ Phase 1 (EOW1): analytics 50%, server 85%
+✓ Phase 2 (EOW2): integrations 92%
+✓ Final (EOW3): Overall 75%+ coverage
+
+BLOCKING ISSUES: None — all fixtures can use existing test patterns
+ESTIMATED TOTAL EFFORT: 21 hours
+
+================================================================================
+                          DOCUMENTATION
+================================================================================
+
+Two detailed reports created:
+
+1. COVERAGE_ANALYSIS.md (8.2K)
+   - Line-by-line gap breakdown
+   - Risk assessment (HIGH/MEDIUM/LOW)
+   - Root cause analysis
+   - Code examples for each test
+
+2. TEST_BACKLOG.md (3.1K)
+   - 26 prioritized test cases (P0/P1/P2)
+   - Quick reference table
+   - Implementation roadmap
+   - Fixture dependencies
+
+3. COVERAGE_SUMMARY.txt (this file)
+   - Executive overview
+   - Quick reference
+
+================================================================================
+                            NEXT STEPS
+================================================================================
+
+1. Review COVERAGE_ANALYSIS.md (deep dive)
+2. Review TEST_BACKLOG.md (implementation plan)
+3. Create tools/tests/test_analytics.py (greenfield start)
+4. Implement Phase 1 tests (analytics + server)
+5. Run pytest --cov to verify progress
+
+Questions? See COVERAGE_ANALYSIS.md for detailed test case examples.
+
+================================================================================
+Generated: March 18, 2026
+Tool: Training Agent Coverage Gap Analyzer
+Status: Ready for implementation
+================================================================================
