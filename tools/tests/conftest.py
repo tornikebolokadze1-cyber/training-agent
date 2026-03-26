@@ -250,6 +250,9 @@ import pytest  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_module_caches() -> None:  # type: ignore[misc]
     """Reset all module-level caches before each test."""
+    # Snapshot httpx module state so we can detect pollution from test_server_new.py
+    _httpx_mod = sys.modules.get("httpx")
+    _httpx_client_before = getattr(_httpx_mod, "Client", None) if _httpx_mod else None
     yield
     # Post-test cleanup: clear caches that might bleed between tests
     for mod_name, attrs in [
@@ -269,3 +272,16 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
                     val.clear()
                 else:
                     setattr(mod, attr, None)
+
+    # Restore httpx stubs if they were overwritten by test_server.py/test_server_new.py
+    # which pop stubs and import real httpx for TestClient. This ensures subsequent
+    # tests still get mock httpx.
+    _httpx_now = sys.modules.get("httpx")
+    if _httpx_now is not None and not isinstance(getattr(_httpx_now, "Client", None), type(MagicMock)):
+        # Real httpx is loaded — re-apply stubs
+        _httpx_now.Client = MagicMock
+        _httpx_now.AsyncClient = MagicMock
+        _httpx_now.Timeout = MagicMock
+        _httpx_now.TransportError = type("TransportError", (Exception,), {})
+        _httpx_now.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
+        _httpx_now.TimeoutException = type("TimeoutException", (Exception,), {})

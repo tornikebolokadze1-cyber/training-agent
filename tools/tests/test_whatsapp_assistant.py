@@ -63,6 +63,8 @@ def _make_assistant() -> WhatsAppAssistant:
     assistant._chat_history: dict = {}
     assistant._MAX_TRACKED_CHATS = 50
     assistant._group_map: dict = {}
+    assistant._memory = None
+    assistant._mem0_mode = "disabled"
 
     return assistant
 
