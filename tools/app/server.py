@@ -52,6 +52,8 @@ from tools.core.pipeline_state import (
     create_pipeline,
     list_active_pipelines,
     cleanup_completed,
+    cleanup_stale_failed,
+    reset_failed,
 )
 from tools.services.transcribe_lecture import transcribe_and_index
 
@@ -203,6 +205,13 @@ async def _check_unprocessed_recordings() -> None:
             logger.info("[startup-recovery] G%d L%d already active per state file — resuming handled by orchestrator", group_number, lecture_number)
             continue
 
+        # Auto-reset FAILED pipelines so they can be retried on startup
+        from tools.core.pipeline_state import load_state as _load_state, FAILED as _FAILED
+        _existing = _load_state(group_number, lecture_number)
+        if _existing and _existing.state == _FAILED:
+            logger.info("[startup-recovery] G%d L%d was FAILED — resetting for retry", group_number, lecture_number)
+            reset_failed(group_number, lecture_number)
+
         # Check if already indexed in Pinecone (any vectors for this lecture)
         already_indexed = False
         try:
@@ -284,8 +293,9 @@ async def _lifespan(application: FastAPI):  # noqa: ARG001
     # Rebuild in-memory dedup cache from persistent pipeline state files
     _rebuild_task_cache()
 
-    # Clean up old completed pipeline state files
+    # Clean up old completed and stale failed pipeline state files
     cleanup_completed(max_age_hours=24)
+    cleanup_stale_failed(max_age_hours=12)
 
     try:
         yield
@@ -522,20 +532,38 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         error_msg = f"Processing failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
 
-        await _send_callback(CallbackPayload(
-            status="error",
-            group_number=group,
-            lecture_number=lecture,
-            error_message=str(e),
-        ))
+        # Mark pipeline as failed in state file
+        try:
+            from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_failed_ps
+            _ps = _load_ps(group, lecture)
+            if _ps and _ps.state not in ("COMPLETE", "FAILED"):
+                _mark_failed_ps(_ps, str(e))
+        except Exception as state_err:
+            logger.warning("Failed to mark pipeline state as FAILED: %s", state_err)
+
+        try:
+            await _send_callback(CallbackPayload(
+                status="error",
+                group_number=group,
+                lecture_number=lecture,
+                error_message=str(e),
+            ))
+        except Exception as cb_err:
+            logger.warning("n8n callback failed: %s", cb_err)
 
         # Last-resort alert — ensures Tornike knows even if n8n callback fails
-        # Wrapped in to_thread because alert_operator makes blocking HTTP calls
-        await asyncio.to_thread(
-            alert_operator,
-            f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
-            f"Error: {e}",
-        )
+        try:
+            await asyncio.to_thread(
+                alert_operator,
+                f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
+                f"Error: {e}",
+            )
+        except Exception as alert_err:
+            logger.error(
+                "CRITICAL: Both pipeline AND alert_operator failed for G%d L%d. "
+                "Alert error: %s. Original error: %s",
+                group, lecture, alert_err, e,
+            )
 
     finally:
         key = _task_key(group, lecture)
@@ -868,6 +896,71 @@ def _extract_recording_context(body: dict) -> dict | None:
     }
 
 
+def _handle_recording_completed_via_polling(
+    body: dict,
+    ctx: dict,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Fallback when recording.completed has an empty download_url.
+
+    Uses the meeting.ended-style polling pipeline to discover and download
+    the recording via Zoom API instead of the direct download URL.
+    """
+    from tools.app.scheduler import _run_post_meeting_pipeline
+
+    group_number = ctx["group_number"]
+    lecture_number = ctx["lecture_number"]
+
+    # Try to extract meeting ID from the webhook payload
+    payload_obj = body.get("payload", {}).get("object", {})
+    meeting_uuid = str(payload_obj.get("uuid", ""))
+    meeting_id = str(payload_obj.get("id", ""))
+    poll_id = meeting_uuid or meeting_id
+
+    if not poll_id:
+        # Last resort: use configured meeting ID for the group
+        group_cfg = GROUPS.get(group_number, {})
+        poll_id = group_cfg.get("zoom_meeting_id", "")
+
+    if not poll_id:
+        logger.error(
+            "recording.completed fallback: no meeting ID for G%d L%d — cannot poll",
+            group_number, lecture_number,
+        )
+        return {"status": "error", "reason": "no meeting ID and empty download URL"}
+
+    _evict_stale_tasks()
+    with _processing_lock:
+        key = _task_key(group_number, lecture_number)
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+            return {"status": "duplicate", "message": f"{key} already processing"}
+        _processing_tasks[key] = datetime.now()
+        try:
+            create_pipeline(group_number, lecture_number, meeting_id=poll_id)
+        except ValueError:
+            pass
+
+    logger.info(
+        "recording.completed fallback → polling pipeline: G%d L%d (poll_id=%s)",
+        group_number, lecture_number, poll_id,
+    )
+
+    def _run_and_cleanup() -> None:
+        try:
+            _run_post_meeting_pipeline(group_number, lecture_number, poll_id)
+        finally:
+            _processing_tasks.pop(key, None)
+
+    background_tasks.add_task(_run_and_cleanup)
+
+    return {
+        "status": "accepted",
+        "mode": "polling-fallback",
+        "group": group_number,
+        "lecture": lecture_number,
+    }
+
+
 def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict:
     """Handle meeting.ended event with duration-based processing gate.
 
@@ -1002,6 +1095,19 @@ async def zoom_webhook(
         if ctx is None:
             return {"status": "ignored", "reason": "no valid recording or unknown group"}
 
+        # Validate download_url BEFORE registering in dedup tracker
+        download_url = ctx["download_url"]
+        if not download_url or not download_url.strip():
+            logger.warning(
+                "Zoom webhook: recording.completed has EMPTY download_url — "
+                "falling back to polling pipeline (Group %d, Lecture #%d)",
+                ctx["group_number"], ctx["lecture_number"],
+            )
+            # Fall through to meeting.ended-style polling instead of failing silently
+            return _handle_recording_completed_via_polling(
+                body, ctx, background_tasks,
+            )
+
         logger.info(
             "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
             ctx["group_number"], ctx["lecture_number"], ctx["topic"],
@@ -1019,7 +1125,7 @@ async def zoom_webhook(
                 pass  # Pipeline state already exists — that's fine
 
         proc_payload = ProcessRecordingRequest(
-            download_url=ctx["download_url"],
+            download_url=download_url,
             access_token=ctx["access_token"],
             group_number=ctx["group_number"],
             lecture_number=ctx["lecture_number"],
@@ -1109,8 +1215,9 @@ async def process_recording(
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
+        # add_task expects a sync callable — _run_auto runs in a thread pool
+        # Do NOT wrap in asyncio.to_thread — BackgroundTasks handles threading
         background_tasks.add_task(
-            asyncio.to_thread,
             _run_auto,
             payload.group_number,
             payload.lecture_number,
@@ -1283,8 +1390,9 @@ async def retry_latest(
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
+        # add_task expects a sync callable — do NOT wrap in asyncio.to_thread
         background_tasks.add_task(
-            asyncio.to_thread, _run_retry, group_number, lecture_number, poll_id,
+            _run_retry, group_number, lecture_number, poll_id,
         )
 
         return {

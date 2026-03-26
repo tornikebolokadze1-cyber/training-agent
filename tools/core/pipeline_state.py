@@ -531,6 +531,82 @@ def list_all_pipelines() -> list[PipelineState]:
 # ---------------------------------------------------------------------------
 
 
+def reset_failed(group: int, lecture: int) -> bool:
+    """Delete the state file for a FAILED pipeline so it can be retried.
+
+    Only removes the file if the current state is FAILED.  This allows
+    the pipeline to be re-created from scratch.
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+
+    Returns:
+        True if the state file was deleted, False otherwise.
+    """
+    state = load_state(group, lecture)
+    if state is None:
+        return False
+    if state.state != FAILED:
+        logger.warning(
+            "Cannot reset pipeline g%d/l%d — state is %s, not FAILED",
+            group, lecture, state.state,
+        )
+        return False
+    path = state_file_path(group, lecture)
+    try:
+        path.unlink(missing_ok=True)
+        logger.info("Reset FAILED pipeline state: g%d/l%d", group, lecture)
+        return True
+    except OSError as exc:
+        logger.warning("Failed to delete state file %s: %s", path, exc)
+        return False
+
+
+def cleanup_stale_failed(max_age_hours: int = 12) -> int:
+    """Auto-clean FAILED pipeline state files older than max_age_hours.
+
+    This prevents old FAILED states from blocking retry attempts indefinitely.
+
+    Args:
+        max_age_hours: Age threshold in hours. Defaults to 12 hours.
+
+    Returns:
+        Number of state files deleted.
+    """
+    deleted = 0
+    now = datetime.now(tz=TBILISI_TZ)
+
+    for state in list_all_pipelines():
+        if state.state != FAILED:
+            continue
+
+        try:
+            updated = datetime.fromisoformat(state.updated_at)
+        except (ValueError, TypeError):
+            continue
+
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=TBILISI_TZ)
+
+        age_hours = (now - updated).total_seconds() / 3600.0
+        if age_hours >= max_age_hours:
+            path = state_file_path(state.group, state.lecture)
+            try:
+                path.unlink(missing_ok=True)
+                deleted += 1
+                logger.info(
+                    "Auto-cleaned stale FAILED pipeline: g%d/l%d (age=%.1fh)",
+                    state.group, state.lecture, age_hours,
+                )
+            except OSError:
+                pass
+
+    if deleted:
+        logger.info("Stale FAILED pipeline cleanup: removed %d file(s).", deleted)
+    return deleted
+
+
 def cleanup_completed(max_age_hours: int = 24) -> int:
     """Delete state files for COMPLETE pipelines older than *max_age_hours*.
 

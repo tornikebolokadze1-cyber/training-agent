@@ -388,13 +388,24 @@ def _run_post_meeting_pipeline(
     )
     from tools.services.transcribe_lecture import transcribe_and_index
 
+    # Helper to clean up dedup key on ALL exit paths (including early returns)
+    def _cleanup_dedup() -> None:
+        try:
+            from tools.app.server import _processing_tasks, _task_key
+            key = _task_key(group_number, lecture_number)
+            _processing_tasks.pop(key, None)
+            logger.info("[post] Dedup key %s removed from _processing_tasks", key)
+        except ImportError:
+            pass
+
     # Disk space check — abort if less than 2GB free
     disk_usage = shutil.disk_usage(str(TMP_DIR))
     free_gb = disk_usage.free / (1024 ** 3)
     if free_gb < 2.0:
         logger.error("[post] Insufficient disk space: %.1f GB free (need 2+ GB). Aborting.", free_gb)
+        _cleanup_dedup()
         try:
-            alert_operator(f"⚠️ Disk space critically low: {free_gb:.1f} GB. Pipeline for G{group_number} L{lecture_number} aborted.")
+            alert_operator(f"Disk space critically low: {free_gb:.1f} GB. Pipeline for G{group_number} L{lecture_number} aborted.")
         except Exception:
             pass
         return
@@ -418,6 +429,15 @@ def _run_post_meeting_pipeline(
             logger.error(
                 "[post] Aborting: no recording found for meeting %s", meeting_id
             )
+            _cleanup_dedup()
+            try:
+                alert_operator(
+                    f"Pipeline ABORTED for Group {group_number}, Lecture #{lecture_number}: "
+                    f"no recording found for meeting {meeting_id}. "
+                    f"Check Zoom — the recording may not have been saved."
+                )
+            except Exception:
+                pass
             return
 
         # ---- Step 2: Download all segments ---------------------------------
@@ -437,6 +457,7 @@ def _run_post_meeting_pipeline(
                 temp_files.append(seg_path)
             except Exception as exc:
                 logger.error("[post] Download failed for segment %d: %s", i, exc)
+                _cleanup_dedup()
                 alert_operator(
                     f"Recording download FAILED for Group {group_number}, "
                     f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
@@ -458,6 +479,7 @@ def _run_post_meeting_pipeline(
                 temp_files.append(local_path)
             except Exception as exc:
                 logger.error("[post] Segment concatenation failed: %s", exc)
+                _cleanup_dedup()
                 alert_operator(
                     f"ffmpeg concat FAILED for Group {group_number}, "
                     f"Lecture #{lecture_number}.\nError: {exc}\n"
@@ -507,14 +529,8 @@ def _run_post_meeting_pipeline(
             f"Error: {exc}"
         )
     finally:
-        # Clean up in-memory cache (best-effort)
-        try:
-            from tools.app.server import _processing_tasks, _task_key
-            key = _task_key(group_number, lecture_number)
-            _processing_tasks.pop(key, None)
-            logger.info("[post] Dedup key %s removed from _processing_tasks", key)
-        except ImportError:
-            pass
+        # Clean up in-memory cache — always, even if already cleaned in early return
+        _cleanup_dedup()
         _remove_pending_job(group_number, lecture_number)
 
         # Clean up all temp files (segments + merged)
