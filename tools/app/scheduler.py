@@ -395,8 +395,10 @@ def _run_post_meeting_pipeline(
             key = _task_key(group_number, lecture_number)
             _processing_tasks.pop(key, None)
             logger.info("[post] Dedup key %s removed from _processing_tasks", key)
-        except ImportError:
-            pass
+        except (ImportError, ValueError, RuntimeError) as exc:
+            # ValueError: WhatsAppAssistant init may fail during import
+            # RuntimeError: circular import edge cases
+            logger.debug("[post] Could not import server for dedup cleanup: %s", exc)
 
     # Disk space check — abort if less than 2GB free
     disk_usage = shutil.disk_usage(str(TMP_DIR))

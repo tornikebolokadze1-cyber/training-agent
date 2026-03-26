@@ -386,7 +386,13 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     return response
 
 
-assistant: WhatsAppAssistant | None = WhatsAppAssistant() if _assistant_available else None
+assistant: WhatsAppAssistant | None = None
+if _assistant_available:
+    try:
+        assistant = WhatsAppAssistant()
+    except (ValueError, RuntimeError) as _init_err:
+        logger.warning("WhatsAppAssistant init failed (non-fatal): %s", _init_err)
+        assistant = None
 
 
 # ---------------------------------------------------------------------------
