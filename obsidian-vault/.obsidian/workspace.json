@@ -8,25 +8,17 @@
         "type": "tabs",
         "children": [
           {
-            "id": "8f9cd8bded084510",
-            "type": "leaf",
-            "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
-            }
-          },
-          {
             "id": "638c530136f3000e",
             "type": "leaf",
             "state": {
-              "type": "release-notes",
+              "type": "markdown",
               "state": {
-                "currentVersion": "1.12.4"
+                "file": "კონცეფციები/Account Creation.md",
+                "mode": "preview",
+                "source": false
               },
-              "icon": "lucide-book-up",
-              "title": "Release Notes 1.12.4"
+              "icon": "lucide-file",
+              "title": "Account Creation"
             }
           }
         ]
@@ -189,8 +181,9 @@
       "bases:Create new base": false
     }
   },
-  "active": "8f9cd8bded084510",
+  "active": "638c530136f3000e",
   "lastOpenFiles": [
+    "კონცეფციები/Context Window.md",
     "კონცეფციები/Rube (MCP Server).md",
     "კონცეფციები/Benchmark.md",
     "კონცეფციები/Business Intelligence.md",
