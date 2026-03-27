@@ -840,6 +840,19 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         end = start + next_match.start() if next_match else len(raw)
         sections[key] = raw[start:end].strip()
 
+    # Validate: all three sections must be present and non-trivial
+    MIN_SECTION_CHARS = 100
+    missing = [k for k, v in sections.items() if len(v.strip()) < MIN_SECTION_CHARS]
+    if missing:
+        logger.error(
+            "Claude analysis has missing/empty sections: %s (lengths: %s)",
+            missing,
+            {k: len(v) for k, v in sections.items()},
+        )
+        raise ValueError(
+            f"Claude analysis incomplete — missing sections: {', '.join(missing)}"
+        )
+
     return sections
 
 
@@ -915,9 +928,9 @@ def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
 # Safe wrappers (used inside analyze_lecture to avoid try/except boilerplate)
 # ---------------------------------------------------------------------------
 
-@safe_operation("Combined Claude analysis", alert=True, default={})
-def _safe_claude_reason_all(transcript: str) -> dict[str, str]:
-    """Run combined Claude reasoning, returning empty dict on failure."""
+@safe_operation("Combined Claude analysis", alert=True, default=None)
+def _safe_claude_reason_all(transcript: str) -> dict[str, str] | None:
+    """Run combined Claude reasoning, returning None on failure (not empty dict)."""
     sections = _claude_reason_all(transcript)
     logger.info(
         "Combined Claude analysis complete: %s",
@@ -1067,6 +1080,10 @@ def analyze_lecture(
 
     if not claude_sections:
         claude_sections = _safe_claude_reason_all(transcript)
+        if claude_sections is None:
+            raise ValueError(
+                "Claude analysis failed completely — cannot proceed without reasoning output"
+            )
         if use_checkpoints and claude_sections:
             import json
             _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))

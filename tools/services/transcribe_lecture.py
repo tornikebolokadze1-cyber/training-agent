@@ -372,15 +372,28 @@ def transcribe_and_index(
             if count:
                 logger.info("Indexed %d vectors for %s", count, content_type)
 
-        # Quality gate: warn if critical analysis outputs are empty
-        empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
-        if empty_analyses:
-            warning_msg = (
-                f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
-                f"{', '.join(empty_analyses)}"
+        # Quality gate: BLOCK completion if critical outputs are empty or too short
+        MIN_SUMMARY_CHARS = 500
+        MIN_ANALYSIS_CHARS = 300
+        quality_failures: list[str] = []
+        for key, min_len in [
+            ("summary", MIN_SUMMARY_CHARS),
+            ("gap_analysis", MIN_ANALYSIS_CHARS),
+            ("deep_analysis", MIN_ANALYSIS_CHARS),
+        ]:
+            text = results.get(key, "")
+            if not text:
+                quality_failures.append(f"{key} is EMPTY")
+            elif len(text.strip()) < min_len:
+                quality_failures.append(f"{key} too short ({len(text)} chars, need {min_len})")
+        if quality_failures:
+            failure_msg = (
+                f"Quality gate FAILED for G{group_number} L#{lecture_number}: "
+                f"{'; '.join(quality_failures)}"
             )
-            logger.warning(warning_msg)
-            _safe_alert(warning_msg)
+            logger.error(failure_msg)
+            _safe_alert(failure_msg)
+            raise ValueError(failure_msg)
 
         # Clean up checkpoint files now that the full pipeline succeeded
         deleted = cleanup_checkpoints(group_number, lecture_number)

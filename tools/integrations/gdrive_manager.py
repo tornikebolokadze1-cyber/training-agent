@@ -219,6 +219,28 @@ def upload_file(
         mime_type = mime_map.get(suffix, "application/octet-stream")
 
     service = get_drive_service()
+
+    # Dedup: check if file with same name already exists in folder
+    safe_name = file_path.name.replace("\\", "\\\\").replace("'", "\\'")
+    query = (
+        f"name = '{safe_name}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed = false"
+    )
+    existing = (
+        service.files()
+        .list(q=query, fields="files(id)", pageSize=1)
+        .execute()
+        .get("files", [])
+    )
+    if existing:
+        file_id = existing[0]["id"]
+        logger.info(
+            "File '%s' already exists in folder (ID: %s) — skipping upload",
+            file_path.name, file_id,
+        )
+        return file_id
+
     metadata = {"name": file_path.name, "parents": [folder_id]}
     media = MediaFileUpload(
         str(file_path),

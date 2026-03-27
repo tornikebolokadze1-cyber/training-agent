@@ -53,6 +53,7 @@ from tools.core.pipeline_state import (
     list_active_pipelines,
     cleanup_completed,
     cleanup_stale_failed,
+    mark_failed,
     reset_failed,
 )
 from tools.services.transcribe_lecture import transcribe_and_index
@@ -87,7 +88,7 @@ def _rebuild_task_cache() -> None:
                 try:
                     _processing_tasks[key] = datetime.fromisoformat(pipeline.started_at)
                 except (ValueError, TypeError):
-                    _processing_tasks[key] = datetime.now()
+                    _processing_tasks[key] = datetime.now(TBILISI_TZ)
     if active:
         logger.info("[dedup] Rebuilt task cache from %d active pipeline state files", len(active))
 
@@ -97,7 +98,7 @@ def _evict_stale_tasks() -> list[str]:
 
     Returns list of evicted task keys (for logging).
     """
-    now = datetime.now()
+    now = datetime.now(TBILISI_TZ)
     stale = [
         key for key, started in _processing_tasks.items()
         if (now - started).total_seconds() > STALE_TASK_HOURS * 3600
@@ -201,16 +202,33 @@ async def _check_unprocessed_recordings() -> None:
         if is_pipeline_done(group_number, lecture_number):
             logger.info("[startup-recovery] G%d L%d already COMPLETE per state file — skipping", group_number, lecture_number)
             continue
-        if is_pipeline_active(group_number, lecture_number):
-            logger.info("[startup-recovery] G%d L%d already active per state file — resuming handled by orchestrator", group_number, lecture_number)
-            continue
-
-        # Auto-reset FAILED pipelines so they can be retried on startup
+        # Auto-reset stuck or FAILED pipelines so they can be retried
         from tools.core.pipeline_state import load_state as _load_state, FAILED as _FAILED
         _existing = _load_state(group_number, lecture_number)
-        if _existing and _existing.state == _FAILED:
-            logger.info("[startup-recovery] G%d L%d was FAILED — resetting for retry", group_number, lecture_number)
-            reset_failed(group_number, lecture_number)
+        if _existing:
+            if _existing.state == _FAILED:
+                logger.info("[startup-recovery] G%d L%d was FAILED — resetting for retry", group_number, lecture_number)
+                reset_failed(group_number, lecture_number)
+            elif is_pipeline_active(group_number, lecture_number):
+                # Check how long it's been stuck
+                try:
+                    started = datetime.fromisoformat(_existing.started_at)
+                    elapsed_h = (datetime.now(TBILISI_TZ) - started).total_seconds() / 3600
+                except (ValueError, TypeError):
+                    elapsed_h = 999  # Force reset on unparseable timestamp
+                if elapsed_h > STALE_TASK_HOURS:
+                    logger.warning(
+                        "[startup-recovery] G%d L%d stuck ACTIVE for %.1fh (>%dh) — resetting for retry",
+                        group_number, lecture_number, elapsed_h, STALE_TASK_HOURS,
+                    )
+                    mark_failed(_existing, f"Stuck ACTIVE for {elapsed_h:.1f}h — auto-reset on startup")
+                    reset_failed(group_number, lecture_number)
+                else:
+                    logger.info(
+                        "[startup-recovery] G%d L%d active for %.1fh (<%dh) — re-launching pipeline",
+                        group_number, lecture_number, elapsed_h, STALE_TASK_HOURS,
+                    )
+                    # Fall through to re-launch the pipeline below
 
         # Check if already indexed in Pinecone (any vectors for this lecture)
         already_indexed = False
@@ -254,10 +272,10 @@ async def _check_unprocessed_recordings() -> None:
             continue
 
         with _processing_lock:
-            # Re-check under lock
-            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+            # Re-check under lock (only skip if already being processed THIS session)
+            if key in _processing_tasks:
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(TBILISI_TZ)
             try:
                 create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
             except ValueError:
@@ -942,7 +960,7 @@ def _handle_recording_completed_via_polling(
         key = _task_key(group_number, lecture_number)
         if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(TBILISI_TZ)
         try:
             create_pipeline(group_number, lecture_number, meeting_id=poll_id)
         except ValueError:
@@ -1037,7 +1055,7 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             logger.info("[meeting.ended] %s already processing — skipping", key)
             return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(TBILISI_TZ)
         try:
             create_pipeline(group_number, lecture_number, meeting_id=str(meeting_uuid or meeting_id))
         except ValueError:
@@ -1126,7 +1144,7 @@ async def zoom_webhook(
             key = _task_key(ctx["group_number"], ctx["lecture_number"])
             if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]):
                 return {"status": "duplicate", "message": f"{key} already processing"}
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(TBILISI_TZ)
             try:
                 create_pipeline(ctx["group_number"], ctx["lecture_number"], meeting_id="")
             except ValueError:
@@ -1184,7 +1202,7 @@ async def process_recording(
                 detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(TBILISI_TZ)
         try:
             create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
         except ValueError:
@@ -1381,7 +1399,7 @@ async def retry_latest(
         with _processing_lock:
             if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(TBILISI_TZ)
             try:
                 create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
             except ValueError:
@@ -1507,7 +1525,7 @@ async def manual_trigger(
                 detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(TBILISI_TZ)
         try:
             create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
         except ValueError:

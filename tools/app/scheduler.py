@@ -719,13 +719,33 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
                     key,
                 )
                 return
-            # Also check persistent pipeline state
-            if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
-                logger.info("[post] Pipeline already active/complete for G%d L%d — skipping", group_number, lecture_number)
+            # Check persistent pipeline state
+            if is_pipeline_done(group_number, lecture_number):
+                logger.info("[post] Pipeline already COMPLETE for G%d L%d — skipping", group_number, lecture_number)
                 return
+            if is_pipeline_active(group_number, lecture_number):
+                # Check if stuck (stale) — if so, reset and retry
+                from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_failed_ps
+                _ps = _load_ps(group_number, lecture_number)
+                if _ps:
+                    try:
+                        from tools.core.config import TBILISI_TZ
+                        started = datetime.fromisoformat(_ps.started_at)
+                        elapsed_h = (datetime.now(TBILISI_TZ) - started).total_seconds() / 3600
+                    except (ValueError, TypeError):
+                        elapsed_h = 999
+                    if elapsed_h > 2:  # Fallback is more aggressive — 2h threshold
+                        logger.warning("[post] Pipeline stuck ACTIVE for %.1fh — resetting for fallback retry", elapsed_h)
+                        _mark_failed_ps(_ps, f"Stuck {elapsed_h:.1f}h — scheduler fallback reset")
+                        from tools.core.pipeline_state import reset_failed as _reset_ps
+                        _reset_ps(group_number, lecture_number)
+                    else:
+                        logger.info("[post] Pipeline active for %.1fh — still within threshold, skipping", elapsed_h)
+                        return
             # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
             # Atomic check-and-set under lock prevents webhook+scheduler race.
-            _processing_tasks[key] = datetime.now()
+            from tools.core.config import TBILISI_TZ
+            _processing_tasks[key] = datetime.now(TBILISI_TZ)
         logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
         pass  # server module not available (standalone scheduler mode)
