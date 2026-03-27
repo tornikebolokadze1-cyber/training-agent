@@ -167,7 +167,10 @@ def _import_zoom_manager():
 # ---------------------------------------------------------------------------
 
 
-def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
+def check_recording_ready(
+    meeting_id: str,
+    skip_initial_delay: bool = False,
+) -> list[dict[str, Any]]:
     """Poll the Zoom API until all recording segments are available.
 
     When a host disconnects and rejoins, Zoom creates multiple recording
@@ -179,6 +182,9 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
 
     Args:
         meeting_id: The Zoom meeting ID string.
+        skip_initial_delay: If True, skip the 15-min initial wait (useful
+            for retries and startup recovery where the recording is already
+            available on Zoom's servers).
 
     Returns:
         A list of completed MP4 recording file dicts (each contains
@@ -192,13 +198,20 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
 
     elapsed = 0
     consecutive_404s = 0  # Track "still processing" 404s for adaptive backoff
-    logger.info(
-        "[recording] Waiting %d min before first poll for meeting %s...",
-        RECORDING_INITIAL_DELAY // 60,
-        meeting_id,
-    )
-    time.sleep(RECORDING_INITIAL_DELAY)
-    elapsed += RECORDING_INITIAL_DELAY
+    if skip_initial_delay:
+        logger.info(
+            "[recording] Skipping initial delay (retry/recovery mode) — "
+            "polling meeting %s immediately...",
+            meeting_id,
+        )
+    else:
+        logger.info(
+            "[recording] Waiting %d min before first poll for meeting %s...",
+            RECORDING_INITIAL_DELAY // 60,
+            meeting_id,
+        )
+        time.sleep(RECORDING_INITIAL_DELAY)
+        elapsed += RECORDING_INITIAL_DELAY
 
     while elapsed < RECORDING_POLL_TIMEOUT:
         try:
@@ -360,6 +373,7 @@ def _run_post_meeting_pipeline(
     group_number: int,
     lecture_number: int,
     meeting_id: str,
+    skip_initial_delay: bool = False,
 ) -> None:
     """Full post-meeting pipeline, executed in a background thread.
 
@@ -426,7 +440,7 @@ def _run_post_meeting_pipeline(
 
     try:
         # ---- Step 1: Wait for recording segments ---------------------------
-        recordings = check_recording_ready(meeting_id)
+        recordings = check_recording_ready(meeting_id, skip_initial_delay=skip_initial_delay)
         if not recordings:
             logger.error(
                 "[post] Aborting: no recording found for meeting %s", meeting_id

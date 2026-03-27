@@ -270,10 +270,12 @@ async def _check_unprocessed_recordings() -> None:
         )
 
         # Run in background thread (non-blocking)
+        # Startup recovery — skip 15-min initial delay since recording is already on Zoom
+        from functools import partial
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
             None,
-            _run_post_meeting_pipeline,
+            partial(_run_post_meeting_pipeline, skip_initial_delay=True),
             group_number,
             lecture_number,
             poll_id,
@@ -1217,7 +1219,7 @@ async def process_recording(
 
         def _run_auto(gn: int, ln: int, mid: str) -> None:
             try:
-                _run_post_meeting_pipeline(gn, ln, mid)
+                _run_post_meeting_pipeline(gn, ln, mid, skip_initial_delay=True)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
@@ -1392,7 +1394,7 @@ async def retry_latest(
 
         def _run_retry(gn: int, ln: int, pid: str) -> None:
             try:
-                _run_post_meeting_pipeline(gn, ln, pid)
+                _run_post_meeting_pipeline(gn, ln, pid, skip_initial_delay=True)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
