@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: []
-category: technique
+category: concept
 ---
 
 # Jailbreaking
@@ -15,9 +15,11 @@ AI მოდელის შეზღუდვების გვერდის
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[AI security for users]]
+- [[AI Security]]

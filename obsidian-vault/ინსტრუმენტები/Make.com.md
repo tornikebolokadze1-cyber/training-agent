@@ -17,9 +17,11 @@ category: platform
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[No-code AI platforms]]
+- [[No-Code/Low-Code AI Automation]]

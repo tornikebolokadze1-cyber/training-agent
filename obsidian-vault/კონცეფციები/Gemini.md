@@ -16,6 +16,7 @@ Google-ის AI მოდელი, ძლიერია მულტიმო
 
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -26,6 +27,8 @@ Google-ის AI მოდელი, ძლიერია მულტიმო
 - [[ChatGPT]]
 - [[Grok]]
 - [[Perplexity]]
+- [[VS Code]]
+- [[Google AI Studio]]
 - [[Google Antigravity IDE]]
 
 ---

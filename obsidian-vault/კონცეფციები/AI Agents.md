@@ -17,9 +17,19 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
+- [[პრაქტიკული კურსი]]
+- [[Claude Code]]
+- [[Multi-Model Evaluation]]
+- [[Agent Orchestration]]
+- [[Video Editing Automation]]
+- [[LangChain]]
+- [[LlamaIndex]]
+- [[CrewAI]]
+- [[AutoGen]]
 - [[Automation]]

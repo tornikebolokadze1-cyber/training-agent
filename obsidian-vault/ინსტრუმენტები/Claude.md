@@ -16,6 +16,7 @@ Anthropic-ის AI მოდელი, რომელიც ლიდერო
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -31,8 +32,8 @@ Anthropic-ის AI მოდელი, რომელიც ლიდერო
 - [[Claude Skills]]
 - [[MCP (Model Context Protocol) Server]]
 - [[Chrome Browser]]
+- [[VS Code]]
+- [[კოდის დასაწერად]]
 - [[Excel]]
 - [[Copilot]]
 - [[Anthropic]]
-- [[რეალურ დროში კვლევა]]
-- [[Agentic behavior]]

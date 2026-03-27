@@ -19,10 +19,12 @@ category: framework
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[AI Agents (structured)]]
+- [[AI Agents]]
 - [[AI Agent Orchestration]]

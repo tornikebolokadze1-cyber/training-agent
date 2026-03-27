@@ -8,16 +8,18 @@ category: platform
 
 ## აღწერა
 
-Zapier-ის AI გაფართოებები ავტომატიზაციისთვის.
+No-Code/Low-Code ავტომატიზაციის პლატფორმა AI ფუნქციებით.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[No-code AI platforms]]
+- [[No-Code/Low-Code AI Automation]]

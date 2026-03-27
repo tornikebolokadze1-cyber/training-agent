@@ -8,16 +8,28 @@ category: platform
 
 ## აღწერა
 
-Google-ის ინსტრუმენტი AI-ის შესაქმნელად, რომელიც შედის მეორადი ინსტრუმენტების სიაში.
+Google-ის AI ლაბორატორია სერვისების ტესტირებისა და ინტეგრაციისთვის, უფასო Gemini ჩატთან ერთად.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 1]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- _კავშირები არ არის_
+- [[AI Lab]]
+- [[Service Testing]]
+- [[Gemini]]
+- [[Free Access]]
+- [[Photo Generation]]
+- [[Video Generation]]
+- [[Text-to-Speech]]
+- [[Music Generation]]
+- [[Webcam Sharing]]
+- [[Screen Sharing]]
+- [[Build Function]]
+- [[API Key Generation]]

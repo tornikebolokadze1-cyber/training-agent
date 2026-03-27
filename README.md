@@ -154,10 +154,10 @@ python -m tools.gdrive_manager
 
 ```bash
 # Start the full system (scheduler + webhook server)
-python -m tools.orchestrator
+python -m tools.app.orchestrator
 
 # Or manually process a recording
-python -m tools.transcribe_lecture <group> <lecture> <video_path>
+python -m tools.services.transcribe_lecture <group> <lecture> <video_path>
 ```
 
 ### Health check

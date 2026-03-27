@@ -18,6 +18,7 @@ category: concept
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 4]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -26,6 +27,9 @@ category: concept
 - [[AI Governance and Compliance]]
 - [[Bias (AI)]]
 - [[Hallucination Detection]]
+- [[Responsible AI Deployment]]
+- [[Bias Detection]]
+- [[Hallucination Management]]
 - [[Hallucination]]
 - [[Bias]]
 - [[Responsible Use]]

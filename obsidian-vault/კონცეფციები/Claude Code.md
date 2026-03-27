@@ -21,6 +21,7 @@ Anthropic-ის Claude AI მოდელის კოდის გენერ
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -40,7 +41,7 @@ Anthropic-ის Claude AI მოდელის კოდის გენერ
 - [[Claude Desktop App]]
 - [[VS Code (Visual Studio Code)]]
 - [[n8n]]
-- [[MCP (Model Context Protocol)]]
+- [[AI Agents]]
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [შეცდომების მართვა]
-category: concept
+category: technique
 ---
 
 # Error Handling
@@ -17,9 +17,10 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 4]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- _კავშირები არ არის_
+- [[Deployment and Operations]]

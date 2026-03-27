@@ -20,6 +20,7 @@ Microsoft-ის უფასო, ღია კოდის კოდის რ�
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -29,6 +30,19 @@ Microsoft-ის უფასო, ღია კოდის კოდის რ�
 - [[Production-grade Claude Code Setup]]
 - [[Allow Dangerously Skip Permissions]]
 - [[AI-native code editors]]
+- [[Development Environment]]
+- [[Organized Workspace]]
+- [[Claude]]
+- [[Gemini]]
+- [[ChatGPT]]
+- [[SuperGrok]]
+- [[Centralized Development in VS Code]]
 - [[IDE (Integrated Development Environment)]]
 - [[Google Antigravity IDE]]
 - [[Claude Desktop App]]
+
+---
+
+## პრაქტიკული გამოყენება
+
+- პროექტის შეფასება რამდენიმე AI პანელით (Claude, ChatGPT, Gemini) (ჯგუფი 2, ლექცია 5)

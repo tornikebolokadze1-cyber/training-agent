@@ -18,6 +18,7 @@ category: platform
 - [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -31,10 +32,10 @@ category: platform
 - [[Gemini]]
 - [[Grok]]
 - [[Perplexity]]
+- [[VS Code]]
+- [[Critical Evaluation]]
 - [[OpenAI]]
 - [[ფუნდამენტური/ისტორიული ცოდნის მოძიება]]
 - [[Personalization]]
 - [[Deep Research]]
 - [[AI Agent]]
-- [[Photoshop]]
-- [[Figma]]
