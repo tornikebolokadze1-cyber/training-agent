@@ -49,7 +49,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "tag:#AI",
+                "query": "tag:#ინსტრუმენტი",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -177,7 +177,7 @@
       "bases:Create new base": false
     }
   },
-  "active": "ff978037718c4f99",
+  "active": "051ab5ef8ae9ea05",
   "lastOpenFiles": [
     "ლექციები/ჯგუფი 2/ლექცია 2.md",
     "კონცეფციები/Qwen, Kimi 2.5, MiniMax.md",

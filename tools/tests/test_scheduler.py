@@ -886,3 +886,144 @@ class TestStartScheduler:
         job_ids = [call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list]
         expected = {"pre_group1_tuesday", "pre_group1_friday", "pre_group2_monday", "pre_group2_thursday"}
         assert set(job_ids) == expected
+
+
+# ===========================================================================
+# 14. _concatenate_segments — ffmpeg concat
+# ===========================================================================
+
+
+class TestConcatenateSegments:
+    """Tests for _concatenate_segments ffmpeg concat."""
+
+    def test_creates_output_file(self, tmp_path):
+        """Verify concat list file is created and ffmpeg is called."""
+        seg1 = tmp_path / "seg1.mp4"
+        seg2 = tmp_path / "seg2.mp4"
+        seg1.write_bytes(b"\x00" * 10)
+        seg2.write_bytes(b"\x00" * 10)
+        output = tmp_path / "merged.mp4"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            # Create the output file to simulate ffmpeg producing it
+            output.write_bytes(b"\x00" * 20)
+            sched._concatenate_segments([seg1, seg2], output)
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "ffmpeg"
+        assert "-f" in cmd and "concat" in cmd
+        assert str(output) in cmd
+
+    def test_cleans_up_concat_list_file(self, tmp_path):
+        """The temporary segments.txt file is deleted after ffmpeg runs."""
+        seg1 = tmp_path / "seg1.mp4"
+        seg1.write_bytes(b"\x00" * 10)
+        output = tmp_path / "merged.mp4"
+
+        concat_list_path = tmp_path / "merged_segments.txt"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_result):
+            output.write_bytes(b"\x00" * 20)
+            sched._concatenate_segments([seg1], output)
+
+        # The concat list file should have been deleted by unlink(missing_ok=True)
+        assert not concat_list_path.exists()
+
+    def test_raises_on_ffmpeg_failure(self, tmp_path):
+        """RuntimeError raised when ffmpeg returns non-zero exit code."""
+        seg1 = tmp_path / "seg1.mp4"
+        seg1.write_bytes(b"\x00" * 10)
+        output = tmp_path / "merged.mp4"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "ffmpeg: error encoding"
+
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="ffmpeg concat failed"):
+                sched._concatenate_segments([seg1], output)
+
+    def test_logs_output_size(self, tmp_path):
+        """Verify the output file size is logged."""
+        seg1 = tmp_path / "seg1.mp4"
+        seg1.write_bytes(b"\x00" * 10)
+        output = tmp_path / "merged.mp4"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_result), \
+             patch.object(sched, "logger") as mock_logger:
+            output.write_bytes(b"\x00" * (1024 * 1024 * 5))  # 5 MB
+            sched._concatenate_segments([seg1], output)
+
+        # Second info call should be the size log
+        size_log_calls = [
+            c for c in mock_logger.info.call_args_list
+            if "Concatenation complete" in str(c)
+        ]
+        assert len(size_log_calls) == 1
+
+
+# ===========================================================================
+# 15. _emergency_disk_cleanup — stale file removal
+# ===========================================================================
+
+
+class TestEmergencyDiskCleanup:
+    """Tests for _emergency_disk_cleanup stale file removal."""
+
+    def test_removes_old_mp4_files(self, tmp_path):
+        """Files older than 10 minutes are removed."""
+        import time as _time
+
+        old_file = tmp_path / "old_recording.mp4"
+        old_file.write_bytes(b"\x00" * 100)
+        # Set mtime to 20 minutes ago
+        old_mtime = _time.time() - 1200
+        import os
+        os.utime(old_file, (old_mtime, old_mtime))
+
+        with patch.object(sched, "TMP_DIR", tmp_path):
+            sched._emergency_disk_cleanup()
+
+        assert not old_file.exists()
+
+    def test_keeps_recent_mp4_files(self, tmp_path):
+        """Files modified in the last 10 minutes are kept."""
+        recent_file = tmp_path / "recent_recording.mp4"
+        recent_file.write_bytes(b"\x00" * 100)
+        # File was just created, so mtime is now — within 10 minutes
+
+        with patch.object(sched, "TMP_DIR", tmp_path):
+            sched._emergency_disk_cleanup()
+
+        assert recent_file.exists()
+
+    def test_removes_stale_chunk_files(self, tmp_path):
+        """*.chunk*.mp4 files older than 10 minutes are removed."""
+        import time as _time
+        import os
+
+        chunk_file = tmp_path / "lecture.chunk001.mp4"
+        chunk_file.write_bytes(b"\x00" * 50)
+        old_mtime = _time.time() - 1200
+        os.utime(chunk_file, (old_mtime, old_mtime))
+
+        with patch.object(sched, "TMP_DIR", tmp_path):
+            sched._emergency_disk_cleanup()
+
+        assert not chunk_file.exists()
+
+    def test_handles_empty_directory(self, tmp_path):
+        """No crash when TMP_DIR is empty."""
+        with patch.object(sched, "TMP_DIR", tmp_path):
+            # Should not raise
+            sched._emergency_disk_cleanup()

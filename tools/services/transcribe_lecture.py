@@ -271,6 +271,7 @@ def transcribe_and_index(
     group_number: int,
     lecture_number: int,
     video_path: str | Path,
+    trace_id: str = "",
 ) -> dict[str, int]:
     """Full pipeline: transcribe → analyze → Drive → WhatsApp → Pinecone.
 
@@ -285,7 +286,16 @@ def transcribe_and_index(
     7. Sync Obsidian knowledge vault
 
     Automatically resumes from existing transcript if found in .tmp/.
+
+    Args:
+        trace_id: Correlation ID from HTTP request for end-to-end log tracing.
     """
+    import time as _time
+
+    trace = trace_id or f"g{group_number}_l{lecture_number}"
+    _pipeline_start = _time.monotonic()
+    _stage_times: dict[str, float] = {}
+
     video_path = Path(video_path)
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -299,15 +309,15 @@ def transcribe_and_index(
         cached = _load_cached_results(group_number, lecture_number)
         if cached.get("transcript") and cached.get("summary"):
             logger.info(
-                "Resuming from state %s — loading cached results (%d content types)",
-                pipeline.state, len(cached),
+                "[%s] Resuming from state %s — loading cached results (%d content types)",
+                trace, pipeline.state, len(cached),
             )
             results = cached
             skip_analysis = True
 
     logger.info(
-        "Starting full pipeline for Group %d, Lecture #%d (%s)",
-        group_number, lecture_number, video_path.name,
+        "[%s] Starting full pipeline for Group %d, Lecture #%d (%s)",
+        trace, group_number, lecture_number, video_path.name,
     )
 
     # Check for existing transcript (resume support)
@@ -318,13 +328,13 @@ def transcribe_and_index(
         if len(candidate.strip()) >= 2000:
             existing_transcript = candidate
             logger.info(
-                "Found existing transcript (%d chars) — skipping transcription",
-                len(existing_transcript),
+                "[%s] Found existing transcript (%d chars) — skipping transcription",
+                trace, len(existing_transcript),
             )
         else:
             logger.warning(
-                "Existing transcript too short (%d chars) — will re-transcribe",
-                len(candidate),
+                "[%s] Existing transcript too short (%d chars) — will re-transcribe",
+                trace, len(candidate),
             )
 
     try:
@@ -332,13 +342,15 @@ def transcribe_and_index(
             # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
             if pipeline:
                 pipeline = transition(pipeline, TRANSCRIBING)
-            logger.info("Step 1: Running analysis pipeline...")
+            logger.info("[%s] Step 1: Running analysis pipeline...", trace)
+            _t0 = _time.monotonic()
             results = analyze_lecture(
                 video_path,
                 existing_transcript=existing_transcript,
                 group=group_number,
                 lecture=lecture_number,
             )
+            _stage_times["analysis"] = _time.monotonic() - _t0
 
             # Save raw outputs to .tmp immediately (crash resilience)
             for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
@@ -346,10 +358,11 @@ def transcribe_and_index(
                 if text:
                     out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
                     out_path.write_text(text, encoding="utf-8")
-                    logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
+                    logger.info("[%s] Saved %s to %s (%d chars)", trace, content_type, out_path.name, len(text))
 
             # Quality gate: BLOCK completion if critical outputs are empty or too short
             # Runs BEFORE any delivery (Drive uploads, WhatsApp) to prevent garbage docs
+            _t0 = _time.monotonic()
             MIN_SUMMARY_CHARS = 500
             MIN_ANALYSIS_CHARS = 300
             quality_failures: list[str] = []
@@ -363,9 +376,10 @@ def transcribe_and_index(
                     quality_failures.append(f"{key} is EMPTY")
                 elif len(text.strip()) < min_len:
                     quality_failures.append(f"{key} too short ({len(text)} chars, need {min_len})")
+            _stage_times["quality_gate"] = _time.monotonic() - _t0
             if quality_failures:
                 failure_msg = (
-                    f"Quality gate FAILED for G{group_number} L#{lecture_number}: "
+                    f"[{trace}] Quality gate FAILED for G{group_number} L#{lecture_number}: "
                     f"{'; '.join(quality_failures)}"
                 )
                 logger.error(failure_msg)
@@ -373,6 +387,7 @@ def transcribe_and_index(
                 raise ValueError(failure_msg)
 
             # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
+            _t0 = _time.monotonic()
             try:
                 from tools.services.analytics import save_scores_from_analysis
                 if results.get("deep_analysis"):
@@ -381,24 +396,27 @@ def transcribe_and_index(
                     )
                     if not saved:
                         logger.warning(
-                            "Score extraction returned no data for Group %d Lecture #%d "
+                            "[%s] Score extraction returned no data for Group %d Lecture #%d "
                             "(score table missing or malformed in deep analysis)",
-                            group_number, lecture_number,
+                            trace, group_number, lecture_number,
                         )
             except Exception as _analytics_err:
-                logger.error("Score persistence failed (non-fatal): %s", _analytics_err)
+                logger.error("[%s] Score persistence failed (non-fatal): %s", trace, _analytics_err)
+            _stage_times["score_extraction"] = _time.monotonic() - _t0
 
         # Step 2: Upload summary to Google Drive
         summary = results.get("summary", "")
         summary_doc_id = None
         if pipeline and pipeline.summary_doc_id:
             summary_doc_id = pipeline.summary_doc_id
-            logger.info("Skipping summary upload — already done (doc ID: %s)", summary_doc_id)
+            logger.info("[%s] Skipping summary upload — already done (doc ID: %s)", trace, summary_doc_id)
         elif summary:
             if pipeline:
                 pipeline = transition(pipeline, UPLOADING_DOCS)
-            logger.info("Step 2: Uploading summary to Google Drive...")
+            logger.info("[%s] Step 2: Uploading summary to Google Drive...", trace)
+            _t0 = _time.monotonic()
             summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
+            _stage_times["drive_summary"] = _time.monotonic() - _t0
             if pipeline and summary_doc_id:
                 pipeline = transition(pipeline, UPLOADING_DOCS, summary_doc_id=summary_doc_id)
 
@@ -408,84 +426,104 @@ def transcribe_and_index(
         report_doc_id = None
         if pipeline and pipeline.report_doc_id:
             report_doc_id = pipeline.report_doc_id
-            logger.info("Skipping private report upload — already done (doc ID: %s)", report_doc_id)
+            logger.info("[%s] Skipping private report upload — already done (doc ID: %s)", trace, report_doc_id)
         elif gap_analysis or deep_analysis:
-            logger.info("Step 3: Uploading private analysis to Drive...")
+            logger.info("[%s] Step 3: Uploading private analysis to Drive...", trace)
+            _t0 = _time.monotonic()
             report_doc_id = _upload_private_report_to_drive(
                 group_number, lecture_number, gap_analysis, deep_analysis,
             )
+            _stage_times["drive_report"] = _time.monotonic() - _t0
             if pipeline and report_doc_id:
                 pipeline = transition(pipeline, pipeline.state, report_doc_id=report_doc_id)
 
         # Step 4: Send WhatsApp notification to group (video + summary are ready)
         if pipeline and pipeline.group_notified:
-            logger.info("Skipping WhatsApp group notification — already sent")
+            logger.info("[%s] Skipping WhatsApp group notification — already sent", trace)
         else:
             if pipeline:
                 pipeline = transition(pipeline, NOTIFYING)
-            logger.info("Step 4: Notifying WhatsApp group...")
+            logger.info("[%s] Step 4: Notifying WhatsApp group...", trace)
+            _t0 = _time.monotonic()
             recording_file_id = _find_recording_in_drive(group_number, lecture_number)
             _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
+            _stage_times["whatsapp_group"] = _time.monotonic() - _t0
             if pipeline:
                 pipeline = transition(pipeline, pipeline.state, group_notified=True)
 
         # Step 5: Send private report link to Tornike via WhatsApp
         if pipeline and pipeline.private_notified:
-            logger.info("Skipping private report notification — already sent")
+            logger.info("[%s] Skipping private report notification — already sent", trace)
         else:
-            logger.info("Step 5: Sending private report link to Tornike...")
+            logger.info("[%s] Step 5: Sending private report link to Tornike...", trace)
+            _t0 = _time.monotonic()
             _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
+            _stage_times["whatsapp_private"] = _time.monotonic() - _t0
             if pipeline:
                 pipeline = transition(pipeline, pipeline.state, private_notified=True)
 
         # Step 6: Index all content types into Pinecone
         if pipeline and pipeline.pinecone_indexed:
-            logger.info("Skipping Pinecone indexing — already done")
+            logger.info("[%s] Skipping Pinecone indexing — already done", trace)
             index_counts: dict[str, int] = {}
         else:
             if pipeline:
                 pipeline = transition(pipeline, INDEXING)
-            logger.info("Step 6: Indexing into Pinecone...")
+            logger.info("[%s] Step 6: Indexing into Pinecone...", trace)
+            _t0 = _time.monotonic()
             index_counts = {}
             for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
                 text = results.get(content_type, "")
                 if not text:
-                    logger.warning("No %s content to index", content_type)
+                    logger.warning("[%s] No %s content to index", trace, content_type)
                     continue
 
                 count = _safe_index(group_number, lecture_number, text, content_type)
                 index_counts[content_type] = count
                 if count:
-                    logger.info("Indexed %d vectors for %s", count, content_type)
+                    logger.info("[%s] Indexed %d vectors for %s", trace, count, content_type)
+            _stage_times["pinecone"] = _time.monotonic() - _t0
             if pipeline:
                 pipeline = transition(pipeline, pipeline.state, pinecone_indexed=True)
 
         # Clean up checkpoint files now that the full pipeline succeeded
         deleted = cleanup_checkpoints(group_number, lecture_number)
         if deleted:
-            logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
+            logger.info("[%s] Cleaned up %d checkpoint files after successful pipeline", trace, deleted)
 
         # Step 7: Sync Obsidian knowledge vault (non-fatal)
+        _t0 = _time.monotonic()
         try:
             from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
-            logger.info("Step 7: Syncing Obsidian vault...")
+            logger.info("[%s] Step 7: Syncing Obsidian vault...", trace)
             sync_result = obsidian_sync(group_number, lecture_number)
             logger.info(
-                "Obsidian sync: %d concepts, %d relationships, %d files updated",
+                "[%s] Obsidian sync: %d concepts, %d relationships, %d files updated",
+                trace,
                 sync_result.get("concepts", 0),
                 sync_result.get("relationships", 0),
                 sync_result.get("files_updated", 0),
             )
         except Exception as _obsidian_err:
-            logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+            logger.error("[%s] Obsidian sync failed (non-fatal): %s", trace, _obsidian_err)
+        _stage_times["obsidian"] = _time.monotonic() - _t0
 
         if pipeline:
             pipeline = mark_complete(pipeline)
 
         total = sum(index_counts.values())
+
+        # End-to-end pipeline timing breakdown
+        _total = _time.monotonic() - _pipeline_start
+        timing_str = " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items())
         logger.info(
-            "Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
-            group_number, lecture_number, total,
+            "[%s] ⏱️ Pipeline timing: total=%.0fs | %s",
+            trace, _total, timing_str,
+        )
+
+        logger.info(
+            "[%s] Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
+            trace, group_number, lecture_number, total,
         )
         return index_counts
 

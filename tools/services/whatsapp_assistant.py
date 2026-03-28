@@ -492,12 +492,34 @@ class WhatsAppAssistant:
         )
 
         try:
-            response = self._claude.messages.create(
-                model=ASSISTANT_CLAUDE_MODEL,
-                max_tokens=512,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
+            # Retry Claude API call on rate limits (shared limits with pipeline)
+            max_claude_retries = 3
+            response = None
+            for _attempt in range(1, max_claude_retries + 1):
+                try:
+                    response = self._claude.messages.create(
+                        model=ASSISTANT_CLAUDE_MODEL,
+                        max_tokens=512,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": user_prompt}],
+                    )
+                    break
+                except anthropic.RateLimitError as rle:
+                    if _attempt < max_claude_retries:
+                        wait_time = 30 * _attempt  # 30s, 60s
+                        logger.warning(
+                            "Claude rate limit for assistant (attempt %d/%d) — "
+                            "waiting %ds (pipeline may be using shared quota)",
+                            _attempt, max_claude_retries, wait_time,
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(
+                            "Claude rate limit exhausted for assistant after %d attempts",
+                            max_claude_retries,
+                        )
+                        raise
+
             reasoning = response.content[0].text.strip()
             logger.debug("Claude reasoning output: %s", reasoning)
 
@@ -580,10 +602,33 @@ class WhatsAppAssistant:
         )
 
         try:
-            gemini_response = self._genai_client.models.generate_content(
-                model=self._gemini_model,
-                contents=prompt,
-            )
+            # Retry Gemini on transient/rate-limit errors
+            max_gemini_retries = 3
+            gemini_response = None
+            for _attempt in range(1, max_gemini_retries + 1):
+                try:
+                    gemini_response = self._genai_client.models.generate_content(
+                        model=self._gemini_model,
+                        contents=prompt,
+                    )
+                    break
+                except Exception as retry_exc:
+                    err_str = str(retry_exc).lower()
+                    is_retryable = any(
+                        kw in err_str
+                        for kw in ("rate", "limit", "429", "quota", "resource_exhausted")
+                    )
+                    if is_retryable and _attempt < max_gemini_retries:
+                        wait_time = 15 * _attempt  # 15s, 30s
+                        logger.warning(
+                            "Gemini rate limit for assistant (attempt %d/%d) — "
+                            "waiting %ds",
+                            _attempt, max_gemini_retries, wait_time,
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        raise
+
             text = gemini_response.text.strip()
             logger.debug("Gemini response (%d chars): %s…", len(text), text[:80])
             return text
@@ -742,6 +787,9 @@ class WhatsAppAssistant:
 
         if reasoning is None:
             return None
+
+        # Brief pause to reduce burst pressure on shared API quotas
+        time.sleep(1)
 
         # 7.5 Web search: if reasoning mentions recent/new features, enrich with live data
         web_context = ""

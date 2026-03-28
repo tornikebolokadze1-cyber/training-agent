@@ -8,3 +8,9 @@ healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 numReplicas = 1
+
+# Persistent volume (recommended for production):
+# Configure via Railway dashboard → Settings → Volumes
+# Mount path: /app/.tmp
+# This preserves pipeline state, checkpoints, and pending jobs across deploys.
+# Without a volume, all .tmp/ data is lost on every deploy.

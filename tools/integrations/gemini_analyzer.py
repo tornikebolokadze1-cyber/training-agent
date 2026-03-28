@@ -154,13 +154,15 @@ def _get_video_duration_seconds(video_path: Path) -> float:
 def _validate_media_path(video_path: Path) -> Path:
     """Resolve and validate that a media path is inside TMP_DIR.
 
-    Logs a warning (instead of raising) for paths outside TMP_DIR to avoid
-    breaking CLI usage and tests while still flagging suspicious paths.
+    Raises ValueError for paths outside TMP_DIR to prevent path traversal.
     """
     resolved = video_path.resolve()
     tmp_resolved = TMP_DIR.resolve()
     if not str(resolved).startswith(str(tmp_resolved)):
-        logger.warning("Media path outside TMP_DIR: %s", resolved)
+        raise ValueError(
+            f"Media path outside TMP_DIR rejected: {resolved} "
+            f"(expected prefix: {tmp_resolved})"
+        )
     return resolved
 
 
@@ -745,6 +747,26 @@ def _claude_reason(
                 purpose, len(result),
                 response.usage.input_tokens, response.usage.output_tokens,
             )
+
+            # Log Claude API cost
+            try:
+                usage = getattr(response, 'usage', None)
+                if usage:
+                    input_tokens = getattr(usage, 'input_tokens', 0) or 0
+                    output_tokens = getattr(usage, 'output_tokens', 0) or 0
+                    # Opus pricing: $15/M input, $75/M output
+                    input_cost = (input_tokens / 1_000_000) * 15.0
+                    output_cost = (output_tokens / 1_000_000) * 75.0
+                    total_cost = input_cost + output_cost
+                    logger.info(
+                        "💰 Claude cost [%s] | input=%d tokens ($%.4f) | "
+                        "output=%d tokens ($%.4f) | total=$%.4f",
+                        purpose, input_tokens, input_cost,
+                        output_tokens, output_cost, total_cost,
+                    )
+            except Exception:
+                pass
+
             return result
 
         except anthropic.RateLimitError as e:
@@ -859,7 +881,7 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         transcript,
         prompt=combined_prompt,
         purpose="combined analysis",
-        max_tokens=32000,
+        max_tokens=48000,
         budget_tokens=16000,
     )
 
@@ -1090,6 +1112,10 @@ def analyze_lecture(
     prefix = _checkpoint_prefix(group, lecture)
     use_checkpoints = bool(prefix)
 
+    import time as _time
+    _stage_times: dict[str, float] = {}
+    _pipeline_start = _time.monotonic()
+
     # Total pipeline steps for progress logging:
     # 1. Transcription (chunked)  2. Claude reasoning  3. Summary  4. Gap  5. Deep
     total_steps = 5
@@ -1102,6 +1128,7 @@ def analyze_lecture(
         logger.info("Pipeline %d%% — %s complete", pct, step_name)
 
     # --- Step 1: Transcription ---
+    _t0 = _time.monotonic()
     if existing_transcript:
         transcript = existing_transcript
         logger.info("Using existing transcript (%d chars)", len(transcript))
@@ -1120,9 +1147,11 @@ def analyze_lecture(
             _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
         _log_progress("transcription")
 
+    _stage_times["transcription"] = _time.monotonic() - _t0
     results: dict[str, str] = {"transcript": transcript}
 
     # --- Step 2: Single Claude call for all three analyses ---
+    _t0 = _time.monotonic()
     claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
     claude_sections: dict[str, str] = {}
 
@@ -1150,6 +1179,7 @@ def analyze_lecture(
             import json
             _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
 
+    _stage_times["claude_reasoning"] = _time.monotonic() - _t0
     _log_progress("Claude reasoning")
 
     # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
@@ -1177,13 +1207,22 @@ def analyze_lecture(
             _log_progress(f"{label} (skipped)")
             continue
 
+        _t0 = _time.monotonic()
         georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
+        _stage_times["gemini_writing"] = _stage_times.get("gemini_writing", 0) + (_time.monotonic() - _t0)
         results[key] = georgian_text
 
         if use_checkpoints and georgian_text:
             _save_checkpoint(checkpoint_name, georgian_text)
 
         _log_progress(label)
+
+    total = _time.monotonic() - _pipeline_start
+    logger.info(
+        "⏱️ Analysis timing: total=%.0fs | %s",
+        total,
+        " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items()),
+    )
 
     return results
 

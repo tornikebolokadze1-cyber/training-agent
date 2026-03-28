@@ -181,6 +181,18 @@ GROUPS: dict[int, GroupConfig] = {
     },
 }
 
+# Holiday/cancellation dates — lectures scheduled on these dates are skipped
+# Format: comma-separated ISO dates in env var, e.g., "2026-04-01,2026-04-15"
+_excluded_dates_str = os.environ.get("EXCLUDED_DATES", "")
+EXCLUDED_DATES: frozenset[date] = frozenset(
+    date.fromisoformat(d.strip())
+    for d in _excluded_dates_str.split(",")
+    if d.strip()
+) if _excluded_dates_str else frozenset()
+
+if EXCLUDED_DATES:
+    logger.info("Excluded dates loaded: %s", sorted(EXCLUDED_DATES))
+
 TOTAL_LECTURES = 15
 
 # Lecture folder IDs will be populated after folder creation.
@@ -368,7 +380,7 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
     count = 0
     current = start
     while current <= for_date:
-        if current.weekday() in meeting_days:
+        if current.weekday() in meeting_days and current not in EXCLUDED_DATES:
             count += 1
         current += timedelta(days=1)
 

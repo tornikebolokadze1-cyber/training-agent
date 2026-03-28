@@ -268,14 +268,15 @@ def check_recording_ready(
         ]
 
         if mp4_files:
+            prev_count = len(mp4_files)
             logger.info(
                 "[recording] Found %d completed MP4 segment(s) for meeting %s "
-                "— waiting one more poll to catch late segments...",
-                len(mp4_files),
-                meeting_id,
+                "— waiting for segment count to stabilize...",
+                prev_count, meeting_id,
             )
-            # Wait one extra cycle — a second segment may still be processing
+            # Wait for segment count to stabilize across 2 consecutive polls
             time.sleep(RECORDING_POLL_INTERVAL)
+            elapsed += RECORDING_POLL_INTERVAL
             try:
                 recordings = zm.get_meeting_recordings(meeting_id)
                 files = recordings.get("recording_files", [])
@@ -286,20 +287,34 @@ def check_recording_ready(
                 ]
             except Exception as exc:
                 logger.warning(
-                    "[recording] Extra poll failed: %s — proceeding with %d segment(s)",
-                    exc, len(mp4_files),
+                    "[recording] Stability check failed: %s — proceeding with %d segment(s)",
+                    exc, prev_count,
                 )
+
+            new_count = len(mp4_files)
+            if new_count > prev_count:
+                # New segment appeared — do one more stabilization poll
+                logger.info(
+                    "[recording] Segment count changed (%d → %d) — one more poll...",
+                    prev_count, new_count,
+                )
+                time.sleep(RECORDING_POLL_INTERVAL)
+                elapsed += RECORDING_POLL_INTERVAL
+                try:
+                    recordings = zm.get_meeting_recordings(meeting_id)
+                    files = recordings.get("recording_files", [])
+                    mp4_files = [
+                        f for f in files
+                        if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
+                        and f.get("status", "").upper() == "COMPLETED"
+                    ]
+                except Exception as exc:
+                    logger.warning("[recording] Final poll failed: %s", exc)
 
             logger.info(
                 "[recording] Final count: %d MP4 segment(s) for meeting %s",
-                len(mp4_files),
-                meeting_id,
+                len(mp4_files), meeting_id,
             )
-            for i, seg in enumerate(mp4_files, 1):
-                logger.info(
-                    "[recording]   Segment %d: %s",
-                    i, seg.get("download_url", "(no url)"),
-                )
             return mp4_files
 
         logger.info(
@@ -944,6 +959,55 @@ async def whatsapp_obsidian_sync_job() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Periodic background jobs
+# ---------------------------------------------------------------------------
+
+
+async def _process_dlq_job() -> None:
+    """Process pending Dead Letter Queue items every 10 minutes."""
+    try:
+        from tools.core.dlq import process_pending_items, cleanup_old_dead_letters
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(None, process_pending_items)
+        if stats.get("processed", 0) > 0:
+            logger.info("[dlq] Processed: %s", stats)
+        # Weekly cleanup of old dead letters
+        cleanup_old_dead_letters(max_age_days=7)
+    except ImportError:
+        logger.debug("[dlq] DLQ module not available")
+    except Exception as exc:
+        logger.error("[dlq] DLQ processing failed: %s", exc)
+
+
+async def _whatsapp_health_check_job() -> None:
+    """Proactive WhatsApp health check — alerts via EMAIL if unhealthy."""
+    try:
+        from tools.integrations.whatsapp_sender import check_whatsapp_health, send_email_fallback
+        loop = asyncio.get_running_loop()
+        health = await loop.run_in_executor(None, check_whatsapp_health)
+
+        if not health.get("connected", False):
+            state = health.get("state", "unknown")
+            logger.error(
+                "[whatsapp-health] WhatsApp NOT CONNECTED (state=%s). QR re-scan needed!", state
+            )
+            # Alert via EMAIL since WhatsApp is the thing that's broken
+            send_email_fallback(
+                subject="WhatsApp DISCONNECTED — QR re-scan needed",
+                body=(
+                    f"WhatsApp health check failed.\n"
+                    f"State: {state}\n"
+                    f"Time: {datetime.now(TBILISI_TZ).isoformat()}\n\n"
+                    f"Action needed: Re-scan the QR code in Green API dashboard."
+                ),
+            )
+        else:
+            logger.debug("[whatsapp-health] WhatsApp connected (state=%s)", health.get("state"))
+    except Exception as exc:
+        logger.error("[whatsapp-health] Health check failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1051,6 +1115,28 @@ def start_scheduler() -> AsyncIOScheduler:
         ),
         id="whatsapp_obsidian_sync",
         name="WhatsApp → Obsidian sync (every 6h)",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Periodic: Dead Letter Queue processor (every 10 minutes)          #
+    # ------------------------------------------------------------------ #
+    scheduler.add_job(
+        _process_dlq_job,
+        trigger=CronTrigger(minute="*/10", timezone=TBILISI_TZ),
+        id="dlq_processor",
+        name="DLQ: Process pending retries",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Periodic: WhatsApp health check (every 30 minutes)                #
+    # ------------------------------------------------------------------ #
+    scheduler.add_job(
+        _whatsapp_health_check_job,
+        trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
+        id="whatsapp_health_check",
+        name="WhatsApp: Proactive health check",
         replace_existing=True,
     )
 

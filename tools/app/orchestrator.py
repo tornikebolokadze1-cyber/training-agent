@@ -161,6 +161,13 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
     from tools.integrations.whatsapp_sender import check_whatsapp_health
     state["whatsapp"] = check_whatsapp_health()
 
+    # --- DLQ (dead-letter queue) ---
+    try:
+        from tools.core.dlq import get_queue_status
+        state["dlq"] = get_queue_status()
+    except ImportError:
+        state["dlq"] = {"pending": 0, "permanently_failed": 0}
+
     # --- server meta ---
     state["server"] = {
         "host": SERVER_HOST,

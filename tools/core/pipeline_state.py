@@ -16,6 +16,7 @@ Usage::
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -46,6 +47,9 @@ FAILED = "FAILED"
 
 # States that represent a finished pipeline (no further processing expected).
 _TERMINAL_STATES: frozenset[str] = frozenset({COMPLETE, FAILED})
+
+# File-level lock for atomic claim operations.
+_LOCK_FILE = TMP_DIR / ".pipeline_lock"
 
 # Ordered list of all valid states — used for validation.
 ALL_STATES: tuple[str, ...] = (
@@ -424,6 +428,98 @@ def create_pipeline(
         meeting_id,
     )
     return state
+
+
+def try_claim_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+) -> PipelineState | None:
+    """Atomically check-and-create a pipeline. Returns the new state, or None if already active.
+
+    Uses file locking to prevent race conditions between webhook handler,
+    scheduler fallback, and startup recovery.  This is the SOLE authority
+    for deduplication decisions — callers must not maintain their own
+    check-then-act logic.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        meeting_id: Zoom meeting UUID associated with this recording.
+
+    Returns:
+        The newly created PipelineState if the claim succeeded, or None if
+        a pipeline is already active or complete for this group/lecture.
+    """
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = _LOCK_FILE
+
+    lock_fd: Any = None  # typing: IO[str]
+    try:
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        # Another process holds the lock — treat as "already claimed"
+        logger.debug(
+            "Pipeline lock held by another process for g%d/l%d", group, lecture
+        )
+        if lock_fd is not None:
+            lock_fd.close()
+        return None
+
+    try:
+        # Check if pipeline is already active or complete
+        existing = load_state(group, lecture)
+        if existing is not None:
+            if existing.state == COMPLETE:
+                logger.info(
+                    "Pipeline g%d/l%d already COMPLETE — skipping", group, lecture
+                )
+                return None
+            if existing.state == FAILED:
+                # Allow retry of failed pipelines
+                logger.info(
+                    "Pipeline g%d/l%d was FAILED — allowing retry", group, lecture
+                )
+                state_file_path(group, lecture).unlink(missing_ok=True)
+            elif existing.state not in _TERMINAL_STATES:
+                logger.info(
+                    "Pipeline g%d/l%d already active (state=%s) — skipping",
+                    group, lecture, existing.state,
+                )
+                return None
+
+        # Create the pipeline
+        now = _now_iso()
+        state = PipelineState(
+            group=group,
+            lecture=lecture,
+            state=PENDING,
+            meeting_id=meeting_id,
+            started_at=now,
+            updated_at=now,
+        )
+        save_state(state)
+        logger.info(
+            "Claimed pipeline g%d/l%d (meeting_id=%r)", group, lecture, meeting_id
+        )
+        return state
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def release_pipeline(group: int, lecture: int) -> None:
+    """Release a pipeline claim. Called in finally blocks after pipeline completes or fails.
+
+    The state file already reflects COMPLETE or FAILED via mark_complete/mark_failed.
+    This function exists for future extensibility (e.g., releasing named locks).
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+    """
+    logger.debug("Pipeline g%d/l%d released", group, lecture)
 
 
 def mark_failed(state: PipelineState, error: str) -> PipelineState:
