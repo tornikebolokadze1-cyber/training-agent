@@ -1,6 +1,6 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [მოდელის შერჩევა]
+aliases: [მოდელების შერჩევა, მოდელის შერჩევა]
 category: technique
 ---
 
@@ -16,10 +16,12 @@ category: technique
 
 ## ლექციებში
 
+- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
+- [[AI Cost Optimization]]
 - [[Cost Optimization]]

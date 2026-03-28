@@ -19,7 +19,7 @@ tags: [MOC, ინდექსი]
 | 2 | [[ლექცია 2]] | 2026-03-17 | AI მოდელების მიმოხილვა, მახასიათებლები და აგენტების შესავალი |
 | 3 | [[ლექცია 3]] | 2026-03-20 | AI აგენტები და აგენტური ხელოვნური ინტელექტი |
 | 4 | [[ლექცია 4]] | 2026-03-24 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი (ლექცია ~4-5) |
-| 5 | ლექცია 5 | -- | _მოლოდინში_ |
+| 5 | [[ლექცია 5]] | 2026-03-27 | Claude-ის ეკოსისტემა, პროექტის აწყობა და ჩინური AI მოდელები |
 | 6 | ლექცია 6 | -- | _მოლოდინში_ |
 | 7 | ლექცია 7 | -- | _მოლოდინში_ |
 | 8 | ლექცია 8 | -- | _მოლოდინში_ |
@@ -58,6 +58,7 @@ tags: [MOC, ინდექსი]
 - [[ChatGPT]]
 - [[ChatGPT Atlas]]
 - [[Claude]]
+- [[Claude 3.5]]
 - [[Claude Add-in]]
 - [[Claude Chat]]
 - [[Claude Cowork]]
@@ -66,8 +67,11 @@ tags: [MOC, ინდექსი]
 - [[Claude Desktop Application]]
 - [[Claude Extension]]
 - [[Claude Web Interface]]
+- [[Claude Website]]
 - [[Claude ecosystem]]
 - [[DeepSeek]]
+- [[GPT-4o]]
+- [[Gemini 2.0]]
 - [[Google Gemini]]
 - [[Google Gemini Gems]]
 - [[Google Workspace Gemini]]
@@ -124,33 +128,33 @@ tags: [MOC, ინდექსი]
 - [[AI]] (G1L1, G2L1)
 - [[AI Agent]] (G1L2, G2L1, G2L2)
 - [[AI Agents]] (G1L3, G2L5)
+- [[AI Cost Optimization]] (G1L5, G2L2)
 - [[AI Ethics]] (G1L2, G1L4, G2L5)
 - [[AI Governance]] (G1L1, G1L2, G1L3, G2L1, G2L2)
-- [[AI Safety]] (G1L2, G1L3, G2L2)
+- [[AI Safety]] (G1L2, G1L3, G1L5, G2L2)
 - [[AI Strategy]] (G1L3, G1L4)
-- [[Anthropic]] (G1L3, G2L2)
-- [[AutoGen]] (G1L2, G1L3, G2L2, G2L5)
+- [[Anthropic]] (G1L3, G1L5, G2L2)
+- [[AutoGen]] (G1L2, G1L3, G1L5, G2L2, G2L5)
 - [[Bias]] (G1L2, G2L1)
 - [[Bias (AI)]] (G1L4, G2L2)
 - [[CRISPE framework]] (G1L2, G1L4)
+- [[Caching]] (G1L5, G2L5)
 - [[Chain-of-Thought]] (G1L3, G2L5)
 - [[Chain-of-thought prompting]] (G1L2, G1L4)
 - [[Change Management]] (G1L2, G1L3)
-- [[Claude Code]] (G1L2, G1L3, G1L4, G2L2, G2L3, G2L5)
+- [[Claude Code]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L3, G2L5)
 - [[Compliance]] (G1L2, G1L3, G2L2)
-- [[CrewAI]] (G1L2, G1L3, G1L4, G2L2, G2L5)
+- [[Computer Use]] (G1L5, G2L1)
+- [[Context Window]] (G1L5, G2L1)
+- [[CrewAI]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L5)
 - [[Custom Instructions]] (G1L2, G2L3)
 - [[Dashboard]] (G2L2, G2L5)
 - [[Data Control]] (G1L2, G2L3)
 - [[Deep Research]] (G1L2, G2L3)
 - [[EU AI Act]] (G1L1, G1L2, G1L3, G2L2)
-- [[Error Handling]] (G1L4, G2L5)
-- [[Gemini]] (G1L3, G2L3, G2L5)
-- [[Hallucination Management]] (G2L2, G2L5)
-- [[Hallucinations]] (G2L1, G2L5)
-- [[IDE (Integrated Development Environment)]] (G1L3, G2L2)
-- [[Jailbreaking]] (G2L3, G2L5)
-- [[Knowledge Graphs]] (G2L2, G2L5)
+- [[Embeddings]] (G1L3, G1L5)
+- [[Error Handling]] (G1L4, G1L5, G2L5)
+- [[GDPR]] (G1L4, G1L5)
 
 ---
 
@@ -158,7 +162,7 @@ tags: [MOC, ინდექსი]
 
 | ჯგუფი | ლექციები | სტატუსი |
 |-------|----------|---------|
-| #1 | 4/15 | მიმდინარე |
+| #1 | 5/15 | მიმდინარე |
 | #2 | 4/15 | მიმდინარე |
 
 ---
@@ -170,6 +174,7 @@ tags: [MOC, ინდექსი]
 - [[ლექცია 2 -- ანალიზი]]
 - [[ლექცია 3 -- ანალიზი]]
 - [[ლექცია 4 -- ანალიზი]]
+- [[ლექცია 5 -- ანალიზი]]
 
 ### ჯგუფი 2
 - [[ლექცია 1 -- ანალიზი]]

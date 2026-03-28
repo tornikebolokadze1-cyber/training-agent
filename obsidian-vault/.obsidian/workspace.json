@@ -4,21 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "38b1c57a7ca16000",
+        "id": "122b45e4eb9d5b17",
         "type": "tabs",
         "children": [
           {
-            "id": "638c530136f3000e",
+            "id": "ff978037718c4f99",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "კონცეფციები/Account Creation.md",
-                "mode": "preview",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Account Creation"
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -181,16 +177,37 @@
       "bases:Create new base": false
     }
   },
-  "active": "638c530136f3000e",
+  "active": "ff978037718c4f99",
   "lastOpenFiles": [
-    "კონცეფციები/Context Window.md",
-    "კონცეფციები/Rube (MCP Server).md",
-    "კონცეფციები/Benchmark.md",
-    "კონცეფციები/Business Intelligence.md",
-    "MOC - ძირითადი თემები.md",
-    "კონცეფციები/resume.md file.md",
-    "კონცეფციები/AutoGen.md",
-    "კონცეფციები/Personalization.md",
-    "ლექციები/ჯგუფი 2/ლექცია 2.md"
+    "ლექციები/ჯგუფი 2/ლექცია 2.md",
+    "კონცეფციები/Qwen, Kimi 2.5, MiniMax.md",
+    "კონცეფციები/VS Code  Claude Code.md",
+    "კონცეფციები/Audio.md",
+    "კონცეფციები/LearnPrompting.md",
+    "კონცეფციები/DAIR.AI.md",
+    "ინსტრუმენტები/Claude 3.5.md",
+    "ინსტრუმენტები/Gemini 2.0.md",
+    "ინსტრუმენტები/GPT-4o.md",
+    "კონცეფციები/AI Governance in Teams.md",
+    "კონცეფციები/OpenAI Realtime API.md",
+    "ინსტრუმენტები/Play.ht.md",
+    "კონცეფციები/Conversational Agents.md",
+    "კონცეფციები/Token Costs.md",
+    "კონცეფციები/Responsible AI Use.md",
+    "კონცეფციები/AI Agent Frameworks.md",
+    "კონცეფციები/Retrieval-Augmented Generation (RAG).md",
+    "კონცეფციები/Agent Swarm.md",
+    "კონცეფციები/Deployment.md",
+    "კონცეფციები/CLAUDE.md.md",
+    "კონცეფციები/Temperature.md",
+    "კონცეფციები/LLM (Large Language Model).md",
+    "კონცეფციები/Project Ideation.md",
+    "კონცეფციები/Tools.md",
+    "კონცეფციები/setup command.md",
+    "კონცეფციები/settings.json.md",
+    "Untitled 2.canvas",
+    "Untitled.base",
+    "Untitled 1.canvas",
+    "Untitled.canvas"
   ]
 }

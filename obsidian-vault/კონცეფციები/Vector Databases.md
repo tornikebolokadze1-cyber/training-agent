@@ -16,6 +16,7 @@ category: technology
 
 ## ლექციებში
 
+- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 5]] (ჯგუფი 2)
 
@@ -23,6 +24,7 @@ category: technology
 
 ## დაკავშირებული
 
+- [[Retrieval-Augmented Generation (RAG)]]
 - [[Knowledge Graphs]]
 - [[Pinecone]]
 - [[Weaviate]]

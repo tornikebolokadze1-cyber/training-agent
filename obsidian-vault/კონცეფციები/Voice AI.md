@@ -17,6 +17,7 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 
 ---
@@ -24,5 +25,7 @@ category: concept
 ## დაკავშირებული
 
 - [[ElevenLabs]]
+- [[Play.ht]]
+- [[OpenAI Realtime API]]
 - [[OpenAI Voice Mode]]
 - [[Enagram AI]]

@@ -16,12 +16,14 @@ category: framework
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
+- [[AI Agent Frameworks]]
 - [[Multi-agent Orchestration]]
 - [[Agentic AI Frameworks]]
 - [[AI Agent Orchestration]]

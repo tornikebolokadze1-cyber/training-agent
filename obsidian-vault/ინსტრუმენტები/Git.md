@@ -17,12 +17,13 @@ category: tool
 ## ლექციებში
 
 - [[ლექცია 4]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 1)
 
 ---
 
 ## დაკავშირებული
 
+- [[GitHub]]
 - [[Version Management]]
 - [[Commits]]
-- [[GitHub]]
 - [[Commit and Push workflow]]

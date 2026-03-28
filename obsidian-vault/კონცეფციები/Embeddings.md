@@ -17,9 +17,11 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 1)
 
 ---
 
 ## დაკავშირებული
 
+- [[Retrieval-Augmented Generation (RAG)]]
 - [[RAG (Retrieval-Augmented Generation)]]
