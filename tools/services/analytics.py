@@ -720,16 +720,17 @@ def _build_group_data(group_number: int) -> dict:
     std_devs = [stats[d].get("std_dev") for d in DIMENSIONS if stats[d].get("std_dev") is not None]
     consistency = round(10 - sum(std_devs) / len(std_devs), 2) if std_devs else None
 
-    # Computed trainer sub-scores (derived from 5 dimensions)
-    last_row = rows[-1]
-    pedagogy_score = round((last_row["engagement"] + last_row["content_depth"]) / 2, 1)
+    # Computed trainer sub-scores (derived from dimension AVERAGES, not last lecture)
+    dim_avgs = {d: stats[d]["mean"] for d in DIMENSIONS if stats[d].get("mean") is not None}
+    pedagogy_score = round((dim_avgs.get("engagement", 0) + dim_avgs.get("content_depth", 0)) / 2, 1)
     content_quality = round(
-        (last_row["technical_accuracy"] + last_row["content_depth"] + last_row["market_relevance"]) / 3, 1
+        (dim_avgs.get("technical_accuracy", 0) + dim_avgs.get("content_depth", 0) + dim_avgs.get("market_relevance", 0)) / 3, 1
     )
-    impact_score = round((last_row["practical_value"] + last_row["market_relevance"]) / 2, 1)
-    dim_vals = [last_row[d] for d in DIMENSIONS]
-    balance_score = round(10 - (max(dim_vals) - min(dim_vals)), 1)
-    target_gap = round(7.0 - last_row["composite"], 1)
+    impact_score = round((dim_avgs.get("practical_value", 0) + dim_avgs.get("market_relevance", 0)) / 2, 1)
+    avg_vals = [dim_avgs.get(d, 0) for d in DIMENSIONS]
+    balance_score = round(10 - (max(avg_vals) - min(avg_vals)), 1) if avg_vals else 0
+    composite_avg = stats["composite"].get("mean", 0) or 0
+    target_gap = round(7.0 - composite_avg, 1)
 
     # Load qualitative insights for this group's lectures
     insights_list = []
@@ -745,10 +746,10 @@ def _build_group_data(group_number: int) -> dict:
     # 1. Kirkpatrick Level Scores (from Trainer KPI research)
     #    L1=Reaction(engagement), L2=Learning(depth+accuracy), L3=Behavior(practical), L4=Results(market)
     kirkpatrick = {
-        "L1_reaction": last_row["engagement"],
-        "L2_learning": round((last_row["content_depth"] + last_row["technical_accuracy"]) / 2, 1),
-        "L3_behavior": last_row["practical_value"],
-        "L4_results": last_row["market_relevance"],
+        "L1_reaction": dim_avgs.get("engagement", 0),
+        "L2_learning": round((dim_avgs.get("content_depth", 0) + dim_avgs.get("technical_accuracy", 0)) / 2, 1),
+        "L3_behavior": dim_avgs.get("practical_value", 0),
+        "L4_results": dim_avgs.get("market_relevance", 0),
     }
 
     # 2. Improvement Velocity (slope per lecture — from trend analysis)
@@ -775,15 +776,16 @@ def _build_group_data(group_number: int) -> dict:
 
     # 5. Theory vs Practice Balance (from AI training research)
     #    Ideal ratio: 30% theory (depth+accuracy) / 70% practice (practical+engagement+market)
-    theory = (last_row["content_depth"] + last_row["technical_accuracy"]) / 2
-    practice = (last_row["practical_value"] + last_row["engagement"] + last_row["market_relevance"]) / 3
+    theory = (dim_avgs.get("content_depth", 0) + dim_avgs.get("technical_accuracy", 0)) / 2
+    practice = (dim_avgs.get("practical_value", 0) + dim_avgs.get("engagement", 0) + dim_avgs.get("market_relevance", 0)) / 3
     theory_practice_ratio = round(theory / practice, 2) if practice > 0 else None
     # Ideal ~0.43 (30/70). Lower = more practical, higher = too theoretical
 
     # 6. Global Benchmark Position (from industry research: 4.3/5 = 8.6/10 satisfaction benchmark)
     industry_benchmark = 7.0  # ATD/SHRM average for "good" trainers
-    benchmark_gap = round((tpi_local := last_row["composite"]) - industry_benchmark, 1)
-    benchmark_percentile = min(99, max(1, round(tpi_local / 10 * 100)))
+    group_composite_avg = composite_avg
+    benchmark_gap = round(group_composite_avg - industry_benchmark, 1)
+    benchmark_percentile = min(99, max(1, round(group_composite_avg / 10 * 100)))
 
     # 7. At-Risk Dimensions (from lecture analysis research — regression detection)
     at_risk_dims = []
@@ -796,8 +798,8 @@ def _build_group_data(group_number: int) -> dict:
 
     # 8. Lectures Until Target (estimated based on velocity)
     lectures_to_target = None
-    if velocity > 0 and last_row["composite"] < 7.0:
-        gap = 7.0 - last_row["composite"]
+    if velocity > 0 and group_composite_avg < 7.0:
+        gap = 7.0 - group_composite_avg
         lectures_to_target = math.ceil(gap / velocity) if velocity > 0.01 else None
 
     return {
@@ -870,6 +872,66 @@ def get_dashboard_data() -> dict:
         dim_rankings.append({"dim": d, "mean": avg})
     dim_rankings.sort(key=lambda x: x["mean"] if x["mean"] is not None else 0, reverse=True)
 
+    # ── Cross-group computed metrics (averages across BOTH groups) ──
+    # These are used by competency gauges, Kirkpatrick, and deep metrics
+    cross_dim_avgs: dict[str, float] = {}
+    for d in DIMENSIONS:
+        vals = overall_dim_means[d]
+        cross_dim_avgs[d] = round(sum(vals) / len(vals), 2) if vals else 0
+
+    cross_pedagogy = round((cross_dim_avgs.get("engagement", 0) + cross_dim_avgs.get("content_depth", 0)) / 2, 1)
+    cross_content_quality = round(
+        (cross_dim_avgs.get("technical_accuracy", 0) + cross_dim_avgs.get("content_depth", 0) + cross_dim_avgs.get("market_relevance", 0)) / 3, 1
+    )
+    cross_impact = round((cross_dim_avgs.get("practical_value", 0) + cross_dim_avgs.get("market_relevance", 0)) / 2, 1)
+    cross_avg_vals = [cross_dim_avgs.get(d, 0) for d in DIMENSIONS]
+    cross_balance = round(10 - (max(cross_avg_vals) - min(cross_avg_vals)), 1) if cross_avg_vals else 0
+
+    cross_kirkpatrick = {
+        "L1_reaction": cross_dim_avgs.get("engagement", 0),
+        "L2_learning": round((cross_dim_avgs.get("content_depth", 0) + cross_dim_avgs.get("technical_accuracy", 0)) / 2, 1),
+        "L3_behavior": cross_dim_avgs.get("practical_value", 0),
+        "L4_results": cross_dim_avgs.get("market_relevance", 0),
+    }
+
+    cross_bench_gap = round((tpi or 0) - 7.0, 1)
+    cross_theory = (cross_dim_avgs.get("content_depth", 0) + cross_dim_avgs.get("technical_accuracy", 0)) / 2
+    cross_practice = (cross_dim_avgs.get("practical_value", 0) + cross_dim_avgs.get("engagement", 0) + cross_dim_avgs.get("market_relevance", 0)) / 3
+    cross_tp_ratio = round(cross_theory / cross_practice, 2) if cross_practice else None
+
+    # Combined velocity from all composites
+    if len(all_composites) >= 2:
+        n_c = len(all_composites)
+        x_mean = (n_c - 1) / 2
+        y_mean = sum(all_composites) / n_c
+        num = sum((i - x_mean) * (all_composites[i] - y_mean) for i in range(n_c))
+        den = sum((i - x_mean) ** 2 for i in range(n_c))
+        cross_velocity = round(num / den, 2) if den else 0
+    else:
+        cross_velocity = 0
+    cross_vel_label = "აჩქარებს" if cross_velocity > 0.3 else ("ანელებს" if cross_velocity < -0.3 else "სტაბილური")
+    cross_ltt = round((7.0 - (tpi or 0)) / cross_velocity) if cross_velocity > 0 and tpi and tpi < 7 else None
+
+    # Cross-group recommendation followthrough (compare last two lectures across all)
+    all_scores_ordered = sorted(
+        g1.get("scores", []) + g2.get("scores", []),
+        key=lambda r: (r.get("group_number", 0), r.get("lecture_number", 0)),
+    )
+    cross_rec_ft = 0
+    if len(all_scores_ordered) >= 2:
+        prev, curr = all_scores_ordered[-2], all_scores_ordered[-1]
+        for d in DIMENSIONS:
+            if curr.get(d, 0) > prev.get(d, 0):
+                cross_rec_ft += 1
+
+    # Cross-group at-risk dimensions
+    cross_at_risk = []
+    if len(all_scores_ordered) >= 2:
+        prev, curr = all_scores_ordered[-2], all_scores_ordered[-1]
+        for d in DIMENSIONS:
+            if curr.get(d, 0) < prev.get(d, 0) and (prev.get(d, 0) - curr.get(d, 0)) >= 1.0:
+                cross_at_risk.append(d)
+
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "total_processed": g1["lecture_count"] + g2["lecture_count"],
@@ -880,6 +942,19 @@ def get_dashboard_data() -> dict:
         "total_lectures": 15,
         "trainer_performance_index": tpi,
         "dimension_rankings": dim_rankings,
+        # Cross-group computed metrics
+        "cross_pedagogy": cross_pedagogy,
+        "cross_content_quality": cross_content_quality,
+        "cross_impact": cross_impact,
+        "cross_balance": cross_balance,
+        "cross_kirkpatrick": cross_kirkpatrick,
+        "cross_bench_gap": cross_bench_gap,
+        "cross_tp_ratio": cross_tp_ratio,
+        "cross_velocity": cross_velocity,
+        "cross_vel_label": cross_vel_label,
+        "cross_ltt": cross_ltt,
+        "cross_rec_ft": cross_rec_ft,
+        "cross_at_risk": cross_at_risk,
     }
 
 
@@ -1136,8 +1211,8 @@ def generate_performance_narrative(dashboard_data: dict) -> str:
     if not all_rows:
         return "📊 ჯერ არცერთი ლექციის ქულა არ არის დაფიქსირებული."
 
-    # Sort by processed_at timestamp for true chronological order
-    all_rows.sort(key=lambda r: r.get("processed_at", ""))
+    # Sort by group then lecture number for logical course order
+    all_rows.sort(key=lambda r: (r.get("group_number", 0), r.get("lecture_number", 0)))
 
     n = len(all_rows)
 
@@ -1314,19 +1389,19 @@ def render_dashboard_html(data: dict) -> str:
         narrative_html = '<span style="color:var(--muted)">\u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8 \u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1</span>'
 
     # ── Pre-compute new research metrics for template (can't use {{}} in f-strings) ──
-    _kirk = g2.get("kirkpatrick") or {}
+    _kirk = data.get("cross_kirkpatrick") or {}
     _kirk_l1 = _kirk.get("L1_reaction")
     _kirk_l2 = _kirk.get("L2_learning")
     _kirk_l3 = _kirk.get("L3_behavior")
     _kirk_l4 = _kirk.get("L4_results")
-    _bench_gap = g2.get("benchmark_gap", 0) or 0
-    _tp_ratio = g2.get("theory_practice_ratio")
-    _velocity = g2.get("velocity", 0) or 0
-    _vel_label = g2.get("velocity_label", "—")
-    _ltt = g2.get("lectures_to_target")
-    _rec_ft = g2.get("recommendation_followthrough", 0)
-    _at_risk = g2.get("at_risk_dims", [])
-    _at_risk_names = ", ".join(_esc(DIMENSION_LABELS_KA.get(d["dim"], d["dim"])) for d in _at_risk) if _at_risk else "არ არის"
+    _bench_gap = data.get("cross_bench_gap", 0) or 0
+    _tp_ratio = data.get("cross_tp_ratio")
+    _velocity = data.get("cross_velocity", 0) or 0
+    _vel_label = data.get("cross_vel_label", "—")
+    _ltt = data.get("cross_ltt")
+    _rec_ft = data.get("cross_rec_ft", 0)
+    _at_risk = data.get("cross_at_risk", [])
+    _at_risk_names = ", ".join(_esc(DIMENSION_LABELS_KA.get(d if isinstance(d, str) else d["dim"], d if isinstance(d, str) else d["dim"])) for d in _at_risk) if _at_risk else "არ არის"
 
     # ── TPI gauge arc calculation ──
     tpi_val = tpi if tpi is not None else 0
@@ -1351,18 +1426,22 @@ def render_dashboard_html(data: dict) -> str:
             level_icon = icon
             break
 
-    # ── Streak calculation (consecutive improvements across all lectures) ──
-    all_composites_ordered: list[float] = []
-    for gn_val in [1, 2]:
-        for row in data["groups"][gn_val].get("scores", []):
-            all_composites_ordered.append(row["composite"])
-    streak = 0
-    if len(all_composites_ordered) >= 2:
-        for i in range(len(all_composites_ordered) - 1, 0, -1):
-            if all_composites_ordered[i] > all_composites_ordered[i - 1]:
-                streak += 1
+    # ── Streak calculation (per-group, take max) ──
+    def _calc_streak(composites: list[float]) -> int:
+        s = 0
+        for i in range(len(composites) - 1, 0, -1):
+            if composites[i] > composites[i - 1]:
+                s += 1
             else:
                 break
+        return s
+
+    g1_composites = [r["composite"] for r in data["groups"][1].get("scores", [])]
+    g2_composites = [r["composite"] for r in data["groups"][2].get("scores", [])]
+    streak = max(
+        _calc_streak(g1_composites) if len(g1_composites) >= 2 else 0,
+        _calc_streak(g2_composites) if len(g2_composites) >= 2 else 0,
+    )
 
     # ── Progress timeline dots for each group ──
     def _timeline_dots(group_data: dict, group_num: int) -> str:
@@ -1568,10 +1647,10 @@ def render_dashboard_html(data: dict) -> str:
     # ── Pre-compute strings that contain \u escapes (Python 3.9 disallows them in f-string exprs) ──
     _tpi_display = _fmt(tpi) if tpi else "\u2014"
     _tpi_display2 = _fmt(tpi) if tpi else "\u2014"
-    _gauge_pedagogy = _mini_gauge(g2.get('pedagogy_score') if g2['lecture_count'] else None, "\u10de\u10d4\u10d3\u10d0\u10d2\u10dd\u10d2\u10d8\u10d9\u10d0")
-    _gauge_content = _mini_gauge(g2.get('content_quality') if g2['lecture_count'] else None, "\u10d9\u10dd\u10dc\u10e2\u10d4\u10dc\u10e2\u10d8\u10e1 \u10ee\u10d0\u10e0\u10d8\u10e1\u10ee\u10d8")
-    _gauge_impact = _mini_gauge(g2.get('impact_score') if g2['lecture_count'] else None, "\u10de\u10e0\u10d0\u10e5\u10e2. \u10d6\u10d4\u10d2\u10d0\u10d5\u10da\u10d4\u10dc\u10d0")
-    _gauge_balance = _mini_gauge(g2.get('balance_score') if g2['lecture_count'] else None, "\u10d1\u10d0\u10da\u10d0\u10dc\u10e1\u10d8")
+    _gauge_pedagogy = _mini_gauge(data.get('cross_pedagogy'), "\u10de\u10d4\u10d3\u10d0\u10d2\u10dd\u10d2\u10d8\u10d9\u10d0")
+    _gauge_content = _mini_gauge(data.get('cross_content_quality'), "\u10d9\u10dd\u10dc\u10e2\u10d4\u10dc\u10e2\u10d8\u10e1 \u10ee\u10d0\u10e0\u10d8\u10e1\u10ee\u10d8")
+    _gauge_impact = _mini_gauge(data.get('cross_impact'), "\u10de\u10e0\u10d0\u10e5\u10e2. \u10d6\u10d4\u10d2\u10d0\u10d5\u10da\u10d4\u10dc\u10d0")
+    _gauge_balance = _mini_gauge(data.get('cross_balance'), "\u10d1\u10d0\u10da\u10d0\u10dc\u10e1\u10d8")
     _no_lectures_msg = '<div class="card"><p class="empty-state">\u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1 \u10da\u10d4\u10e5\u10ea\u10d8\u10d4\u10d1\u10d8 \u10d3\u10d0\u10db\u10e3\u10e8\u10d0\u10d5\u10d4\u10d1\u10e3\u10da\u10d8</p></div>'
     _no_data_msg = '<p class="empty-state">\u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8 \u10ef\u10d4\u10e0 \u10d0\u10e0 \u10d0\u10e0\u10d8\u10e1</p>'
 
