@@ -19,6 +19,7 @@ category: tool
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 
@@ -31,6 +32,8 @@ category: tool
 - [[Node (n8n)]]
 - [[Claude Desktop Application]]
 - [[MCP (Model Context Protocol)]]
+- [[Dispatch]]
+- [[AI სამუშაო პროცესების ავტომატიზაცია]]
 - [[Workflow Orchestration]]
 
 ---

@@ -38,7 +38,7 @@ tags: [MOC, ინდექსი]
 | 1 | [[ლექცია 1]] | 2026-03-12 | AI ტრენინგის კურსი — ლექცია 1 (თეორიული შესავალი) |
 | 2 | [[ლექცია 2]] | 2026-03-16 | ლექცია #2: Claude Code, Vibe Coding და AI აგენტები — პრაქტიკ |
 | 3 | [[ლექცია 3]] | 2026-03-19 | ლექცია #3 (კვირა 2) — AI მოდელების ყოვლისმომცველი მიმოხილვა, |
-| 4 | ლექცია 4 | -- | _მოლოდინში_ |
+| 4 | [[ლექცია 4]] | 2026-03-23 | ლექციის სრულყოფილი შეჯამება — ლექცია 4 (AI ინსტრუმენტები ქარ |
 | 5 | [[ლექცია 5]] | 2026-03-26 | AI აგენტების შექმნის კურსი: ინსტრუმენტები, მეხსიერების მართვ |
 | 6 | ლექცია 6 | -- | _მოლოდინში_ |
 | 7 | ლექცია 7 | -- | _მოლოდინში_ |
@@ -55,13 +55,16 @@ tags: [MOC, ინდექსი]
 
 ## AI მოდელები
 
+- [[Anthropic]]
 - [[ChatGPT]]
 - [[ChatGPT Atlas]]
 - [[Claude]]
 - [[Claude 3.5]]
 - [[Claude Add-in]]
 - [[Claude Chat]]
+- [[Claude Code]]
 - [[Claude Cowork]]
+- [[Claude Desktop]]
 - [[Claude Desktop (Coworker)]]
 - [[Claude Desktop App]]
 - [[Claude Desktop Application]]
@@ -71,6 +74,7 @@ tags: [MOC, ინდექსი]
 - [[Claude ecosystem]]
 - [[DeepSeek]]
 - [[GPT-4o]]
+- [[Gemini]]
 - [[Gemini 2.0]]
 - [[Google Gemini]]
 - [[Google Gemini Gems]]
@@ -80,8 +84,10 @@ tags: [MOC, ინდექსი]
 - [[Mistral]]
 - [[Ollama]]
 - [[OpenAI]]
+- [[OpenAI's real-time API]]
 - [[Perplexity]]
 - [[Perplexity Comet]]
+- [[Perplexity Computer]]
 - [[claude-code-setup]]
 - [[llama.cpp]]
 - [[o4-mini/GPT-4o]]
@@ -99,6 +105,7 @@ tags: [MOC, ინდექსი]
 - [[Anything CLI]]
 - [[Apify]]
 - [[App connectors]]
+- [[Asana]]
 - [[Binance]]
 - [[Bolt.new]]
 - [[Booking.com]]
@@ -119,7 +126,6 @@ tags: [MOC, ინდექსი]
 - [[Enagram AI]]
 - [[Excel]]
 - [[Excel ფაილები]]
-- [[Facebook]]
 
 ---
 
@@ -133,20 +139,18 @@ tags: [MOC, ინდექსი]
 - [[AI Governance]] (G1L1, G1L2, G1L3, G2L1, G2L2)
 - [[AI Safety]] (G1L2, G1L3, G1L5, G2L2)
 - [[AI Strategy]] (G1L3, G1L4)
-- [[Anthropic]] (G1L3, G1L5, G2L2)
-- [[AutoGen]] (G1L2, G1L3, G1L5, G2L2, G2L5)
+- [[AutoGen]] (G1L2, G1L3, G1L5, G2L2, G2L4, G2L5)
 - [[Bias]] (G1L2, G2L1)
 - [[Bias (AI)]] (G1L4, G2L2)
 - [[CRISPE framework]] (G1L2, G1L4)
 - [[Caching]] (G1L5, G2L5)
 - [[Chain-of-Thought]] (G1L3, G2L5)
-- [[Chain-of-thought prompting]] (G1L2, G1L4)
+- [[Chain-of-thought prompting]] (G1L2, G1L4, G2L4)
 - [[Change Management]] (G1L2, G1L3)
-- [[Claude Code]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L3, G2L5)
 - [[Compliance]] (G1L2, G1L3, G2L2)
 - [[Computer Use]] (G1L5, G2L1)
 - [[Context Window]] (G1L5, G2L1)
-- [[CrewAI]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L5)
+- [[CrewAI]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L4, G2L5)
 - [[Custom Instructions]] (G1L2, G2L3)
 - [[Dashboard]] (G2L2, G2L5)
 - [[Data Control]] (G1L2, G2L3)
@@ -154,7 +158,9 @@ tags: [MOC, ინდექსი]
 - [[EU AI Act]] (G1L1, G1L2, G1L3, G2L2)
 - [[Embeddings]] (G1L3, G1L5)
 - [[Error Handling]] (G1L4, G1L5, G2L5)
-- [[GDPR]] (G1L4, G1L5)
+- [[Few-shot learning]] (G1L2, G2L4)
+- [[Flashcards]] (G1L2, G2L4)
+- [[GDPR]] (G1L4, G1L5, G2L4)
 
 ---
 
@@ -163,7 +169,7 @@ tags: [MOC, ინდექსი]
 | ჯგუფი | ლექციები | სტატუსი |
 |-------|----------|---------|
 | #1 | 5/15 | მიმდინარე |
-| #2 | 4/15 | მიმდინარე |
+| #2 | 5/15 | მიმდინარე |
 
 ---
 
@@ -180,6 +186,7 @@ tags: [MOC, ინდექსი]
 - [[ლექცია 1 -- ანალიზი]]
 - [[ლექცია 2 -- ანალიზი]]
 - [[ლექცია 3 -- ანალიზი]]
+- [[ლექცია 4 -- ანალიზი]]
 - [[ლექცია 5 -- ანალიზი]]
 
 ---

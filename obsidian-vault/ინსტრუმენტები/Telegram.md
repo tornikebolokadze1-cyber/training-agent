@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [ტელეგრამი]
-category: platform
+category: tool
 ---
 
 # Telegram
@@ -20,6 +20,7 @@ category: platform
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 

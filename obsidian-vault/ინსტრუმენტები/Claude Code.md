@@ -1,10 +1,12 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: []
-category: tool
+aliases: [კლოდ კოდი]
+category: platform
 ---
 
 # Claude Code
+
+> ქართულად: **კლოდ კოდი**
 
 ## აღწერა
 
@@ -16,26 +18,39 @@ Anthropic-ის Claude AI მოდელის კოდის გენერ
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- [[n8n]]
 - [[VS Code]]
-- [[AI Agent]]
-- [[MCP (Model Context Protocol)]]
-- [[Skills (Claude Code)]]
+- [[Claude Ecosystem]]
+- [[Production-grade Claude Code Setup]]
+- [[Skills (Claude)]]
+- [[CLI-Anything]]
+- [[Excel]]
+- [[NotebookLM]]
+- [[Infrastructure-oriented approach]]
+- [[Prompt Engineering]]
+- [[Model Context Protocol (MCP)]]
 - [[Claude ecosystem]]
 - [[Planning (AI)]]
 - [[Claude Desktop App]]
 - [[VS Code (Visual Studio Code)]]
+- [[n8n]]
 
 ---
 
 ## პრაქტიკული გამოყენება
 
-- ტარიელის სასტუმროების მონიტორინგის პროექტის ინიციალიზაცია VS Code-ში (ჯგუფი 2, ლექცია 2)
 - სტუდენტ მიშოს მიერ Claude-ით შექმნილი აგენტის პროექტის კოდის შეფასება (3.5/10). (ჯგუფი 2, ლექცია 3)
+- მაკას დახმარება Claude Code-ში უნარების (skills) ინსტალაციაში. (ჯგუფი 1, ლექცია 5)
+- დეტალური პრომპტის დაწერა airmpi.com-დან უნარების/ინსტრუმენტების ინტეგრირებისთვის. (ჯგუფი 1, ლექცია 4)
+- 'Travel Price Monitor' (მოგზაურობის ფასების მონიტორინგი) უნარის შექმნა ინტერაქტიული კითხვა-პასუხით. (ჯგუფი 1, ლექცია 4)
+- ტარიელის სასტუმროების მონიტორინგის პროექტის ინიციალიზაცია VS Code-ში (ჯგუფი 2, ლექცია 2)

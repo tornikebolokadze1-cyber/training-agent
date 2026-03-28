@@ -18,9 +18,11 @@ category: technique
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 4]] (ჯგუფი 1)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[Prompt Engineering]]
+- [[Prompt engineering]]

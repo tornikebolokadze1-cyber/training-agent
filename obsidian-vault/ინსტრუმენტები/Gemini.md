@@ -16,17 +16,24 @@ Google-ის AI მოდელი, ძლიერია მულტიმო
 
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- [[Google Antigravity IDE]]
 - [[Multi-modal input in daily work]]
 - [[Claude]]
 - [[ChatGPT]]
 - [[Grok]]
 - [[Perplexity]]
+- [[VS Code]]
+- [[Google AI Studio]]
+- [[Google Antigravity IDE]]
+- [[NotebookLM]]
+- [[Google ეკოსისტემა]]
+- [[Canvas]]
 
 ---
 

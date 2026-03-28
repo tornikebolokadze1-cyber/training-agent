@@ -922,6 +922,28 @@ def _schedule_post_meeting(
 
 
 # ---------------------------------------------------------------------------
+# Periodic WhatsApp → Obsidian sync (runs in thread executor)
+# ---------------------------------------------------------------------------
+
+
+async def whatsapp_obsidian_sync_job() -> None:
+    """Sync WhatsApp chat history into the Obsidian vault.
+
+    Runs every 6 hours via cron trigger.  Non-fatal: failures are logged
+    but never crash the scheduler.
+    """
+    logger.info("[whatsapp-sync] Starting periodic WhatsApp → Obsidian sync...")
+    try:
+        from tools.integrations.obsidian_sync import sync_whatsapp
+
+        loop = asyncio.get_running_loop()
+        count = await loop.run_in_executor(None, sync_whatsapp)
+        logger.info("[whatsapp-sync] Synced %d WhatsApp message(s) to Obsidian vault", count)
+    except Exception as exc:
+        logger.error("[whatsapp-sync] WhatsApp sync failed: %s", exc, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -988,7 +1010,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
 
     # ------------------------------------------------------------------ #
-    #  Group 2 — Monday (dow=0) and Thursday (dow=3)                      #
+    #  Group 2 — Monday (dow=0) and Thursday (dow=3)                     #
     # ------------------------------------------------------------------ #
     scheduler.add_job(
         pre_meeting_job,
@@ -1014,6 +1036,21 @@ def start_scheduler() -> AsyncIOScheduler:
         args=[2],
         id="pre_group2_thursday",
         name="Pre-meeting: Group 2 (Thursday)",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Periodic: WhatsApp → Obsidian sync (every 6 hours)                #
+    # ------------------------------------------------------------------ #
+    scheduler.add_job(
+        whatsapp_obsidian_sync_job,
+        trigger=CronTrigger(
+            hour="0,6,12,18",
+            minute=30,
+            timezone=TBILISI_TZ,
+        ),
+        id="whatsapp_obsidian_sync",
+        name="WhatsApp → Obsidian sync (every 6h)",
         replace_existing=True,
     )
 

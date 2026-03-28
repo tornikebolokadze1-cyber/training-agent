@@ -20,6 +20,7 @@ category: tool
 - [[ლექცია 4]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 
@@ -29,3 +30,4 @@ category: tool
 - [[Local/Self-hosted AI]]
 - [[Local/On-Premise AI]]
 - [[Local/Edge AI]]
+- [[ლოკალური/On-Premise AI]]

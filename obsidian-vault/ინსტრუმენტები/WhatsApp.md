@@ -1,23 +1,27 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: []
-category: platform
+category: tool
 ---
 
 # WhatsApp
 
 ## აღწერა
 
-მყისიერი შეტყობინებების აპლიკაცია.
+პოპულარული მესენჯერი აპლიკაცია, რომელიც ფართოდ გამოიყენება ბიზნეს კომუნიკაციაში.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[Hotel Monitoring Project]]
+- [[Facebook Developer Graph API]]
+- [[Green API]]
+- [[ManyChat]]

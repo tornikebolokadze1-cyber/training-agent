@@ -16,6 +16,7 @@ category: tool
 
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
+- [[ლექცია 4]] (ჯგუფი 2)
 
 ---
 
@@ -23,3 +24,4 @@ category: tool
 
 - [[Local/On-Premise AI Models]]
 - [[Local/On-Premise AI]]
+- [[ლოკალური/On-Premise AI]]
