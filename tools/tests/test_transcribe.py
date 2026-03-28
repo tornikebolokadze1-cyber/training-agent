@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
@@ -235,9 +237,9 @@ class TestPineconeIndexingFailure:
     def _make_results(self, **overrides) -> dict:
         base = {
             "transcript": "t" * 3000,
-            "summary": "summary text",
-            "gap_analysis": "gap text",
-            "deep_analysis": "deep text",
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
         }
         base.update(overrides)
         return base
@@ -297,36 +299,32 @@ class TestQualityGate:
     """transcribe_and_index must call alert_operator when key analyses are empty."""
 
     def test_empty_summary_triggers_alert(self, tmp_path):
+        """Quality gate fires BEFORE delivery when summary is empty."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake video")
 
         results = {
             "transcript": "t" * 3000,
             "summary": "",           # empty — triggers quality gate
-            "gap_analysis": "gaps",
-            "deep_analysis": "deep",
+            "gap_analysis": "g" * 500,
+            "deep_analysis": "d" * 500,
         }
 
         with (
             patch(_PATCH_ANALYZE, return_value=results),
-            patch(_PATCH_INDEX, return_value=5),
             patch(_PATCH_ALERT),
             patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
-            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
-            tl.transcribe_and_index(1, 1, video)
+            with pytest.raises(ValueError, match="Quality gate FAILED"):
+                tl.transcribe_and_index(1, 1, video)
 
         mock_alert_local.assert_called()
-        # One of the alert calls should mention the missing analysis
         alert_args = [c[0][0] for c in mock_alert_local.call_args_list]
         quality_alerts = [a for a in alert_args if "summary" in a or "EMPTY" in a]
         assert len(quality_alerts) >= 1
 
     def test_all_analyses_empty_triggers_alert(self, tmp_path):
+        """Quality gate fires BEFORE delivery when all analyses are empty."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake video")
 
@@ -339,16 +337,11 @@ class TestQualityGate:
 
         with (
             patch(_PATCH_ANALYZE, return_value=results),
-            patch(_PATCH_INDEX, return_value=0),
             patch(_PATCH_ALERT),
             patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
-            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
-            tl.transcribe_and_index(1, 1, video)
+            with pytest.raises(ValueError, match="Quality gate FAILED"):
+                tl.transcribe_and_index(1, 1, video)
 
         mock_alert_local.assert_called()
 
@@ -358,9 +351,9 @@ class TestQualityGate:
 
         results = {
             "transcript": "t" * 3000,
-            "summary": "full summary here",
-            "gap_analysis": "gap analysis content",
-            "deep_analysis": "deep analysis content",
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
         }
 
         alert_messages: list[str] = []
@@ -381,7 +374,7 @@ class TestQualityGate:
             tl.transcribe_and_index(1, 2, video)
 
         # No quality gate alerts should fire when all analyses are present
-        quality_alerts = [a for a in alert_messages if "EMPTY" in a]
+        quality_alerts = [a for a in alert_messages if "EMPTY" in a or "Quality gate" in a]
         assert len(quality_alerts) == 0
 
 
@@ -410,9 +403,9 @@ class TestTranscriptResumeThreshold:
             analyze_calls.append(existing_transcript)
             return {
                 "transcript": "t" * 3000,
-                "summary": "s",
-                "gap_analysis": "g",
-                "deep_analysis": "d",
+                "summary": "s" * 600,
+                "gap_analysis": "g" * 400,
+                "deep_analysis": "d" * 400,
             }
 
         with (

@@ -371,11 +371,12 @@ def _generate_with_retry(
     Primary: paid key. On quota/rate-limit errors, falls back to the free key.
     Returns the generated text.
     """
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, MAX_RETRIES_EMPTY + 1):
         try:
             tier = "free" if use_free else "paid"
+            effective_max = MAX_RETRIES_EMPTY  # 0-token errors get all attempts
             logger.info("Generating %s with %s (attempt %d/%d, %s tier)...",
-                        purpose, model, attempt, MAX_RETRIES, tier)
+                        purpose, model, attempt, effective_max, tier)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
                 _future = _exec.submit(
@@ -405,15 +406,15 @@ def _generate_with_retry(
                 logger.warning(
                     "Gemini returned 0 output tokens for %s (attempt %d/%d) — "
                     "charged for input but produced nothing",
-                    purpose, attempt, MAX_RETRIES,
+                    purpose, attempt, MAX_RETRIES_EMPTY,
                 )
                 # Use longer delay for zero-token responses
                 delay = RETRY_EMPTY_RESPONSE_DELAY_LONG
-                if attempt < MAX_RETRIES:
+                if attempt < MAX_RETRIES_EMPTY:
                     logger.info("Waiting %ds before retry (Gemini may need processing time)...", delay)
                     time.sleep(delay)
                     continue
-                raise ValueError(f"Gemini returned 0 output tokens for {purpose} after {MAX_RETRIES} attempts")
+                raise ValueError(f"Gemini returned 0 output tokens for {purpose} after {MAX_RETRIES_EMPTY} attempts")
 
             # response.text raises ValueError if blocked by safety filters
             try:
@@ -450,12 +451,18 @@ def _generate_with_retry(
                     max_output_tokens=max_output_tokens, use_free=True,
                 )
 
-            if attempt == MAX_RETRIES:
+            # For non-empty-response errors, give up after MAX_RETRIES attempts
+            is_empty = _is_empty_response_error(e)
+            if not is_empty and attempt >= MAX_RETRIES:
                 raise RuntimeError(f"{purpose} failed after {MAX_RETRIES} attempts: {e}") from e
+
+            # For empty-response errors, give up after MAX_RETRIES_EMPTY attempts
+            if is_empty and attempt >= MAX_RETRIES_EMPTY:
+                raise RuntimeError(f"{purpose} failed after {MAX_RETRIES_EMPTY} attempts (empty responses): {e}") from e
 
             # Use longer delay for empty responses (Gemini may still be processing)
             # vs short exponential backoff for actual API errors
-            if _is_empty_response_error(e):
+            if is_empty:
                 delay = RETRY_EMPTY_RESPONSE_DELAY
                 logger.warning(
                     "%s attempt %d returned empty/insufficient — "
@@ -570,11 +577,39 @@ def transcribe_chunked_video(
             uploaded_gemini_files.append((file_ref.name, use_free))
 
             # Transcribe with chunk context — retries reuse the cached file_ref
-            # instead of re-uploading the video (saves $2-3 per retry)
-            transcript = transcribe_video(
-                file_ref, use_free=use_free,
-                chunk_number=i, total_chunks=total_chunks,
-            )
+            # instead of re-uploading the video (saves $2-3 per retry).
+            # If paid-tier quota is hit during transcription (not upload),
+            # the file_ref belongs to the paid key's namespace and is
+            # inaccessible from the free key — so we must re-upload.
+            file_ref_name = file_ref.name if hasattr(file_ref, 'name') else str(file_ref)
+            try:
+                transcript = transcribe_video(
+                    file_ref, use_free=use_free,
+                    chunk_number=i, total_chunks=total_chunks,
+                )
+            except Exception as exc:
+                if _is_quota_error(exc) and not use_free and GEMINI_API_KEY:
+                    logger.warning(
+                        "Paid tier quota hit during transcription of chunk %d — "
+                        "re-uploading with free key and retrying...", i,
+                    )
+                    # Clean up paid-key upload
+                    try:
+                        paid_client = _get_client(use_free=False)
+                        paid_client.files.delete(name=file_ref_name)
+                        uploaded_gemini_files.pop()  # Remove from cleanup list
+                        logger.info("Cleaned up paid-key Gemini file: %s", file_ref_name)
+                    except Exception as del_err:
+                        logger.warning("Failed to delete paid-key file %s: %s", file_ref_name, del_err)
+                    # Re-upload with free key
+                    file_ref, use_free = upload_video(chunk_path, use_free=True)
+                    uploaded_gemini_files.append((file_ref.name if hasattr(file_ref, 'name') else str(file_ref), True))
+                    transcript = transcribe_video(
+                        file_ref, use_free=True,
+                        chunk_number=i, total_chunks=total_chunks,
+                    )
+                else:
+                    raise
             transcripts.append(transcript)
 
             # Save chunk checkpoint immediately after successful transcription
@@ -1081,9 +1116,11 @@ def analyze_lecture(
     if not claude_sections:
         claude_sections = _safe_claude_reason_all(transcript)
         if claude_sections is None:
-            raise ValueError(
-                "Claude analysis failed completely — cannot proceed without reasoning output"
+            logger.error(
+                "Claude analysis failed completely — proceeding with empty sections "
+                "(quality gate in transcribe_lecture.py will catch this)"
             )
+            claude_sections = {"summary": "", "gap_analysis": "", "deep_analysis": ""}
         if use_checkpoints and claude_sections:
             import json
             _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))

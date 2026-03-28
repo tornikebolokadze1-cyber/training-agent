@@ -41,6 +41,7 @@ from tools.integrations.gemini_analyzer import analyze_lecture, cleanup_checkpoi
 from tools.integrations.knowledge_indexer import index_lecture_content
 from tools.integrations.whatsapp_sender import (
     alert_operator,
+    send_email_fallback,
     send_group_upload_notification,
     send_private_report,
 )
@@ -206,10 +207,16 @@ def _send_private_report_to_tornike(
         send_private_report(message)
         logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
     except Exception as e:
-        logger.error("Failed to send private report link: %s", e)
-        # Don't alert_operator here — this IS the private channel to Tornike
-        # Just log at CRITICAL level so it appears in rotating log
-        logger.critical("CRITICAL: Private report delivery failed for G%d L#%d: %s", group_number, lecture_number, e)
+        logger.error("Failed to send private report link via WhatsApp: %s", e)
+        # Try email fallback before giving up
+        email_sent = send_email_fallback(
+            subject=f"📊 ლექცია #{lecture_number} ანალიზი — {group_name}",
+            body=message,
+        )
+        if email_sent:
+            logger.info("Private report link sent via email fallback for G%d L#%d", group_number, lecture_number)
+        else:
+            logger.critical("CRITICAL: Private report delivery failed (WhatsApp + Email) for G%d L#%d: %s", group_number, lecture_number, e)
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +317,30 @@ def transcribe_and_index(
                 out_path.write_text(text, encoding="utf-8")
                 logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
 
+        # Quality gate: BLOCK completion if critical outputs are empty or too short
+        # Runs BEFORE any delivery (Drive uploads, WhatsApp) to prevent garbage docs
+        MIN_SUMMARY_CHARS = 500
+        MIN_ANALYSIS_CHARS = 300
+        quality_failures: list[str] = []
+        for key, min_len in [
+            ("summary", MIN_SUMMARY_CHARS),
+            ("gap_analysis", MIN_ANALYSIS_CHARS),
+            ("deep_analysis", MIN_ANALYSIS_CHARS),
+        ]:
+            text = results.get(key, "")
+            if not text:
+                quality_failures.append(f"{key} is EMPTY")
+            elif len(text.strip()) < min_len:
+                quality_failures.append(f"{key} too short ({len(text)} chars, need {min_len})")
+        if quality_failures:
+            failure_msg = (
+                f"Quality gate FAILED for G{group_number} L#{lecture_number}: "
+                f"{'; '.join(quality_failures)}"
+            )
+            logger.error(failure_msg)
+            _safe_alert(failure_msg)
+            raise ValueError(failure_msg)
+
         # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
         try:
             from tools.services.analytics import save_scores_from_analysis
@@ -371,29 +402,6 @@ def transcribe_and_index(
             index_counts[content_type] = count
             if count:
                 logger.info("Indexed %d vectors for %s", count, content_type)
-
-        # Quality gate: BLOCK completion if critical outputs are empty or too short
-        MIN_SUMMARY_CHARS = 500
-        MIN_ANALYSIS_CHARS = 300
-        quality_failures: list[str] = []
-        for key, min_len in [
-            ("summary", MIN_SUMMARY_CHARS),
-            ("gap_analysis", MIN_ANALYSIS_CHARS),
-            ("deep_analysis", MIN_ANALYSIS_CHARS),
-        ]:
-            text = results.get(key, "")
-            if not text:
-                quality_failures.append(f"{key} is EMPTY")
-            elif len(text.strip()) < min_len:
-                quality_failures.append(f"{key} too short ({len(text)} chars, need {min_len})")
-        if quality_failures:
-            failure_msg = (
-                f"Quality gate FAILED for G{group_number} L#{lecture_number}: "
-                f"{'; '.join(quality_failures)}"
-            )
-            logger.error(failure_msg)
-            _safe_alert(failure_msg)
-            raise ValueError(failure_msg)
 
         # Clean up checkpoint files now that the full pipeline succeeded
         deleted = cleanup_checkpoints(group_number, lecture_number)

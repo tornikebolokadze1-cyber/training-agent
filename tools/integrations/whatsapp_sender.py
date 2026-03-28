@@ -14,7 +14,11 @@ Setup:
 from __future__ import annotations
 
 import logging
+import os
+import smtplib
 import time
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any
 
 import httpx
@@ -105,6 +109,100 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
         raise RuntimeError(
             f"{purpose} failed with non-retryable error: {exc}"
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Email fallback (when Green API QR session expires)
+# ---------------------------------------------------------------------------
+
+
+def send_email_fallback(
+    subject: str,
+    body: str,
+    to_email: str | None = None,
+) -> bool:
+    """Send an email via Gmail SMTP as fallback when WhatsApp is unavailable.
+
+    Uses Google App Password authentication (not OAuth). Credentials come from
+    GMAIL_SENDER_EMAIL and GMAIL_APP_PASSWORD env vars. Recipient defaults to
+    OPERATOR_EMAIL if not provided.
+
+    This function NEVER raises — it is a safety net for the safety net.
+
+    Args:
+        subject: Email subject line.
+        body: Plain-text email body.
+        to_email: Recipient address. Falls back to OPERATOR_EMAIL env var.
+
+    Returns:
+        True if email was sent successfully, False otherwise.
+    """
+    try:
+        sender = os.environ.get("GMAIL_SENDER_EMAIL", "")
+        password = os.environ.get("GMAIL_APP_PASSWORD", "")
+        recipient = to_email or os.environ.get("OPERATOR_EMAIL", "")
+
+        if not sender or not password or not recipient:
+            logger.warning(
+                "Email fallback not configured — set GMAIL_SENDER_EMAIL, "
+                "GMAIL_APP_PASSWORD, and OPERATOR_EMAIL in .env"
+            )
+            return False
+
+        msg = MIMEMultipart()
+        msg["From"] = sender
+        msg["To"] = recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.send_message(msg)
+
+        logger.info("Email fallback sent to %s: %s", recipient, subject)
+        return True
+
+    except Exception as exc:
+        logger.error("Email fallback also failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+
+def check_whatsapp_health() -> dict[str, Any]:
+    """Check WhatsApp Green API connection status.
+
+    Calls the getStateInstance endpoint to determine whether the QR session
+    is still active and authorized.
+
+    Returns:
+        Dict with 'connected' (bool), 'state' (str), and optionally 'detail'.
+    """
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        return {"connected": False, "state": "not_configured", "detail": "GREEN_API credentials missing"}
+
+    url = f"{_base_url()}/getStateInstance/{GREEN_API_TOKEN}"
+    try:
+        with httpx.Client(timeout=5) as client:
+            response = client.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            state_value = data.get("stateInstance", "unknown")
+            return {
+                "connected": state_value == "authorized",
+                "state": state_value,
+            }
+        return {
+            "connected": False,
+            "state": "error",
+            "detail": f"HTTP {response.status_code}",
+        }
+    except Exception as exc:
+        return {"connected": False, "state": "error", "detail": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +312,18 @@ def send_group_upload_notification(
         f"წარმატებებს გისურვებთ! 🚀"
     )
 
-    return send_message_to_chat(chat_id, message)
+    try:
+        return send_message_to_chat(chat_id, message)
+    except Exception as exc:
+        logger.error(
+            "WhatsApp group notification failed for Group %d, Lecture #%d: %s",
+            group_number, lecture_number, exc,
+        )
+        send_email_fallback(
+            subject=f"ლექცია #{lecture_number} — მასალა ატვირთულია (ჯგუფი {group_number})",
+            body=message,
+        )
+        raise
 
 
 def send_private_report(report_text: str) -> dict[str, Any]:
@@ -231,7 +340,15 @@ def send_private_report(report_text: str) -> dict[str, Any]:
 
     chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
     logger.info("Sending private report to Tornike...")
-    return send_message_to_chat(chat_id, report_text)
+    try:
+        return send_message_to_chat(chat_id, report_text)
+    except Exception as exc:
+        logger.error("WhatsApp private report failed: %s", exc)
+        send_email_fallback(
+            subject="📊 ლექციის ანალიზი — Private Report",
+            body=report_text,
+        )
+        raise
 
 
 def alert_operator(message: str) -> None:
@@ -254,8 +371,16 @@ def alert_operator(message: str) -> None:
     except BaseException as exc:
         logger.error("Failed to send WhatsApp alert: %s", exc)
 
-    # Fallback: CRITICAL log — appears in console + log file
-    logger.critical("OPERATOR ALERT (WhatsApp unavailable): %s", message)
+    # Fallback 1: Email
+    email_sent = send_email_fallback(
+        subject="⚠️ Training Agent ALERT",
+        body=message,
+    )
+    if email_sent:
+        return
+
+    # Fallback 2: CRITICAL log — appears in console + log file
+    logger.critical("OPERATOR ALERT (WhatsApp + Email unavailable): %s", message)
 
 
 # ---------------------------------------------------------------------------

@@ -369,6 +369,28 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
     logger.info("[post] Concatenation complete: %.1f MB", size_mb)
 
 
+def _emergency_disk_cleanup() -> None:
+    """Emergency cleanup: remove all stale .mp4 files in TMP_DIR."""
+    import time as _time
+    now = _time.time()
+    for f in TMP_DIR.glob("*.mp4"):
+        try:
+            # Keep files modified in the last 10 minutes (likely current pipeline)
+            if (now - f.stat().st_mtime) > 600:
+                f.unlink()
+                logger.info("[cleanup] Emergency: removed stale %s", f.name)
+        except OSError:
+            pass
+    # Also clean stale .chunk*.mp4 files from gemini_analyzer
+    for f in TMP_DIR.glob("*.chunk*.mp4"):
+        try:
+            if (now - f.stat().st_mtime) > 600:
+                f.unlink()
+                logger.info("[cleanup] Emergency: removed stale chunk %s", f.name)
+        except OSError:
+            pass
+
+
 def _run_post_meeting_pipeline(
     group_number: int,
     lecture_number: int,
@@ -503,6 +525,14 @@ def _run_post_meeting_pipeline(
                 )
                 return
 
+            # Delete segments immediately — merged file is the source of truth now
+            for seg in segment_paths:
+                if seg.exists():
+                    seg.unlink()
+                    logger.info("[post] Freed segment: %s", seg.name)
+            # Remove segments from temp_files since they're already cleaned
+            temp_files = [p for p in temp_files if p not in segment_paths]
+
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         logger.info(
             "[post] Recording ready: %.1f MB (%d segment(s))",
@@ -524,6 +554,14 @@ def _run_post_meeting_pipeline(
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
         # and Pinecone indexing to the single source of truth.
+
+        # Re-check disk space before heavy analysis (ffmpeg chunks will be created)
+        disk_usage = shutil.disk_usage(str(TMP_DIR))
+        free_gb = disk_usage.free / (1024 ** 3)
+        if free_gb < 1.5:
+            logger.warning("[post] Low disk before analysis: %.1f GB free — cleaning old tmp files", free_gb)
+            _emergency_disk_cleanup()
+
         logger.info("[post] Running full analysis pipeline...")
         index_counts = transcribe_and_index(group_number, lecture_number, local_path)
         logger.info(

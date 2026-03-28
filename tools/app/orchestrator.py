@@ -157,6 +157,10 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
     last_results: list[dict[str, Any]] = getattr(app.state, "last_execution_results", [])
     state["last_execution_results"] = last_results
 
+    # --- whatsapp ---
+    from tools.integrations.whatsapp_sender import check_whatsapp_health
+    state["whatsapp"] = check_whatsapp_health()
+
     # --- server meta ---
     state["server"] = {
         "host": SERVER_HOST,
@@ -188,30 +192,52 @@ async def _on_startup() -> None:
 
 
 def _cleanup_stale_tmp_files() -> None:
-    """Remove .mp4 files older than 6 hours from .tmp/ on startup.
+    """Remove pipeline temp files from .tmp/ on startup.
 
-    Prevents disk accumulation when Railway restarts mid-pipeline.
+    Cleans up leftover files from crashed or restarted pipelines to free disk.
+    Short-lived files (recordings, chunks, concat lists) use a 2-hour threshold.
+    Checkpoint files (transcripts, analysis JSON) use a 24-hour threshold.
     """
     import time
 
     from tools.core.config import TMP_DIR
 
-    stale_hours = 6
-    cutoff = time.time() - stale_hours * 3600
+    cutoff_2h = time.time() - 2 * 3600
+    cutoff_24h = time.time() - 24 * 3600
     cleaned = 0
+    freed_bytes = 0
 
-    for pattern in ("*.mp4", "*.chunk*.mp4"):
+    # Short-lived pipeline artifacts: 2-hour threshold
+    for pattern in ("*.mp4", "*.chunk*.mp4", "*_segments.txt"):
         for f in TMP_DIR.glob(pattern):
             try:
-                if f.stat().st_mtime < cutoff:
+                st = f.stat()
+                if st.st_mtime < cutoff_2h:
+                    freed_bytes += st.st_size
                     f.unlink()
                     cleaned += 1
-                    logger.info("Cleaned stale temp file: %s", f.name)
+                    logger.debug("Cleaned stale temp file: %s", f.name)
             except OSError as e:
                 logger.warning("Failed to clean %s: %s", f.name, e)
 
+    # Checkpoint / intermediate files: 24-hour threshold
+    for pattern in ("*_transcript.txt", "*_claude_analysis.json"):
+        for f in TMP_DIR.glob(pattern):
+            try:
+                st = f.stat()
+                if st.st_mtime < cutoff_24h:
+                    freed_bytes += st.st_size
+                    f.unlink()
+                    cleaned += 1
+                    logger.debug("Cleaned stale checkpoint file: %s", f.name)
+            except OSError as e:
+                logger.warning("Failed to clean %s: %s", f.name, e)
+
+    freed_mb = freed_bytes / (1024 * 1024)
     if cleaned:
-        logger.info("Startup cleanup: removed %d stale temp file(s)", cleaned)
+        logger.info("Startup cleanup: removed %d files, freed %.1f MB", cleaned, freed_mb)
+    else:
+        logger.info("Startup cleanup: no stale temp files found")
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +250,9 @@ async def _async_start() -> None:
     Shutdown is triggered by SIGINT/SIGTERM — both components are shut down
     gracefully before the process exits.
     """
+    # ---- Disk cleanup (before scheduler, so pipelines start with free disk) --
+    _cleanup_stale_tmp_files()
+
     # ---- APScheduler --------------------------------------------------------
     from tools.app.scheduler import (
         start_scheduler,  # local import avoids circular ref at module level
