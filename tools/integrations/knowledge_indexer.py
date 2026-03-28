@@ -135,6 +135,34 @@ def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
     )
 
 
+def lecture_exists_in_index(group_number: int, lecture_number: int) -> bool:
+    """Check if a lecture has been indexed in Pinecone.
+
+    Uses list() with ID prefix instead of a dummy vector query,
+    avoiding undefined cosine similarity behavior with zero vectors.
+    """
+    try:
+        index = get_pinecone_index()
+        # Vector IDs follow the pattern: g{group}_l{lecture}_{type}_{chunk}
+        prefix = f"g{group_number}_l{lecture_number}_"
+        # list() returns vectors matching the prefix — if any exist, the lecture is indexed
+        results = index.list(prefix=prefix, limit=1)
+        # Pinecone list returns a ListResponse with vectors attribute
+        vectors = getattr(results, 'vectors', results) if not isinstance(results, list) else results
+        if hasattr(vectors, '__len__'):
+            return len(vectors) > 0
+        # Fallback: try iterating
+        for _ in vectors:
+            return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "Pinecone existence check failed for G%d L%d: %s — assuming not indexed",
+            group_number, lecture_number, exc,
+        )
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Embedding
 # ---------------------------------------------------------------------------
@@ -458,7 +486,15 @@ def query_knowledge(
         operation_name="Pinecone query",
     )
 
-    matches = response.get("matches", []) if isinstance(response, dict) else response.matches
+    MIN_RELEVANCE_SCORE = 0.45  # Filter out low-relevance chunks
+
+    raw_matches = response.get("matches", []) if isinstance(response, dict) else response.matches
+    matches = [m for m in raw_matches if (m.get("score", 0) if isinstance(m, dict) else getattr(m, "score", 0)) >= MIN_RELEVANCE_SCORE]
+
+    if not matches:
+        logger.info("No Pinecone results above score threshold %.2f for query", MIN_RELEVANCE_SCORE)
+        return []
+
     results: list[dict] = []
     for match in matches:
         metadata = match.get("metadata", {}) if isinstance(match, dict) else match.metadata

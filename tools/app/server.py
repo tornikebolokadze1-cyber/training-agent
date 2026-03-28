@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -406,6 +407,21 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     return response
 
 
+# Request body size limit (1MB for JSON endpoints)
+MAX_BODY_SIZE = 1_048_576  # 1 MB
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Request body too large"},
+        )
+    return await call_next(request)
+
+
 assistant: WhatsAppAssistant | None = None
 if _assistant_available:
     try:
@@ -699,7 +715,13 @@ async def health_check(request: Request):
     # Report in-flight tasks
     checks["tasks_in_progress"] = str(len(_processing_tasks))
 
+    # Disk space check
+    disk = shutil.disk_usage(str(TMP_DIR))
+    free_gb = disk.free / (1024 ** 3)
+
     overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
+    if free_gb < 1.0:
+        overall = "degraded"
     status_code = 200 if overall == "healthy" else 503
 
     return JSONResponse(
@@ -708,9 +730,36 @@ async def health_check(request: Request):
             "service": "training-agent",
             "timestamp": datetime.now().isoformat(),
             "checks": checks,
+            "disk_free_gb": round(free_gb, 2),
         },
         status_code=status_code,
     )
+
+
+@app.get("/status")
+@limiter.limit("60/minute")
+async def status_check(request: Request):
+    """Extended status endpoint with active pipeline information."""
+    state: dict = {
+        "service": "training-agent",
+        "timestamp": datetime.now(TBILISI_TZ).isoformat(),
+        "tasks_in_progress": len(_processing_tasks),
+    }
+
+    # Active pipelines from in-memory tracker
+    active_tasks = []
+    with _processing_lock:
+        for key, started in _processing_tasks.items():
+            elapsed = (datetime.now(TBILISI_TZ) - started).total_seconds()
+            active_tasks.append({
+                "key": key,
+                "started": started.isoformat(),
+                "elapsed_minutes": round(elapsed / 60, 1),
+            })
+    state["active_pipelines"] = active_tasks
+    state["active_pipeline_count"] = len(active_tasks)
+
+    return JSONResponse(content=state)
 
 
 @app.get("/dashboard")
@@ -723,9 +772,9 @@ async def dashboard(request: Request):
         html = render_dashboard_html(data)
         return HTMLResponse(content=html)
     except Exception as exc:
-        logger.error("Dashboard render failed: %s", exc)
+        logger.error("Dashboard error: %s", exc, exc_info=True)
         return HTMLResponse(
-            content=f"<h1>Dashboard Error</h1><pre>{exc}</pre>",
+            content="<h1>Dashboard temporarily unavailable</h1>",
             status_code=500,
         )
 
@@ -738,8 +787,8 @@ async def dashboard_data(request: Request):
         from tools.services.analytics import get_dashboard_data
         return get_dashboard_data()
     except Exception as exc:
-        logger.error("Dashboard data failed: %s", exc)
-        return JSONResponse(content={"error": str(exc)}, status_code=500)
+        logger.error("Dashboard error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 
 @app.post("/whatsapp-incoming")

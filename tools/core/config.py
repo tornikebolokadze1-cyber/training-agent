@@ -277,6 +277,21 @@ def validate_critical_config() -> list[str]:
     if not WHATSAPP_TORNIKE_PHONE:
         warnings.append("WHATSAPP_TORNIKE_PHONE not set — operator alerts disabled")
 
+    # These are HIGH-risk if missing — warn at startup
+    _warn_vars = [
+        ("ZOOM_WEBHOOK_SECRET_TOKEN", "Zoom webhooks will return 503"),
+        ("DRIVE_GROUP1_FOLDER_ID", "Group 1 Drive uploads will fail"),
+        ("DRIVE_GROUP2_FOLDER_ID", "Group 2 Drive uploads will fail"),
+        ("DRIVE_GROUP1_ANALYSIS_FOLDER_ID", "Group 1 analysis reports won't upload"),
+        ("DRIVE_GROUP2_ANALYSIS_FOLDER_ID", "Group 2 analysis reports won't upload"),
+        ("WHATSAPP_GROUP1_ID", "Group 1 WhatsApp notifications will fail"),
+        ("WHATSAPP_GROUP2_ID", "Group 2 WhatsApp notifications will fail"),
+    ]
+    for var_name, consequence in _warn_vars:
+        if not os.environ.get(var_name):
+            logger.warning("Missing %s — %s", var_name, consequence)
+            warnings.append(f"Missing {var_name} — {consequence}")
+
     # Log warnings
     for w in warnings:
         logger.warning("Config: %s", w)
@@ -357,7 +372,7 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
             count += 1
         current += timedelta(days=1)
 
-    return min(count, TOTAL_LECTURES)
+    return count
 
 
 def get_group_for_weekday(weekday: int) -> int | None:

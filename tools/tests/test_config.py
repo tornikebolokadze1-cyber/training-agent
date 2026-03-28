@@ -120,6 +120,15 @@ class TestValidateCriticalConfig:
 
     def test_all_vars_present_returns_empty_warnings(self):
         """With every variable set, the warning list is empty."""
+        extra_env = {
+            "ZOOM_WEBHOOK_SECRET_TOKEN": "zt",
+            "DRIVE_GROUP1_FOLDER_ID": "d1",
+            "DRIVE_GROUP2_FOLDER_ID": "d2",
+            "DRIVE_GROUP1_ANALYSIS_FOLDER_ID": "a1",
+            "DRIVE_GROUP2_ANALYSIS_FOLDER_ID": "a2",
+            "WHATSAPP_GROUP1_ID": "g1",
+            "WHATSAPP_GROUP2_ID": "g2",
+        }
         with patch.object(cfg, "IS_RAILWAY", False), \
              patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
@@ -127,7 +136,8 @@ class TestValidateCriticalConfig:
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
              patch.object(cfg, "GREEN_API_INSTANCE_ID", "i"), \
              patch.object(cfg, "GREEN_API_TOKEN", "t"), \
-             patch.object(cfg, "WHATSAPP_TORNIKE_PHONE", "p"):
+             patch.object(cfg, "WHATSAPP_TORNIKE_PHONE", "p"), \
+             patch.dict("os.environ", extra_env):
             warnings = cfg.validate_critical_config()
         assert warnings == []
 
@@ -408,7 +418,8 @@ class TestGetLectureNumber:
             result = cfg.get_lecture_number(1, for_date=date(2026, 3, 17))
         assert result == 1
 
-    def test_caps_at_total_lectures(self):
+    def test_returns_raw_count_beyond_total_lectures(self):
+        """get_lecture_number no longer caps at TOTAL_LECTURES — callers handle overflow."""
         mock_groups = {
             1: {
                 "name": "g1",
@@ -419,7 +430,7 @@ class TestGetLectureNumber:
         with patch.object(cfg, "GROUPS", mock_groups), \
              patch.object(cfg, "TOTAL_LECTURES", 15):
             result = cfg.get_lecture_number(1, for_date=date(2026, 12, 31))
-        assert result == 15
+        assert result > 15  # Raw count, callers check > TOTAL_LECTURES
 
     def test_defaults_to_today_when_no_date(self):
         mock_groups = {
@@ -432,7 +443,7 @@ class TestGetLectureNumber:
         with patch.object(cfg, "GROUPS", mock_groups), \
              patch.object(cfg, "TOTAL_LECTURES", 15):
             result = cfg.get_lecture_number(1)
-        assert result == 15  # Will have exceeded 15 by now
+        assert result >= 15  # Raw count, no longer capped at TOTAL_LECTURES
 
 
 # ===========================================================================

@@ -232,11 +232,13 @@ class TestSendGroupReminder:
         assert "https://zoom.us/j/123" in msg
         assert result == {"idMessage": "ok"}
 
-    def test_raises_for_missing_group_id(self):
+    def test_degrades_gracefully_for_missing_group_id(self):
+        """Missing group ID falls back to operator instead of crashing."""
         with patch.object(ws, "_GROUP_CHAT_IDS", {}), \
-             patch.object(ws, "GROUPS", {3: {"name": "test"}}):
-            with pytest.raises(ValueError, match="No WhatsApp group ID"):
-                ws.send_group_reminder(3, "https://zoom.us", 1)
+             patch.object(ws, "GROUPS", {3: {"name": "test"}}), \
+             patch.object(ws, "WHATSAPP_TORNIKE_PHONE", ""):
+            # Should NOT raise — gracefully returns when no fallback available
+            ws.send_group_reminder(3, "https://zoom.us", 1)
 
 
 # ===========================================================================

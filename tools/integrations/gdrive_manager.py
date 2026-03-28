@@ -10,6 +10,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 from tools.core.config import (
@@ -259,6 +260,23 @@ def upload_file(
             if status:
                 progress = int(status.progress() * 100)
                 logger.info("Upload progress: %d%%", progress)
+        except HttpError as e:
+            if e.resp.status in (401, 403, 404):
+                # Non-retryable: auth failure, quota exhausted, folder not found
+                logger.error("Non-retryable Drive error (HTTP %d): %s", e.resp.status, e)
+                raise
+            # Retryable: 500, 502, 503, 429, etc.
+            max_retries -= 1
+            if max_retries <= 0:
+                logger.error("Upload failed after retries: %s", e)
+                raise
+            import time
+            delay = 2 ** (5 - max_retries)
+            logger.warning(
+                "Upload chunk failed (%d retries left): %s — retrying in %ds",
+                max_retries, e, delay,
+            )
+            time.sleep(delay)
         except Exception as e:
             # Retry transient errors with exponential backoff
             max_retries -= 1
@@ -318,18 +336,25 @@ def download_file(
 
 
 def list_files_in_folder(folder_id: str) -> list[dict]:
-    """List all files in a Google Drive folder.
-
-    Returns a list of dicts with 'id', 'name', 'mimeType', 'size'.
-    """
+    """List all files in a Google Drive folder with pagination."""
     service = get_drive_service()
-    query = f"'{folder_id}' in parents and trashed = false"
-    results = service.files().list(
-        q=query,
-        fields="files(id, name, mimeType, size)",
-        orderBy="name",
-    ).execute()
-    return results.get("files", [])
+    all_files: list[dict] = []
+    page_token = None
+
+    while True:
+        response = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
+            pageSize=100,
+            pageToken=page_token,
+        ).execute()
+
+        all_files.extend(response.get("files", []))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return all_files
 
 
 # ---------------------------------------------------------------------------

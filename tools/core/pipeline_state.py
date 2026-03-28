@@ -327,6 +327,16 @@ def transition(
             f"Valid states: {ALL_STATES}"
         )
 
+    if new_state != FAILED:  # FAILED can be reached from any state
+        current_idx = ALL_STATES.index(state.state) if state.state in ALL_STATES else -1
+        new_idx = ALL_STATES.index(new_state)
+        if new_idx < current_idx:
+            logger.warning(
+                "Backward state transition blocked: g%d/l%d %s → %s",
+                state.group, state.lecture, state.state, new_state,
+            )
+            return state  # Return unchanged state instead of corrupting
+
     now = _now_iso()
     new = _replace_state(state, state=new_state, updated_at=now, **updates)  # type: ignore[call-arg]
 

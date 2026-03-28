@@ -88,7 +88,17 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
             response = client.post(url, json=payload)
         if response.status_code == 200:
             data = response.json()
-            logger.info("%s sent successfully: %s", purpose, data.get("idMessage", "ok"))
+            # Validate the response indicates actual success
+            id_message = data.get("idMessage")
+            if id_message:
+                logger.info("Message sent successfully: %s", id_message)
+            else:
+                # HTTP 200 but no idMessage — possible session expiry or queue failure
+                error_msg = data.get("message", data.get("error", "unknown"))
+                logger.warning(
+                    "WhatsApp API returned 200 but no idMessage — "
+                    "possible session issue: %s", error_msg,
+                )
             return data
         # Don't retry on client errors (except 429 rate limit)
         if 400 <= response.status_code < 500 and response.status_code != 429:
@@ -177,7 +187,8 @@ def check_whatsapp_health() -> dict[str, Any]:
     """Check WhatsApp Green API connection status.
 
     Calls the getStateInstance endpoint to determine whether the QR session
-    is still active and authorized.
+    is still active and authorized.  Should be called periodically (e.g. via
+    APScheduler every 5-10 minutes) so session expiry is detected early.
 
     Returns:
         Dict with 'connected' (bool), 'state' (str), and optionally 'detail'.
@@ -192,8 +203,14 @@ def check_whatsapp_health() -> dict[str, Any]:
         if response.status_code == 200:
             data = response.json()
             state_value = data.get("stateInstance", "unknown")
+            connected = state_value == "authorized"
+            if not connected:
+                logger.warning(
+                    "WhatsApp health check: NOT CONNECTED (state=%s). "
+                    "QR re-scan may be needed.", state_value,
+                )
             return {
-                "connected": state_value == "authorized",
+                "connected": connected,
                 "state": state_value,
             }
         return {
@@ -256,10 +273,14 @@ def send_group_reminder(group_number: int, zoom_link: str, lecture_number: int) 
     chat_id = _GROUP_CHAT_IDS.get(group_number)
 
     if not chat_id:
-        raise ValueError(
-            f"No WhatsApp group ID configured for Group {group_number}. "
-            "Set WHATSAPP_GROUP1_ID / WHATSAPP_GROUP2_ID in .env"
+        logger.warning(
+            "No WhatsApp group ID for Group %d — sending reminder to operator instead",
+            group_number,
         )
+        chat_id = WHATSAPP_TORNIKE_PHONE
+        if not chat_id:
+            logger.error("No group ID and no operator phone — cannot send reminder")
+            return
 
     message = (
         f"🎓 შეხსენება — ლექცია #{lecture_number}\n\n"

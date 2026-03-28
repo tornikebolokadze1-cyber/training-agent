@@ -432,7 +432,7 @@ def download_recording(
     logger.info("Downloading recording to %s …", dest)
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0), follow_redirects=True) as client:
+        with httpx.Client(timeout=httpx.Timeout(1800.0, connect=30.0), follow_redirects=True) as client:
             with client.stream("GET", authenticated_url) as response:
                 if response.status_code not in (200, 206):
                     raise ZoomDownloadError(
@@ -456,8 +456,20 @@ def download_recording(
             f"Network error while downloading {download_url}: {exc}"
         ) from exc
 
+    # Validate download completeness
+    expected_size = response.headers.get("content-length")
+    actual_size = dest.stat().st_size
+    if expected_size:
+        expected = int(expected_size)
+        if actual_size < expected:
+            dest.unlink(missing_ok=True)
+            raise ZoomDownloadError(
+                f"Incomplete download: got {actual_size} bytes, "
+                f"expected {expected} bytes ({actual_size/expected*100:.0f}%)"
+            )
     logger.info(
-        "Recording saved to %s (%.2f MB).", dest, dest.stat().st_size / 1024 / 1024
+        "Download complete: %s (%.1f MB)",
+        dest.name, actual_size / (1024 * 1024),
     )
     return dest
 

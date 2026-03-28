@@ -378,26 +378,42 @@ def _generate_with_retry(
             logger.info("Generating %s with %s (attempt %d/%d, %s tier)...",
                         purpose, model, attempt, effective_max, tier)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
-                _future = _exec.submit(
-                    client.models.generate_content,
-                    model=model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=max_output_tokens,
-                    ),
-                )
-                try:
-                    response = _future.result(timeout=GEMINI_GENERATE_TIMEOUT)
-                except concurrent.futures.TimeoutError as te:
-                    raise TimeoutError(
-                        f"Gemini generate_content timed out after "
-                        f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
-                    ) from te
+            _exec = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            _future = _exec.submit(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=max_output_tokens,
+                ),
+            )
+            try:
+                response = _future.result(timeout=GEMINI_GENERATE_TIMEOUT)
+            except concurrent.futures.TimeoutError as te:
+                _exec.shutdown(wait=False, cancel_futures=True)
+                raise TimeoutError(
+                    f"Gemini generate_content timed out after "
+                    f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
+                ) from te
+            else:
+                _exec.shutdown(wait=False)
 
             # Log cost for every generate_content call (even failed ones)
             _log_gemini_cost(model, response, purpose)
+
+            # Check for safety block BEFORE the 0-token check
+            # Safety blocks are deterministic — retrying wastes money
+            candidates = getattr(response, 'candidates', [])
+            if candidates:
+                finish_reason = getattr(candidates[0], 'finish_reason', None)
+                finish_str = str(finish_reason).upper() if finish_reason else ""
+                if "SAFETY" in finish_str or "RECITATION" in finish_str:
+                    raise ValueError(
+                        f"Gemini SAFETY FILTER blocked {purpose} "
+                        f"(finish_reason={finish_reason}). "
+                        f"This is deterministic — retrying will not help."
+                    )
 
             # Detect 0 output tokens (Gemini charged for input but produced nothing)
             usage = getattr(response, "usage_metadata", None)
@@ -993,13 +1009,22 @@ def _checkpoint_prefix(group: int | None, lecture: int | None) -> str:
     return ""
 
 
+MIN_CHECKPOINT_CHARS = 100  # Same as MIN_MEANINGFUL_RESPONSE_CHARS
+
+
 def _load_checkpoint(name: str) -> str | None:
-    """Load a checkpoint file from .tmp/ if it exists and is non-empty."""
+    """Load a checkpoint file from .tmp/ if it exists and has meaningful content."""
     path = TMP_DIR / name
     if path.exists():
         content = path.read_text(encoding="utf-8")
-        if content.strip():
+        if content and len(content.strip()) >= MIN_CHECKPOINT_CHARS:
+            logger.info("Loaded checkpoint: %s (%d chars)", name, len(content))
             return content
+        elif content:
+            logger.warning(
+                "Checkpoint %s too short (%d chars < %d) — will re-generate",
+                name, len(content.strip()), MIN_CHECKPOINT_CHARS,
+            )
     return None
 
 

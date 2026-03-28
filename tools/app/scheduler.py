@@ -571,6 +571,19 @@ def _run_post_meeting_pipeline(
             sum(index_counts.values()),
         )
 
+        # Notify n8n of success (if callback URL is configured)
+        try:
+            from tools.app.server import _send_callback, CallbackPayload
+            _cb_loop = asyncio.new_event_loop()
+            _cb_loop.run_until_complete(_send_callback(CallbackPayload(
+                status="success",
+                group_number=group_number,
+                lecture_number=lecture_number,
+            )))
+            _cb_loop.close()
+        except (ImportError, Exception) as cb_err:
+            logger.debug("[post] n8n callback skipped: %s", cb_err)
+
     except Exception as exc:
         logger.exception(
             "[post] Pipeline failed for Group %d, Lecture #%d: %s",
@@ -578,6 +591,30 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
+
+        # Mark pipeline state as FAILED
+        try:
+            from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_ps
+            _ps = _load_ps(group_number, lecture_number)
+            if _ps and _ps.state not in ("COMPLETE", "FAILED"):
+                _mark_ps(_ps, str(exc))
+        except Exception as state_err:
+            logger.warning("[post] Failed to mark pipeline state: %s", state_err)
+
+        # Notify n8n of failure (if callback URL is configured)
+        try:
+            from tools.app.server import _send_callback, CallbackPayload
+            _cb_loop = asyncio.new_event_loop()
+            _cb_loop.run_until_complete(_send_callback(CallbackPayload(
+                status="error",
+                group_number=group_number,
+                lecture_number=lecture_number,
+                error_message=str(exc),
+            )))
+            _cb_loop.close()
+        except (ImportError, Exception) as cb_err:
+            logger.debug("[post] n8n failure callback skipped: %s", cb_err)
+
         alert_operator(
             f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
             f"Error: {exc}"
