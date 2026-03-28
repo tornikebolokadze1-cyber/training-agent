@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [PRD (პროდუქტის მოთხოვნების დოკუმენტი)]
-category: document
+category: concept
 ---
 
 # PRD (Product Requirements Document)
@@ -10,7 +10,7 @@ category: document
 
 ## აღწერა
 
-პროდუქტის მოთხოვნების დოკუმენტი, რომელიც აღწერს პროდუქტის მოთხოვნებს და ემსახურება როგორც საფუძველი აგენტის შექმნისთვის.
+პროდუქტის მოთხოვნების დოკუმენტი, რომელიც დეტალურად აღწერს პროდუქტის ან პროექტის მიზნებს, ფუნქციონალს და მოთხოვნებს. მისი შექმნა პროექტის არქიტექტურის მნიშვნელოვანი ნაბიჯია და ეხმარება AI აგენტს პროექტის ამოცანების სწორად გააზრებასა და შესრულებაში.
 
 ---
 
@@ -23,6 +23,5 @@ category: document
 
 ## დაკავშირებული
 
-- [[Project Initialization]]
-- [[Personal Work Automation Agent]]
-- [[PRD-based Development]]
+- [[Project Architecture Approach]]
+- [[AI Agent]]

@@ -15,11 +15,11 @@ tags: [MOC, ინდექსი]
 
 | # | ლექცია | თარიღი | თემა |
 |---|--------|--------|------|
-| 1 | [[ლექცია 1]] | 2026-03-13 | AI ლექციის ტრანსკრიპტის ანალიზი (არასრული შინაარსი) |
+| 1 | [[ლექცია 1]] | 2026-03-13 | ლექციის შინაარსი არ არის ხელმისაწვდომი ანალიზისთვის |
 | 2 | [[ლექცია 2]] | 2026-03-17 | AI მოდელების მიმოხილვა, მახასიათებლები და აგენტების შესავალი |
 | 3 | [[ლექცია 3]] | 2026-03-20 | AI აგენტები და აგენტური ხელოვნური ინტელექტი |
-| 4 | [[ლექცია 4]] | 2026-03-24 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი (ლექცია ~4-5) |
-| 5 | [[ლექცია 5]] | 2026-03-27 | Claude-ის ეკოსისტემა, პროექტის აწყობა და ჩინური AI მოდელები |
+| 4 | [[ლექცია 4]] | 2026-03-24 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი |
+| 5 | [[ლექცია 5]] | 2026-03-27 | ლექციის სრულყოფილი შეჯამება |
 | 6 | ლექცია 6 | -- | _მოლოდინში_ |
 | 7 | ლექცია 7 | -- | _მოლოდინში_ |
 | 8 | ლექცია 8 | -- | _მოლოდინში_ |
@@ -39,7 +39,7 @@ tags: [MOC, ინდექსი]
 | 2 | [[ლექცია 2]] | 2026-03-16 | ლექცია #2: Claude Code, Vibe Coding და AI აგენტები — პრაქტიკ |
 | 3 | [[ლექცია 3]] | 2026-03-19 | ლექცია #3 (კვირა 2) — AI მოდელების ყოვლისმომცველი მიმოხილვა, |
 | 4 | [[ლექცია 4]] | 2026-03-23 | ლექციის სრულყოფილი შეჯამება — ლექცია 4 (AI ინსტრუმენტები ქარ |
-| 5 | [[ლექცია 5]] | 2026-03-26 | AI აგენტების შექმნის კურსი: ინსტრუმენტები, მეხსიერების მართვ |
+| 5 | [[ლექცია 5]] | 2026-03-26 | AI კურსის ლექცია: აგენტების შექმნა და კონტექსტის მართვა |
 | 6 | ლექცია 6 | -- | _მოლოდინში_ |
 | 7 | ლექცია 7 | -- | _მოლოდინში_ |
 | 8 | ლექცია 8 | -- | _მოლოდინში_ |
@@ -55,112 +55,61 @@ tags: [MOC, ინდექსი]
 
 ## AI მოდელები
 
-- [[Anthropic]]
 - [[ChatGPT]]
 - [[ChatGPT Atlas]]
 - [[Claude]]
-- [[Claude 3.5]]
-- [[Claude Add-in]]
-- [[Claude Chat]]
-- [[Claude Code]]
-- [[Claude Cowork]]
+- [[Claude Artifacts]]
+- [[Claude Browser Extension]]
 - [[Claude Desktop]]
-- [[Claude Desktop (Coworker)]]
-- [[Claude Desktop App]]
-- [[Claude Desktop Application]]
-- [[Claude Extension]]
-- [[Claude Web Interface]]
-- [[Claude Website]]
-- [[Claude ecosystem]]
+- [[Claude Projects]]
+- [[Claude Sonnet 3.5]]
 - [[DeepSeek]]
-- [[GPT-4o]]
 - [[Gemini]]
-- [[Gemini 2.0]]
-- [[Google Gemini]]
-- [[Google Gemini Gems]]
-- [[Google Workspace Gemini]]
+- [[Gemini Vision]]
 - [[Grok]]
-- [[Llama]]
-- [[Mistral]]
-- [[Ollama]]
-- [[OpenAI]]
-- [[OpenAI's real-time API]]
 - [[Perplexity]]
-- [[Perplexity Comet]]
-- [[Perplexity Computer]]
-- [[claude-code-setup]]
-- [[llama.cpp]]
-- [[o4-mini/GPT-4o]]
 
 ---
 
 ## ინსტრუმენტები და პლატფორმები
 
-- [[AI Pulse Georgia Facebook Page]]
-- [[AI coding assistants for non-developers]]
-- [[AWS]]
-- [[AWS (Amazon Web Services)]]
-- [[Airtable]]
-- [[Amazon]]
-- [[Anything CLI]]
-- [[Apify]]
-- [[App connectors]]
-- [[Asana]]
-- [[Binance]]
-- [[Bolt.new]]
-- [[Booking.com]]
-- [[Brave browser]]
 - [[CLI-Anything]]
-- [[CRM მონაცემები]]
-- [[Canva]]
-- [[Chrome Browser]]
-- [[Cloudflare]]
-- [[Codex Extension]]
-- [[Colab Notebooks]]
-- [[Copilot]]
-- [[Coursera]]
-- [[Cursor]]
-- [[DeepLearning.AI]]
-- [[Draw.io]]
-- [[ElevenLabs]]
-- [[Enagram AI]]
-- [[Excel]]
-- [[Excel ფაილები]]
+- [[Cloud Services]]
+- [[Genspark AI]]
+- [[Git]]
+- [[GitHub]]
+- [[Google AI Studio]]
+- [[Google Antigravity / Project IDX]]
+- [[Kimi]]
+- [[Klo.co]]
+- [[Manus AI]]
+- [[MiniMax]]
+- [[NotebookLM]]
+- [[OpenClaw]]
+- [[Playwright]]
+- [[Qwen]]
+- [[Rube]]
+- [[VS Code]]
+- [[Zapier]]
+- [[n8n]]
 
 ---
 
 ## ძირითადი კონცეფციები (რამდენიმე ლექციაში განხილული)
 
-- [[AI]] (G1L1, G2L1)
-- [[AI Agent]] (G1L2, G2L1, G2L2)
-- [[AI Agents]] (G1L3, G2L5)
-- [[AI Cost Optimization]] (G1L5, G2L2)
-- [[AI Ethics]] (G1L2, G1L4, G2L5)
-- [[AI Governance]] (G1L1, G1L2, G1L3, G2L1, G2L2)
-- [[AI Safety]] (G1L2, G1L3, G1L5, G2L2)
-- [[AI Strategy]] (G1L3, G1L4)
-- [[AutoGen]] (G1L2, G1L3, G1L5, G2L2, G2L4, G2L5)
-- [[Bias]] (G1L2, G2L1)
-- [[Bias (AI)]] (G1L4, G2L2)
-- [[CRISPE framework]] (G1L2, G1L4)
-- [[Caching]] (G1L5, G2L5)
-- [[Chain-of-Thought]] (G1L3, G2L5)
-- [[Chain-of-thought prompting]] (G1L2, G1L4, G2L4)
-- [[Change Management]] (G1L2, G1L3)
-- [[Compliance]] (G1L2, G1L3, G2L2)
-- [[Computer Use]] (G1L5, G2L1)
-- [[Context Window]] (G1L5, G2L1)
-- [[CrewAI]] (G1L2, G1L3, G1L4, G1L5, G2L2, G2L4, G2L5)
+- [[AI Agents]] (G1L2, G1L3, G1L4, G2L1, G2L2, G2L4, G2L5)
+- [[API (Access & Keys)]] (G1L5, G2L1, G2L2)
+- [[Claude Code]] (G1L2, G1L3, G1L4, G1L5, G2L4, G2L5)
+- [[Claude Skills]] (G1L2, G2L2)
 - [[Custom Instructions]] (G1L2, G2L3)
-- [[Dashboard]] (G2L2, G2L5)
-- [[Data Control]] (G1L2, G2L3)
 - [[Deep Research]] (G1L2, G2L3)
-- [[EU AI Act]] (G1L1, G1L2, G1L3, G2L2)
-- [[Embeddings]] (G1L3, G1L5)
-- [[Error Handling]] (G1L4, G1L5, G2L5)
-- [[Few-shot learning]] (G1L2, G2L4)
-- [[Flashcards]] (G1L2, G2L4)
-- [[GDPR]] (G1L4, G1L5, G2L4)
+- [[Hallucinations]] (G2L1, G2L5)
+- [[MCP (Model Context Protocol)]] (G1L2, G1L3, G2L2, G2L3, G2L5)
+- [[Open Source]] (G1L2, G1L4)
+- [[PRD (Product Requirements Document)]] (G2L2, G2L5)
+- [[Vector Database]] (G1L3, G2L5)
+- [[Vibe Coding]] (G2L1, G2L2)
+- [[Web Scraping]] (G1L3, G2L2)
 
 ---
 
