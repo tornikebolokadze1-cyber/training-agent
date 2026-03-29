@@ -314,6 +314,16 @@ def transcribe_and_index(
             )
             results = cached
             skip_analysis = True
+            # Validate cached results even on resume (prevent garbage propagation)
+            for _key, _min in [("summary", 500), ("gap_analysis", 300), ("deep_analysis", 300)]:
+                _text = results.get(_key, "")
+                if not _text or len(_text.strip()) < _min:
+                    logger.warning(
+                        "[%s] Cached %s too short (%d chars) — falling back to full analysis",
+                        trace, _key, len(_text.strip()) if _text else 0,
+                    )
+                    skip_analysis = False
+                    break
 
     logger.info(
         "[%s] Starting full pipeline for Group %d, Lecture #%d (%s)",

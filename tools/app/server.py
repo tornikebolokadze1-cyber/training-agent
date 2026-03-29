@@ -197,22 +197,10 @@ async def _check_unprocessed_recordings() -> None:
         # Check if already indexed in Pinecone (any vectors for this lecture)
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            # Query with a filter — if any vectors exist for this group+lecture, it's done
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning(
                 "[startup-recovery] Pinecone check failed for G%d L%d: %s — assuming not indexed",
@@ -352,6 +340,9 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     response.headers["X-Correlation-ID"] = correlation_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Security-Policy"] = (
@@ -1369,21 +1360,10 @@ async def retry_latest(
         # Check Pinecone (pipeline state checked atomically by try_claim_pipeline below)
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning("[retry-latest] Pinecone check failed: %s", exc)
 

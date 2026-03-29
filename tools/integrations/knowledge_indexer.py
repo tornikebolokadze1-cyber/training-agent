@@ -490,7 +490,7 @@ def query_knowledge(
         operation_name="Pinecone query",
     )
 
-    MIN_RELEVANCE_SCORE = 0.55  # Filter out low-relevance chunks (raised from 0.45)
+    MIN_RELEVANCE_SCORE = 0.40  # Conservative threshold for Georgian text (multi-byte tokenization)
 
     raw_matches = response.get("matches", []) if isinstance(response, dict) else response.matches
     matches = [m for m in raw_matches if (m.get("score", 0) if isinstance(m, dict) else getattr(m, "score", 0)) >= MIN_RELEVANCE_SCORE]

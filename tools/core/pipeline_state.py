@@ -20,6 +20,7 @@ import fcntl
 import json
 import logging
 import os
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,8 +49,11 @@ FAILED = "FAILED"
 # States that represent a finished pipeline (no further processing expected).
 _TERMINAL_STATES: frozenset[str] = frozenset({COMPLETE, FAILED})
 
-# File-level lock for atomic claim operations.
+# File-level lock for atomic claim operations (inter-process).
 _LOCK_FILE = TMP_DIR / ".pipeline_lock"
+# Thread-level lock for intra-process mutual exclusion.
+# fcntl.flock only protects between processes, NOT between threads.
+_THREAD_LOCK = threading.Lock()
 
 # Ordered list of all valid states — used for validation.
 ALL_STATES: tuple[str, ...] = (
@@ -451,6 +455,11 @@ def try_claim_pipeline(
         The newly created PipelineState if the claim succeeded, or None if
         a pipeline is already active or complete for this group/lecture.
     """
+    # Thread lock first (intra-process), then file lock (inter-process)
+    if not _THREAD_LOCK.acquire(blocking=False):
+        logger.debug("Pipeline thread lock held for g%d/l%d", group, lecture)
+        return None
+
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = _LOCK_FILE
 
@@ -465,6 +474,7 @@ def try_claim_pipeline(
         )
         if lock_fd is not None:
             lock_fd.close()
+        _THREAD_LOCK.release()
         return None
 
     try:
@@ -507,6 +517,7 @@ def try_claim_pipeline(
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
+        _THREAD_LOCK.release()
 
 
 def release_pipeline(group: int, lecture: int) -> None:
