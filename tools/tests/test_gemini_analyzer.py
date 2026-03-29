@@ -439,7 +439,8 @@ class TestSplitVideoChunks:
         video = tmp_path / "short.mp4"
         video.write_bytes(b"\x00" * 1000)
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             # ffprobe returns 30 minutes
             mock_run.return_value = MagicMock(returncode=0, stdout="1800.0\n", stderr="")
             result = ga.split_video_chunks(video)
@@ -460,7 +461,8 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)  # >100KB
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run), \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             result = ga.split_video_chunks(video)
 
         assert len(result) == 3
@@ -471,7 +473,8 @@ class TestSplitVideoChunks:
         video = tmp_path / "zero.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             mock_run.return_value = MagicMock(returncode=0, stdout="0.0\n", stderr="")
             with pytest.raises(ValueError, match="zero or negative"):
                 ga.split_video_chunks(video)
@@ -480,7 +483,8 @@ class TestSplitVideoChunks:
         video = tmp_path / "neg.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             mock_run.return_value = MagicMock(returncode=0, stdout="-5.0\n", stderr="")
             with pytest.raises(ValueError, match="zero or negative"):
                 ga.split_video_chunks(video)
@@ -501,7 +505,8 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             ga.split_video_chunks(video)
 
         # ffprobe call + ffmpeg for chunk1 and chunk2 only (chunk0 reused)
@@ -524,7 +529,8 @@ class TestSplitVideoChunks:
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run) as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             ga.split_video_chunks(video)
 
         # All 3 chunks should have ffmpeg calls (chunk0 was recreated)
@@ -535,7 +541,8 @@ class TestSplitVideoChunks:
         video = tmp_path / "bad.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run:
+        with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run, \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="No such file")
             with pytest.raises(RuntimeError, match="ffprobe failed"):
                 ga.split_video_chunks(video)
@@ -549,7 +556,8 @@ class TestSplitVideoChunks:
                 return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
             return MagicMock(returncode=1, stdout="", stderr="encoding error")
 
-        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
+        with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run), \
+             patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             with pytest.raises(RuntimeError, match="ffmpeg chunk"):
                 ga.split_video_chunks(video)
 

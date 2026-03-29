@@ -423,3 +423,124 @@ class TestListGroups:
 
         assert len(groups) == 2
         assert all(g["id"].endswith("@g.us") for g in groups)
+
+
+# ===========================================================================
+# 11. send_email_fallback
+# ===========================================================================
+
+
+class TestSendEmailFallback:
+    """Tests for send_email_fallback Gmail SMTP."""
+
+    def test_returns_false_when_credentials_missing(self):
+        """Returns False (never crashes) when env vars not set."""
+        with patch.dict("os.environ", {}, clear=True):
+            result = ws.send_email_fallback("Subject", "Body")
+        assert result is False
+
+    def test_returns_true_on_successful_send(self):
+        """Returns True when SMTP send succeeds (mocked)."""
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+        mock_smtp.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict("os.environ", {
+            "GMAIL_SENDER_EMAIL": "test@gmail.com",
+            "GMAIL_APP_PASSWORD": "password",
+            "OPERATOR_EMAIL": "op@example.com",
+        }), patch("smtplib.SMTP", return_value=mock_smtp):
+            result = ws.send_email_fallback("Subject", "Body")
+
+        assert result is True
+        mock_smtp.starttls.assert_called_once()
+        mock_smtp.login.assert_called_once()
+        mock_smtp.send_message.assert_called_once()
+
+    def test_returns_false_on_smtp_error(self):
+        """Returns False when SMTP connection fails."""
+        with patch.dict("os.environ", {
+            "GMAIL_SENDER_EMAIL": "test@gmail.com",
+            "GMAIL_APP_PASSWORD": "password",
+            "OPERATOR_EMAIL": "op@example.com",
+        }), patch("smtplib.SMTP", side_effect=ConnectionRefusedError("SMTP down")):
+            result = ws.send_email_fallback("Subject", "Body")
+
+        assert result is False
+
+    def test_never_raises_exception(self):
+        """The function NEVER raises — it always returns bool."""
+        with patch.dict("os.environ", {
+            "GMAIL_SENDER_EMAIL": "test@gmail.com",
+            "GMAIL_APP_PASSWORD": "password",
+            "OPERATOR_EMAIL": "op@example.com",
+        }), patch("smtplib.SMTP", side_effect=RuntimeError("Unexpected")):
+            # Should NOT raise
+            result = ws.send_email_fallback("Subject", "Body")
+        assert result is False
+
+
+# ===========================================================================
+# 12. check_whatsapp_health
+# ===========================================================================
+
+
+class TestCheckWhatsappHealth:
+    """Tests for check_whatsapp_health Green API status."""
+
+    def test_returns_connected_true_when_authorized(self):
+        """Returns connected=True when state is 'authorized'."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"stateInstance": "authorized"}
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.get.return_value = mock_response
+
+        with patch.object(ws, "GREEN_API_INSTANCE_ID", "inst"), \
+             patch.object(ws, "GREEN_API_TOKEN", "tok"), \
+             patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
+            result = ws.check_whatsapp_health()
+
+        assert result["connected"] is True
+        assert result["state"] == "authorized"
+
+    def test_returns_connected_false_when_not_authorized(self):
+        """Returns connected=False for 'notAuthorized' state."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"stateInstance": "notAuthorized"}
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.get.return_value = mock_response
+
+        with patch.object(ws, "GREEN_API_INSTANCE_ID", "inst"), \
+             patch.object(ws, "GREEN_API_TOKEN", "tok"), \
+             patch("tools.integrations.whatsapp_sender.httpx.Client", return_value=mock_client):
+            result = ws.check_whatsapp_health()
+
+        assert result["connected"] is False
+        assert result["state"] == "notAuthorized"
+
+    def test_returns_error_on_network_failure(self):
+        """Returns error dict when HTTP request fails."""
+        with patch.object(ws, "GREEN_API_INSTANCE_ID", "inst"), \
+             patch.object(ws, "GREEN_API_TOKEN", "tok"), \
+             patch("tools.integrations.whatsapp_sender.httpx.Client",
+                   side_effect=ConnectionError("Network down")):
+            result = ws.check_whatsapp_health()
+
+        assert result["connected"] is False
+        assert result["state"] == "error"
+
+    def test_returns_not_configured_when_no_credentials(self):
+        """Returns appropriate response when GREEN_API vars missing."""
+        with patch.object(ws, "GREEN_API_INSTANCE_ID", ""), \
+             patch.object(ws, "GREEN_API_TOKEN", ""):
+            result = ws.check_whatsapp_health()
+
+        assert result["connected"] is False

@@ -491,17 +491,23 @@ class TestRecordMessageAndContext:
         assert "c1@g.us" in self.assistant._chat_history
         assert len(self.assistant._chat_history["c1@g.us"]) == 1
 
-    def test_caps_at_15_messages(self):
-        for i in range(20):
+    def test_caps_group_chat_at_40_messages(self):
+        for i in range(50):
             msg = _make_message(text=f"msg {i}", chat_id="c1@g.us")
             self.assistant._record_message(msg)
-        assert len(self.assistant._chat_history["c1@g.us"]) == 15
+        assert len(self.assistant._chat_history["c1@g.us"]) == 40
+
+    def test_caps_private_chat_at_15_messages(self):
+        for i in range(20):
+            msg = _make_message(text=f"msg {i}", chat_id="995599123@c.us")
+            self.assistant._record_message(msg)
+        assert len(self.assistant._chat_history["995599123@c.us"]) == 15
 
     def test_truncates_long_text_in_history(self):
-        msg = _make_message(text="a" * 500, chat_id="c1@g.us")
+        msg = _make_message(text="a" * 800, chat_id="c1@g.us")
         self.assistant._record_message(msg)
         stored = self.assistant._chat_history["c1@g.us"][0]["text"]
-        assert len(stored) <= 200
+        assert len(stored) <= 500
 
     def test_get_recent_context_empty_for_single_message(self):
         msg = _make_message(text="only one", chat_id="c1@g.us")
@@ -600,7 +606,7 @@ class TestRetrieveContext:
             )
         }):
             result = assistant._retrieve_context("what is AI?", 1)
-        assert "Relevant course context" in result
+        assert "COURSE KNOWLEDGE" in result
         assert "AI basics" in result
 
     def test_handles_exception_gracefully(self):

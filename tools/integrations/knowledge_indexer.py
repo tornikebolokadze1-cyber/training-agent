@@ -48,7 +48,10 @@ RETRY_BASE_DELAY = 5  # seconds
 UPSERT_BATCH_SIZE = 100
 
 # Valid content types (used for metadata and vector ID generation)
-CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analysis"})
+CONTENT_TYPES = frozenset({
+    "transcript", "summary", "gap_analysis", "deep_analysis",
+    "whatsapp_chat", "obsidian_concept", "obsidian_tool",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -77,36 +80,37 @@ def get_pinecone_index() -> object:
         return _pinecone_index_cache
 
     with _pinecone_lock:
+        # Double-check after acquiring lock (another thread may have initialized)
         if _pinecone_index_cache is not None:
             return _pinecone_index_cache
 
-    if not PINECONE_API_KEY:
-        raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
+        if not PINECONE_API_KEY:
+            raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
 
-    pc = Pinecone(api_key=PINECONE_API_KEY)
+        pc = Pinecone(api_key=PINECONE_API_KEY)
 
-    existing = [idx.name for idx in pc.list_indexes()]
-    if PINECONE_INDEX_NAME not in existing:
-        logger.info(
-            "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
-            PINECONE_INDEX_NAME,
-            EMBEDDING_DIMENSION,
-        )
-        pc.create_index(
-            name=PINECONE_INDEX_NAME,
-            dimension=EMBEDDING_DIMENSION,
-            metric="cosine",
-            spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
-        )
-        # Wait until the index is ready
-        _wait_for_index_ready(pc)
-        logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
-    else:
-        logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
+        existing = [idx.name for idx in pc.list_indexes()]
+        if PINECONE_INDEX_NAME not in existing:
+            logger.info(
+                "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
+                PINECONE_INDEX_NAME,
+                EMBEDDING_DIMENSION,
+            )
+            pc.create_index(
+                name=PINECONE_INDEX_NAME,
+                dimension=EMBEDDING_DIMENSION,
+                metric="cosine",
+                spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
+            )
+            # Wait until the index is ready
+            _wait_for_index_ready(pc)
+            logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
+        else:
+            logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
 
-    index = pc.Index(PINECONE_INDEX_NAME)
-    _pinecone_index_cache = index
-    return index
+        index = pc.Index(PINECONE_INDEX_NAME)
+        _pinecone_index_cache = index
+        return index
 
 
 def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
@@ -486,7 +490,7 @@ def query_knowledge(
         operation_name="Pinecone query",
     )
 
-    MIN_RELEVANCE_SCORE = 0.45  # Filter out low-relevance chunks
+    MIN_RELEVANCE_SCORE = 0.55  # Filter out low-relevance chunks (raised from 0.45)
 
     raw_matches = response.get("matches", []) if isinstance(response, dict) else response.matches
     matches = [m for m in raw_matches if (m.get("score", 0) if isinstance(m, dict) else getattr(m, "score", 0)) >= MIN_RELEVANCE_SCORE]
@@ -507,6 +511,187 @@ def query_knowledge(
 
     logger.info("Query returned %d results.", len(results))
     return results
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp chat indexing
+# ---------------------------------------------------------------------------
+
+
+def index_whatsapp_chats() -> int:
+    """Fetch WhatsApp chat history from Green API and index into Pinecone.
+
+    Indexes messages from both training group chats as searchable content.
+    Uses a synthetic group-level ID (group_number=N, lecture_number=0)
+    to distinguish chat content from lecture content.
+
+    Returns:
+        Total number of vectors indexed across both groups.
+    """
+    import httpx
+
+    from tools.core.config import (
+        GREEN_API_INSTANCE_ID,
+        GREEN_API_TOKEN,
+        WHATSAPP_GROUP1_ID,
+        WHATSAPP_GROUP2_ID,
+    )
+
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        logger.warning("Green API not configured — cannot index WhatsApp chats")
+        return 0
+
+    total = 0
+    chats = [
+        (WHATSAPP_GROUP1_ID, 1),
+        (WHATSAPP_GROUP2_ID, 2),
+    ]
+
+    for chat_id, group_num in chats:
+        if not chat_id:
+            continue
+
+        url = (
+            f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE_ID}"
+            f"/getChatHistory/{GREEN_API_TOKEN}"
+        )
+
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.post(url, json={"chatId": chat_id, "count": 100})
+
+            if response.status_code != 200:
+                logger.warning("Green API returned %d for group %d", response.status_code, group_num)
+                continue
+
+            messages = response.json()
+            if not messages:
+                continue
+
+            # Build readable text from messages
+            lines: list[str] = []
+            for msg in messages:
+                sender = msg.get("senderName", msg.get("senderId", "?"))
+                text = msg.get("textMessage", "")
+                if not text:
+                    msg_type = msg.get("typeMessage", "")
+                    text = f"[{msg_type}]" if msg_type else "[media]"
+                lines.append(f"{sender}: {text}")
+
+            chat_text = "\n".join(lines)
+            if not chat_text.strip():
+                continue
+
+            # Index as whatsapp_chat content type, lecture_number=0 (non-lecture)
+            count = index_lecture_content(
+                group_number=group_num,
+                lecture_number=0,
+                content=chat_text,
+                content_type="whatsapp_chat",
+            )
+            total += count
+            logger.info("Indexed %d WhatsApp chat vectors for group %d", count, group_num)
+
+        except Exception as exc:
+            logger.error("Failed to index WhatsApp chat for group %d: %s", group_num, exc)
+
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Obsidian knowledge indexing
+# ---------------------------------------------------------------------------
+
+
+def index_obsidian_knowledge() -> int:
+    """Index Obsidian vault concept and tool notes into Pinecone.
+
+    Reads markdown files from the vault's კონცეფციები/ and ინსტრუმენტები/
+    directories and indexes their content for RAG retrieval.
+
+    Uses group_number=0 (cross-group) and lecture_number=0 (non-lecture)
+    since these are general knowledge notes, not lecture-specific.
+
+    Returns:
+        Total number of vectors indexed.
+    """
+    from pathlib import Path
+
+    from tools.core.config import PROJECT_ROOT
+
+    vault_root = PROJECT_ROOT / "obsidian-vault"
+    total = 0
+
+    dirs_and_types = [
+        (vault_root / "კონცეფციები", "obsidian_concept"),
+        (vault_root / "ინსტრუმენტები", "obsidian_tool"),
+    ]
+
+    for dir_path, content_type in dirs_and_types:
+        if not dir_path.exists():
+            logger.warning("Obsidian directory not found: %s", dir_path)
+            continue
+
+        md_files = sorted(dir_path.glob("*.md"))
+        all_content: list[str] = []
+
+        for md_file in md_files:
+            text = md_file.read_text(encoding="utf-8")
+            # Strip YAML frontmatter
+            if text.startswith("---"):
+                end = text.find("---", 3)
+                if end != -1:
+                    text = text[end + 3:].strip()
+            if text:
+                all_content.append(f"# {md_file.stem}\n{text}")
+
+        if not all_content:
+            continue
+
+        combined = "\n\n---\n\n".join(all_content)
+        # Use group_number=0 for cross-group knowledge
+        count = index_lecture_content(
+            group_number=0,
+            lecture_number=0,
+            content=combined,
+            content_type=content_type,
+        )
+        total += count
+        logger.info("Indexed %d vectors from %d %s notes", count, len(md_files), content_type)
+
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+
+def delete_content_type(content_type: str, group_number: int | None = None) -> int:
+    """Delete all vectors of a specific content type from the index.
+
+    Args:
+        content_type: The content type to delete (e.g., "deep_analysis").
+        group_number: Optional — only delete for a specific group.
+
+    Returns:
+        Approximate number of vectors deleted (best effort).
+    """
+    index = get_pinecone_index()
+    filter_dict: dict = {"content_type": {"$eq": content_type}}
+    if group_number is not None:
+        filter_dict["group_number"] = {"$eq": group_number}
+
+    try:
+        index.delete(filter=filter_dict)
+        logger.info(
+            "Deleted vectors: content_type=%s, group=%s",
+            content_type, group_number or "all",
+        )
+        return 1  # Pinecone delete doesn't return count
+    except Exception as exc:
+        logger.error("Failed to delete %s vectors: %s", content_type, exc)
+        return 0
 
 
 # ---------------------------------------------------------------------------

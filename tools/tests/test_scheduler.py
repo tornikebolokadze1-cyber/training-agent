@@ -563,11 +563,13 @@ class TestRunPostMeetingPipeline:
         mock_zm.get_access_token.return_value = "token-123"
         mock_zm.download_recording.side_effect = ConnectionError("Network down")
         alert_mock = MagicMock()
+        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))  # 10GB free
 
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch.object(sched, "TMP_DIR", tmp_path):
+             patch.object(sched, "TMP_DIR", tmp_path), \
+             patch("shutil.disk_usage", mock_disk):
             sched._run_post_meeting_pipeline(1, 5, "mtg-dl-fail")
 
         alert_mock.assert_called_once()
@@ -585,12 +587,14 @@ class TestRunPostMeetingPipeline:
         mock_groups = {1: {"name": "g1", "drive_folder_id": "folder-1"}}
         mock_tai = MagicMock(return_value={"summary": 3})
         mock_upload = MagicMock()
+        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))
 
         # Patch at source modules since _run_post_meeting_pipeline uses local imports
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
+             patch("shutil.disk_usage", mock_disk), \
              patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
              patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
              patch("tools.integrations.gdrive_manager.upload_file", mock_upload), \
@@ -611,12 +615,14 @@ class TestRunPostMeetingPipeline:
 
         mock_groups = {1: {"name": "g1", "drive_folder_id": "folder-1"}}
         alert_mock = MagicMock()
+        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))
 
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
              patch.object(sched, "alert_operator", alert_mock), \
+             patch("shutil.disk_usage", mock_disk), \
              patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
              patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
              patch("tools.integrations.gdrive_manager.upload_file", MagicMock()), \
@@ -862,7 +868,8 @@ class TestStartScheduler:
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
-        assert mock_scheduler_instance.add_job.call_count == 4
+        # 4 pre-meeting cron jobs + DLQ processor + WhatsApp health = 6 (+ restored pending)
+        assert mock_scheduler_instance.add_job.call_count >= 6
 
     def test_sets_module_level_scheduler_ref(self):
         mock_scheduler_instance = MagicMock()
@@ -884,8 +891,11 @@ class TestStartScheduler:
             sched.start_scheduler()
 
         job_ids = [call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list]
-        expected = {"pre_group1_tuesday", "pre_group1_friday", "pre_group2_monday", "pre_group2_thursday"}
-        assert set(job_ids) == expected
+        # Must include the 4 pre-meeting jobs + DLQ + WhatsApp health
+        expected_core = {"pre_group1_tuesday", "pre_group1_friday", "pre_group2_monday", "pre_group2_thursday"}
+        assert expected_core.issubset(set(job_ids))
+        assert "dlq_processor" in job_ids
+        assert "whatsapp_health_check" in job_ids
 
 
 # ===========================================================================
