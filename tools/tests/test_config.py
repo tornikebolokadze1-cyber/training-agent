@@ -509,3 +509,62 @@ class TestGetGoogleCredentialsPath:
             assert result == fake_path
         finally:
             cfg._google_credentials_path = original
+
+
+# ===========================================================================
+# 12. EXCLUDED_DATES
+# ===========================================================================
+
+
+class TestExcludedDates:
+    """Tests for EXCLUDED_DATES affecting lecture number counting."""
+
+    def test_excluded_date_skipped_in_count(self):
+        """A meeting day that falls on an excluded date should NOT be counted as a lecture."""
+        # Group meets on Tue(1) and Fri(4), starts March 17 (Tuesday)
+        mock_groups = {
+            1: {
+                "name": "g1",
+                "start_date": date(2026, 3, 17),  # Tuesday
+                "meeting_days": {1, 4},  # Tue, Fri
+            }
+        }
+        # March 20 (Friday) is excluded — so by March 20, only March 17 counts
+        excluded = frozenset({date(2026, 3, 20)})
+        with patch.object(cfg, "GROUPS", mock_groups), \
+             patch.object(cfg, "EXCLUDED_DATES", excluded):
+            result = cfg.get_lecture_number(1, for_date=date(2026, 3, 20))
+        # March 17 (Tue) = lecture 1, March 20 (Fri) excluded -> still 1
+        assert result == 1
+
+    def test_empty_excluded_dates_no_effect(self):
+        """An empty EXCLUDED_DATES set should not change the lecture count."""
+        mock_groups = {
+            1: {
+                "name": "g1",
+                "start_date": date(2026, 3, 17),  # Tuesday
+                "meeting_days": {1, 4},  # Tue, Fri
+            }
+        }
+        with patch.object(cfg, "GROUPS", mock_groups), \
+             patch.object(cfg, "EXCLUDED_DATES", frozenset()):
+            result = cfg.get_lecture_number(1, for_date=date(2026, 3, 20))
+        # March 17 (Tue) = 1, March 20 (Fri) = 2
+        assert result == 2
+
+    def test_multiple_excluded_dates(self):
+        """Multiple comma-separated excluded dates should all be skipped."""
+        mock_groups = {
+            1: {
+                "name": "g1",
+                "start_date": date(2026, 3, 17),  # Tuesday
+                "meeting_days": {1, 4},  # Tue, Fri
+            }
+        }
+        # Exclude both March 20 (Fri) and March 24 (Tue)
+        excluded = frozenset({date(2026, 3, 20), date(2026, 3, 24)})
+        with patch.object(cfg, "GROUPS", mock_groups), \
+             patch.object(cfg, "EXCLUDED_DATES", excluded):
+            # By March 27 (Fri): Mar 17(Tue)=1, Mar 20(Fri)=SKIP, Mar 24(Tue)=SKIP, Mar 27(Fri)=2
+            result = cfg.get_lecture_number(1, for_date=date(2026, 3, 27))
+        assert result == 2

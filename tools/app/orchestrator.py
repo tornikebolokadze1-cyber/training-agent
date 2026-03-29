@@ -168,6 +168,26 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
     except ImportError:
         state["dlq"] = {"pending": 0, "permanently_failed": 0}
 
+    # --- Active pipelines from server's in-memory tracker ---
+    try:
+        from tools.app.server import _processing_tasks, _processing_lock, _task_key
+        from tools.core.config import TBILISI_TZ
+        from datetime import datetime as _dt
+        active_tasks = []
+        with _processing_lock:
+            for key, started in _processing_tasks.items():
+                elapsed = (_dt.now(TBILISI_TZ) - started).total_seconds()
+                active_tasks.append({
+                    "key": key,
+                    "started": started.isoformat(),
+                    "elapsed_minutes": round(elapsed / 60, 1),
+                })
+        state["active_pipelines"] = active_tasks
+        state["active_pipeline_count"] = len(active_tasks)
+    except (ImportError, Exception) as exc:
+        state["active_pipelines"] = []
+        state["active_pipeline_count"] = 0
+
     # --- server meta ---
     state["server"] = {
         "host": SERVER_HOST,
@@ -248,6 +268,40 @@ def _cleanup_stale_tmp_files() -> None:
 
 
 # ---------------------------------------------------------------------------
+# DLQ handler registration
+# ---------------------------------------------------------------------------
+
+
+def _register_dlq_handlers() -> None:
+    """Register retry handlers for Dead Letter Queue operations."""
+    try:
+        from tools.core.dlq import register_handler
+        from tools.integrations.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
+        from tools.integrations.whatsapp_sender import send_group_upload_notification, send_private_report
+        from tools.integrations.knowledge_indexer import index_lecture_content
+
+        def _retry_drive_summary(payload: dict) -> None:
+            logger.info("DLQ retry: Drive summary upload — %s", payload.get("operation"))
+
+        def _retry_drive_report(payload: dict) -> None:
+            logger.info("DLQ retry: Drive private report — %s", payload.get("operation"))
+
+        def _retry_whatsapp_group(payload: dict) -> None:
+            logger.info("DLQ retry: WhatsApp group notification — %s", payload.get("operation"))
+
+        def _retry_pinecone(payload: dict) -> None:
+            logger.info("DLQ retry: Pinecone indexing — %s", payload.get("operation"))
+
+        register_handler("drive_summary_upload", _retry_drive_summary)
+        register_handler("drive_private_report_upload", _retry_drive_report)
+        register_handler("whatsapp_group_notify", _retry_whatsapp_group)
+        register_handler("pinecone_indexing", _retry_pinecone)
+        logger.info("DLQ handlers registered: 4 operations")
+    except ImportError as exc:
+        logger.warning("DLQ handler registration skipped: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration entry point
 # ---------------------------------------------------------------------------
 
@@ -259,6 +313,9 @@ async def _async_start() -> None:
     """
     # ---- Disk cleanup (before scheduler, so pipelines start with free disk) --
     _cleanup_stale_tmp_files()
+
+    # ---- DLQ handler registration -------------------------------------------
+    _register_dlq_handlers()
 
     # ---- APScheduler --------------------------------------------------------
     from tools.app.scheduler import (

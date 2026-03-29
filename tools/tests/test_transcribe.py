@@ -456,3 +456,147 @@ class TestTranscriptResumeThreshold:
         assert outcome["analyze_calls"][0] == long_transcript, (
             "Transcript over 2000 chars must be reused"
         )
+
+
+# ===========================================================================
+# 8. Pipeline resume — skip stages based on persisted state
+# ===========================================================================
+
+class TestPipelineResume:
+    """Tests for resume logic: skip already-completed stages when state is past TRANSCRIBING."""
+
+    def test_skip_analysis_when_state_past_transcribing(self, tmp_path):
+        """When pipeline state is UPLOADING_DOCS with cached results, analyze_lecture should NOT be called."""
+        from tools.core.pipeline_state import PipelineState, UPLOADING_DOCS
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+
+        # Create cached results files with enough content to pass validation
+        for content_type, content in [
+            ("transcript", "t" * 3000),
+            ("summary", "s" * 600),
+            ("gap_analysis", "g" * 400),
+            ("deep_analysis", "d" * 400),
+        ]:
+            path = fake_tmp / f"g1_l1_{content_type}.txt"
+            path.write_text(content, encoding="utf-8")
+
+        # Mock pipeline state: already past TRANSCRIBING
+        mock_state = PipelineState(
+            group=1, lecture=1, state=UPLOADING_DOCS,
+            summary_doc_id="existing-doc-id",
+        )
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE) as mock_analyze,
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        mock_analyze.assert_not_called()
+
+    def test_fallback_to_full_analysis_when_cache_missing(self, tmp_path):
+        """When pipeline state is past TRANSCRIBING but no cached files exist, analyze_lecture IS called."""
+        from tools.core.pipeline_state import PipelineState, UPLOADING_DOCS
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+        # NO cached result files — .tmp/ is empty
+
+        mock_state = PipelineState(
+            group=1, lecture=1, state=UPLOADING_DOCS,
+        )
+
+        full_results = {
+            "transcript": "t" * 3000,
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
+        }
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE, return_value=full_results) as mock_analyze,
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        mock_analyze.assert_called_once()
+
+    def test_resume_skips_completed_delivery_stages(self, tmp_path):
+        """When pipeline has group_notified=True, _notify_group_whatsapp should NOT be called."""
+        from tools.core.pipeline_state import PipelineState, NOTIFYING
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+
+        # Create cached results
+        for content_type, content in [
+            ("transcript", "t" * 3000),
+            ("summary", "s" * 600),
+            ("gap_analysis", "g" * 400),
+            ("deep_analysis", "d" * 400),
+        ]:
+            path = fake_tmp / f"g1_l1_{content_type}.txt"
+            path.write_text(content, encoding="utf-8")
+
+        # Pipeline state: past notification, with group_notified=True
+        mock_state = PipelineState(
+            group=1, lecture=1, state=NOTIFYING,
+            summary_doc_id="doc-1",
+            report_doc_id="doc-2",
+            group_notified=True,
+            private_notified=True,
+        )
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE) as mock_analyze,
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp") as mock_notify_group,
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike") as mock_notify_private,
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        # Group and private notifications should have been skipped
+        mock_notify_group.assert_not_called()
+        mock_notify_private.assert_not_called()

@@ -75,6 +75,13 @@ def cleanup_state_files():
         path.unlink(missing_ok=True)
     for path in TMP_DIR.glob("pipeline_state_g99_l*.json"):
         path.unlink(missing_ok=True)
+    # Clean up lock file used by try_claim_pipeline tests
+    lock_file = TMP_DIR / ".pipeline_lock"
+    if lock_file.exists():
+        try:
+            lock_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ===========================================================================
@@ -662,3 +669,111 @@ class TestFullLifecycle:
         # Can create a new pipeline for the same group/lecture
         s2 = create_pipeline(_G, _L)
         assert s2.state == PENDING
+
+
+# ===========================================================================
+# 14. try_claim_pipeline
+# ===========================================================================
+
+
+class TestTryClaimPipeline:
+    """Tests for try_claim_pipeline() — atomic check-and-create with locking."""
+
+    def test_claim_succeeds_when_no_existing_state(self):
+        """Claiming a pipeline with no prior state should succeed."""
+        from tools.core.pipeline_state import try_claim_pipeline
+
+        result = try_claim_pipeline(_G, _L, meeting_id="zoom-new")
+        assert result is not None
+        assert result.state == PENDING
+        assert result.meeting_id == "zoom-new"
+
+    def test_claim_returns_none_when_active_pipeline_exists(self):
+        """Claiming when an active (non-terminal) pipeline exists returns None."""
+        from tools.core.pipeline_state import try_claim_pipeline
+
+        create_pipeline(_G, _L)
+        result = try_claim_pipeline(_G, _L, meeting_id="zoom-dup")
+        assert result is None
+
+    def test_claim_returns_none_when_complete_pipeline_exists(self):
+        """Claiming when a COMPLETE pipeline exists returns None (no re-processing)."""
+        from tools.core.pipeline_state import try_claim_pipeline
+
+        s = create_pipeline(_G, _L)
+        mark_complete(s)
+        result = try_claim_pipeline(_G, _L, meeting_id="zoom-redo")
+        assert result is None
+
+    def test_claim_allows_retry_of_failed_pipeline(self):
+        """Claiming when a FAILED pipeline exists should succeed (retry allowed)."""
+        from tools.core.pipeline_state import try_claim_pipeline
+
+        s = create_pipeline(_G, _L)
+        mark_failed(s, "test error")
+        result = try_claim_pipeline(_G, _L, meeting_id="zoom-retry")
+        assert result is not None
+        assert result.state == PENDING
+
+    def test_concurrent_claims_only_one_succeeds(self):
+        """Two threads racing to claim the same pipeline — only one should win."""
+        import threading
+        from tools.core.pipeline_state import try_claim_pipeline
+
+        results: list[PipelineState | None] = [None, None]
+
+        def claim(index: int) -> None:
+            results[index] = try_claim_pipeline(99, 1, meeting_id=f"thread-{index}")
+
+        t0 = threading.Thread(target=claim, args=(0,))
+        t1 = threading.Thread(target=claim, args=(1,))
+        t0.start()
+        t1.start()
+        t0.join(timeout=5)
+        t1.join(timeout=5)
+
+        # Exactly one should succeed, the other should get None
+        successes = [r for r in results if r is not None]
+        assert len(successes) == 1, (
+            f"Expected exactly 1 successful claim, got {len(successes)}: {results}"
+        )
+        assert successes[0].state == PENDING
+
+
+# ===========================================================================
+# 15. Forward-only state transitions
+# ===========================================================================
+
+
+class TestForwardOnlyTransitions:
+    """Tests for the forward-only constraint in transition()."""
+
+    def test_forward_transition_succeeds(self):
+        """PENDING -> TRANSCRIBING (forward) should produce a new state."""
+        s = PipelineState(group=_G, lecture=_L, state=PENDING)
+        new = transition(s, TRANSCRIBING)
+        assert new.state == TRANSCRIBING
+
+    def test_backward_transition_blocked(self):
+        """NOTIFYING -> TRANSCRIBING (backward) should return the original state unchanged."""
+        s = PipelineState(group=_G, lecture=_L, state=NOTIFYING)
+        save_state(s)
+        result = transition(s, TRANSCRIBING)
+        # Should return the ORIGINAL state, not the requested backward state
+        assert result.state == NOTIFYING
+
+    def test_failed_transition_allowed_from_any_state(self):
+        """NOTIFYING -> FAILED should always be allowed (FAILED is special)."""
+        s = PipelineState(group=_G, lecture=_L, state=NOTIFYING)
+        save_state(s)
+        result = transition(s, FAILED, error="test error")
+        assert result.state == FAILED
+        assert result.error == "test error"
+
+    def test_same_state_transition_allowed(self):
+        """TRANSCRIBING -> TRANSCRIBING (same state, e.g. chunk progress) should succeed."""
+        s = PipelineState(group=_G, lecture=_L, state=TRANSCRIBING)
+        save_state(s)
+        result = transition(s, TRANSCRIBING, transcript_chunks_done=(0, 1))
+        assert result.state == TRANSCRIBING
+        assert result.transcript_chunks_done == (0, 1)

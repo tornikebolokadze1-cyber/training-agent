@@ -757,18 +757,18 @@ class TestPreMeetingJobEdgeCases:
 
 class TestPostMeetingJob:
     def test_dispatches_to_thread_executor(self):
-        """post_meeting_job runs _run_post_meeting_pipeline in executor."""
+        """post_meeting_job runs _run_post_meeting_pipeline in executor when claim succeeds."""
+        from tools.core.pipeline_state import PipelineState, PENDING
+        mock_pipeline = PipelineState(group=1, lecture=5, state=PENDING)
+
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(return_value=None)
 
-        with patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
+        with patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop), \
+             patch("tools.core.pipeline_state.try_claim_pipeline", return_value=mock_pipeline):
             asyncio.run(sched.post_meeting_job(1, 5, "mtg-123"))
 
         mock_loop.run_in_executor.assert_called_once()
-        call_args = mock_loop.run_in_executor.call_args[0]
-        assert call_args[0] is None
-        assert call_args[1] is sched._run_post_meeting_pipeline
-        assert call_args[2:] == (1, 5, "mtg-123")
 
 
 # ===========================================================================

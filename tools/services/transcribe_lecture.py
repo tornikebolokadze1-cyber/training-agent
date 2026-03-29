@@ -67,7 +67,7 @@ def _get_lecture_folder_id(group_number: int, lecture_number: int) -> str | None
     return ensure_folder(service, folder_name, parent_id)
 
 
-@safe_operation("Drive summary upload", alert=True)
+@safe_operation("Drive summary upload", alert=True, dlq_operation="drive_summary_upload")
 def _upload_summary_to_drive(
     group_number: int,
     lecture_number: int,
@@ -107,7 +107,7 @@ def _find_recording_in_drive(group_number: int, lecture_number: int) -> str | No
     return None
 
 
-@safe_operation("Drive private report upload", alert=True)
+@safe_operation("Drive private report upload", alert=True, dlq_operation="drive_private_report_upload")
 def _upload_private_report_to_drive(
     group_number: int,
     lecture_number: int,
@@ -158,7 +158,7 @@ def _upload_private_report_to_drive(
 # WhatsApp helpers
 # ---------------------------------------------------------------------------
 
-@safe_operation("WhatsApp group notification", alert=True, default=None)
+@safe_operation("WhatsApp group notification", alert=True, default=None, dlq_operation="whatsapp_group_notify")
 def _notify_group_whatsapp(
     group_number: int,
     lecture_number: int,
@@ -224,7 +224,7 @@ def _send_private_report_to_tornike(
 # Safe wrappers for use inside loops / inline calls
 # ---------------------------------------------------------------------------
 
-@safe_operation("Pinecone indexing", alert=True, default=0)
+@safe_operation("Pinecone indexing", alert=True, default=0, dlq_operation="pinecone_indexing")
 def _safe_index(
     group_number: int,
     lecture_number: int,

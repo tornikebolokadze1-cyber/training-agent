@@ -794,51 +794,27 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
         lecture_number: Lecture ordinal (passed from schedule time, not re-derived).
         meeting_id: Zoom meeting UUID (preferred) or numeric ID.
     """
-    # Check if webhook already started processing this lecture.
-    # Evict stale tasks first (mirrors server.py behavior) so a crashed
-    # pipeline from >4 hours ago doesn't permanently block the fallback.
+    # Use the unified dedup authority instead of ad-hoc checks
     try:
-        from tools.app.server import _evict_stale_tasks, _processing_lock, _processing_tasks, _task_key
-        _evict_stale_tasks()
-        key = _task_key(group_number, lecture_number)
-        with _processing_lock:
-            if key in _processing_tasks:
-                logger.info(
-                    "[post] Scheduler FALLBACK skipped — %s already processing "
-                    "(webhook handled it)",
-                    key,
-                )
-                return
-            # Check persistent pipeline state
-            if is_pipeline_done(group_number, lecture_number):
-                logger.info("[post] Pipeline already COMPLETE for G%d L%d — skipping", group_number, lecture_number)
-                return
-            if is_pipeline_active(group_number, lecture_number):
-                # Check if stuck (stale) — if so, reset and retry
-                from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_failed_ps
-                _ps = _load_ps(group_number, lecture_number)
-                if _ps:
-                    try:
-                        from tools.core.config import TBILISI_TZ
-                        started = datetime.fromisoformat(_ps.started_at)
-                        elapsed_h = (datetime.now(TBILISI_TZ) - started).total_seconds() / 3600
-                    except (ValueError, TypeError):
-                        elapsed_h = 999
-                    if elapsed_h > 2:  # Fallback is more aggressive — 2h threshold
-                        logger.warning("[post] Pipeline stuck ACTIVE for %.1fh — resetting for fallback retry", elapsed_h)
-                        _mark_failed_ps(_ps, f"Stuck {elapsed_h:.1f}h — scheduler fallback reset")
-                        from tools.core.pipeline_state import reset_failed as _reset_ps
-                        _reset_ps(group_number, lecture_number)
-                    else:
-                        logger.info("[post] Pipeline active for %.1fh — still within threshold, skipping", elapsed_h)
-                        return
-            # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
-            # Atomic check-and-set under lock prevents webhook+scheduler race.
-            from tools.core.config import TBILISI_TZ
-            _processing_tasks[key] = datetime.now(TBILISI_TZ)
-        logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
+        from tools.core.pipeline_state import try_claim_pipeline
+        pipeline = try_claim_pipeline(group_number, lecture_number, meeting_id=meeting_id)
+        if pipeline is None:
+            logger.info(
+                "[post] Scheduler FALLBACK skipped — pipeline already claimed/complete "
+                "for Group %d, Lecture #%d",
+                group_number, lecture_number,
+            )
+            return
     except ImportError:
-        pass  # server module not available (standalone scheduler mode)
+        logger.warning("[post] pipeline_state not available — proceeding without dedup")
+
+    # Update in-memory cache for /status visibility
+    try:
+        from tools.app.server import _processing_tasks, _task_key
+        from tools.core.config import TBILISI_TZ
+        _processing_tasks[_task_key(group_number, lecture_number)] = datetime.now(TBILISI_TZ)
+    except (ImportError, Exception):
+        pass
 
     logger.info(
         "[post] Scheduler FALLBACK firing — webhook did not handle "
