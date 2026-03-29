@@ -59,7 +59,7 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 ## API Integrations
 - **Zoom**: Server-to-Server OAuth (meeting:write, recording:read)
 - **Google Drive/Docs**: OAuth2 with refresh tokens
-- **Gemini**: API key, 2.5 Pro for video transcription, 3.1 Pro Preview for Georgian text
+- **Gemini**: API key, 2.5 Flash for video transcription, 3.1 Pro Preview for Georgian text
 - **Claude/Anthropic**: API key, Opus 4.6 with extended thinking for analysis reasoning
 - **Pinecone**: Vector DB (gemini-embedding-001, 3072 dims) for course knowledge RAG
 - **WhatsApp (Green API)**: REST API via WhatsApp Web QR code connection

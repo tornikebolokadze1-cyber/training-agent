@@ -1,3 +1,4 @@
+<!-- Last updated: 2026-03-28 -->
 # Interaction Rules — Training Agent
 
 ## Language & Communication
@@ -50,6 +51,8 @@
 - `Dockerfile`, `docker-compose.yml`, `railway.toml`
 - `.github/workflows/` (CI/CD)
 - `tools/core/config.py` (ცენტრალური კონფიგურაცია — ყურადღებით)
+- `tools/core/prompts.py` (ქართული AI prompts — ფრთხილად)
+- `tools/services/transcribe_lecture.py` (მთავარი pipeline — ცენტრალური ლოგიკა)
 - ნებისმიერი ფაილი სახელებით: auth, payment, billing, admin
 - `credentials.json`, `token.json`
 
@@ -64,22 +67,15 @@
 
 ## Auto-Checkpoint System
 
-### When to Auto-Checkpoint (No Permission Needed)
-1. 3+ ფაილის შეცვლამდე
-2. კონფიგურაციის ფაილების შეხებამდე (config.py, .env, Dockerfile, etc.)
-3. მოთხოვნილი ფუნქციის დასრულების შემდეგ
-4. რეფაქტორინგის დაწყებამდე
-5. დამოკიდებულებების ინსტალაციამდე/წაშლამდე
-6. სესიის დასასრულს თუ არის შეუნახავი ცვლილებები
+> ძირითადი checkpoint წესები: იხილე გლობალური `01-auto-checkpoint.md`.
+> ქვემოთ მხოლოდ პროექტ-სპეციფიკური დამატებებია.
 
-### Checkpoint Format
-```
-CHECKPOINT: [მარტივი აღწერა]
-
-What was done: [1-2 წინადადება რომელიც არა-პროგრამისტს ესმის]
-Files changed: [ფაილების სია]
-Status: [WORKING | IN-PROGRESS | EXPERIMENTAL]
-```
+### პროექტ-სპეციფიკური Checkpoint ტრიგერები
+- `tools/core/config.py`-ის შეცვლამდე (ცენტრალური კონფიგურაცია)
+- `tools/core/prompts.py` Gemini/Claude prompts-ის შეცვლამდე
+- WhatsApp ინტეგრაციის ლოგიკის შეცვლამდე
+- Zoom webhook handler-ის შეცვლამდე
+- Pipeline ეტაპების თანმიმდევრობის შეცვლამდე
 
 ### Maximum Files Before Checkpoint
 - **3 ფაილი შეცვლილი** = checkpoint სავალდებულო

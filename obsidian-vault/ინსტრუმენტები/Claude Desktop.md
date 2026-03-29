@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Dispatch, Claude Desktop application, Claude Desktop აპლიკაცია]
+aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Dispatch, Claude Desktop აპლიკაცია]
 category: platform
 ---
 
@@ -16,7 +16,6 @@ category: platform
 
 - [[ლექცია 2]] (ჯგუფი 1)
 - [[ლექცია 3]] (ჯგუფი 1)
-- [[ლექცია 5]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 4]] (ჯგუფი 2)
 
@@ -24,13 +23,12 @@ category: platform
 
 ## დაკავშირებული
 
-- [[Claude]]
-- [[Project Ideation Process]]
 - [[AI Agents]]
 - [[VS Code (Visual Studio Code)]]
 - [[Token Economy]]
 - [[Claude Web Interface]]
 - [[Claude Code]]
+- [[Claude]]
 - [[Claude Skills]]
 - [[MCP (Model Context Protocol)]]
 - [[VS Code]]
@@ -41,7 +39,6 @@ category: platform
 
 ## პრაქტიკული გამოყენება
 
-- პროექტის საკონსულტაციო საუბრის დაწყება და იდეების ბრეინშტორმინგი. (ჯგუფი 1, ლექცია 5)
 - სამივე ტაბის (Chat, Cowork, Code) ჩვენება და დაგეგმილი დავალებების დემო (კალენდრის შეჯამება, ევროსასამართლოს სიახლეები). (ჯგუფი 2, ლექცია 2)
 - დაგეგმილი დავალებების შექმნა (სახელით, აღწერით, პრომპტით, სიხშირით). (ჯგუფი 2, ლექცია 2)
 - საქართველოს შრომის ბაზრის კვლევა, ხელფასების დადგენა, IT მენეჯერის ვაკანსიის 3 ვარიანტის შექმნა Word-ში, LinkedIn-ზე ტოპ 10 კანდიდატის მოძიება Playwright CLI-ით, PowerPoint პრეზენტაციის შექმნა და Excel-ში შედარებითი ანალიზი. (ჯგუფი 1, ლექცია 3)

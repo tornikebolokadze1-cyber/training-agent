@@ -25,6 +25,7 @@ API (Application Programming Interface) კავშირი არის AI �
 ## დაკავშირებული
 
 - [[Computer Use]]
+- [[Browser Use]]
 - [[AI Agents]]
 - [[MCP Servers (Model Context Protocol)]]
 - [[Data Scraping]]

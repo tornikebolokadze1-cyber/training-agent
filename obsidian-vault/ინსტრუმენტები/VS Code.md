@@ -27,7 +27,6 @@ Visual Studio Code (VS Code) არის უფასო და ღია კ�
 ## დაკავშირებული
 
 - [[Claude Code]]
-- [[Project Initialization Workflow]]
 - [[AI Agents]]
 - [[Claude Desktop App]]
 - [[Google Project IDX/Antigravity]]
