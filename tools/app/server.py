@@ -340,6 +340,11 @@ limiter = Limiter(key_func=_get_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Admin API routes for manual pipeline management
+from tools.app.admin_routes import admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
 
 # Security + correlation ID headers middleware — must be defined before routes
 @app.middleware("http")
