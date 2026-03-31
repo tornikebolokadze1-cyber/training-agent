@@ -22,13 +22,10 @@ from tools.core.config import (
     get_lecture_folder_name,
 )
 from tools.core.pipeline_state import (
-    _TERMINAL_STATES,
     load_state,
+    transition,
     mark_complete,
     mark_failed,
-    start_heartbeat,
-    stop_heartbeat,
-    transition,
     TRANSCRIBING,
     UPLOADING_DOCS,
     NOTIFYING,
@@ -44,7 +41,6 @@ from tools.integrations.gemini_analyzer import analyze_lecture, cleanup_checkpoi
 from tools.integrations.knowledge_indexer import index_lecture_content
 from tools.integrations.whatsapp_sender import (
     alert_operator,
-    send_email_fallback,
     send_group_upload_notification,
     send_private_report,
 )
@@ -69,7 +65,7 @@ def _get_lecture_folder_id(group_number: int, lecture_number: int) -> str | None
     return ensure_folder(service, folder_name, parent_id)
 
 
-@safe_operation("Drive summary upload", alert=True, dlq_operation="drive_summary_upload")
+@safe_operation("Drive summary upload", alert=True)
 def _upload_summary_to_drive(
     group_number: int,
     lecture_number: int,
@@ -109,7 +105,7 @@ def _find_recording_in_drive(group_number: int, lecture_number: int) -> str | No
     return None
 
 
-@safe_operation("Drive private report upload", alert=True, dlq_operation="drive_private_report_upload")
+@safe_operation("Drive private report upload", alert=True)
 def _upload_private_report_to_drive(
     group_number: int,
     lecture_number: int,
@@ -160,7 +156,7 @@ def _upload_private_report_to_drive(
 # WhatsApp helpers
 # ---------------------------------------------------------------------------
 
-@safe_operation("WhatsApp group notification", alert=True, default=None, dlq_operation="whatsapp_group_notify")
+@safe_operation("WhatsApp group notification", alert=True, default=None)
 def _notify_group_whatsapp(
     group_number: int,
     lecture_number: int,
@@ -220,7 +216,7 @@ def _send_private_report_to_tornike(
 # Safe wrappers for use inside loops / inline calls
 # ---------------------------------------------------------------------------
 
-@safe_operation("Pinecone indexing", alert=True, default=0, dlq_operation="pinecone_indexing")
+@safe_operation("Pinecone indexing", alert=True, default=0)
 def _safe_index(
     group_number: int,
     lecture_number: int,
@@ -243,23 +239,6 @@ def _safe_alert(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Resume helpers
-# ---------------------------------------------------------------------------
-
-
-def _load_cached_results(group_number: int, lecture_number: int) -> dict[str, str]:
-    """Load previously saved analysis results from .tmp/ files."""
-    results: dict[str, str] = {}
-    for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-        path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
-        if path.exists():
-            text = path.read_text(encoding="utf-8")
-            if text.strip():
-                results[content_type] = text
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
@@ -267,7 +246,6 @@ def transcribe_and_index(
     group_number: int,
     lecture_number: int,
     video_path: str | Path,
-    trace_id: str = "",
 ) -> dict[str, int]:
     """Full pipeline: transcribe → analyze → Drive → WhatsApp → Pinecone.
 
@@ -282,16 +260,7 @@ def transcribe_and_index(
     7. Sync Obsidian knowledge vault
 
     Automatically resumes from existing transcript if found in .tmp/.
-
-    Args:
-        trace_id: Correlation ID from HTTP request for end-to-end log tracing.
     """
-    import time as _time
-
-    trace = trace_id or f"g{group_number}_l{lecture_number}"
-    _pipeline_start = _time.monotonic()
-    _stage_times: dict[str, float] = {}
-
     video_path = Path(video_path)
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -299,140 +268,82 @@ def transcribe_and_index(
     # Load pipeline state if it exists (created by server.py or scheduler.py)
     pipeline = load_state(group_number, lecture_number)
 
-    # Start heartbeat if pipeline exists (updates last_heartbeat every 5 min)
-    if pipeline is not None:
-        start_heartbeat(group_number, lecture_number)
-
     logger.info(
-        "[%s] Starting full pipeline for Group %d, Lecture #%d (%s)",
-        trace, group_number, lecture_number, video_path.name,
+        "Starting full pipeline for Group %d, Lecture #%d (%s)",
+        group_number, lecture_number, video_path.name,
     )
 
-    # Check for existing transcript (resume support) with validation
+    # Check for existing transcript (resume support)
     transcript_path = TMP_DIR / f"g{group_number}_l{lecture_number}_transcript.txt"
     existing_transcript = None
     if transcript_path.exists():
-        try:
-            candidate = transcript_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            logger.warning("Transcript checkpoint unreadable: %s — will re-transcribe", exc)
-            candidate = ""
-
+        candidate = transcript_path.read_text(encoding="utf-8")
         if len(candidate.strip()) >= 2000:
             existing_transcript = candidate
             logger.info(
-                "Found valid transcript checkpoint (%d chars) — skipping transcription",
+                "Found existing transcript (%d chars) — skipping transcription",
                 len(existing_transcript),
             )
         else:
             logger.warning(
-                "Transcript checkpoint invalid (%d chars stripped) — deleting and re-transcribing",
-                len(candidate.strip()),
+                "Existing transcript too short (%d chars) — will re-transcribe",
+                len(candidate),
             )
-            try:
-                transcript_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
     try:
-        if not skip_analysis:
-            # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
-            if pipeline:
-                pipeline = transition(pipeline, TRANSCRIBING)
-            logger.info("[%s] Step 1: Running analysis pipeline...", trace)
-            _t0 = _time.monotonic()
-            results = analyze_lecture(
-                video_path,
-                existing_transcript=existing_transcript,
-                group=group_number,
-                lecture=lecture_number,
-            )
-            _stage_times["analysis"] = _time.monotonic() - _t0
+        # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
+        if pipeline:
+            pipeline = transition(pipeline, TRANSCRIBING)
+        logger.info("Step 1: Running analysis pipeline...")
+        results = analyze_lecture(
+            video_path,
+            existing_transcript=existing_transcript,
+            group=group_number,
+            lecture=lecture_number,
+        )
 
-            # Save raw outputs to .tmp immediately (crash resilience)
-            for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-                text = results.get(content_type, "")
-                if text:
-                    out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
-                    out_path.write_text(text, encoding="utf-8")
-                    logger.info("[%s] Saved %s to %s (%d chars)", trace, content_type, out_path.name, len(text))
+        # Save raw outputs to .tmp immediately (crash resilience)
+        for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
+            text = results.get(content_type, "")
+            if text:
+                out_path = TMP_DIR / f"g{group_number}_l{lecture_number}_{content_type}.txt"
+                out_path.write_text(text, encoding="utf-8")
+                logger.info("Saved %s to %s (%d chars)", content_type, out_path.name, len(text))
 
-            # Quality gate: BLOCK completion if critical outputs are empty or too short
-            # Runs BEFORE any delivery (Drive uploads, WhatsApp) to prevent garbage docs
-            _t0 = _time.monotonic()
-            MIN_SUMMARY_CHARS = 500
-            MIN_ANALYSIS_CHARS = 300
-            quality_failures: list[str] = []
-            for key, min_len in [
-                ("summary", MIN_SUMMARY_CHARS),
-                ("gap_analysis", MIN_ANALYSIS_CHARS),
-                ("deep_analysis", MIN_ANALYSIS_CHARS),
-            ]:
-                text = results.get(key, "")
-                if not text:
-                    quality_failures.append(f"{key} is EMPTY")
-                elif len(text.strip()) < min_len:
-                    quality_failures.append(f"{key} too short ({len(text)} chars, need {min_len})")
-            _stage_times["quality_gate"] = _time.monotonic() - _t0
-            if quality_failures:
-                failure_msg = (
-                    f"[{trace}] Quality gate FAILED for G{group_number} L#{lecture_number}: "
-                    f"{'; '.join(quality_failures)}"
+        # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
+        try:
+            from tools.services.analytics import save_scores_from_analysis
+            if results.get("deep_analysis"):
+                saved = save_scores_from_analysis(
+                    group_number, lecture_number, results["deep_analysis"]
                 )
-                logger.error(failure_msg)
-                _safe_alert(failure_msg)
-                raise ValueError(failure_msg)
-
-            # Step 1.5: Extract and persist scores to analytics DB (non-fatal)
-            _t0 = _time.monotonic()
-            try:
-                from tools.services.analytics import save_scores_from_analysis
-                if results.get("deep_analysis"):
-                    saved = save_scores_from_analysis(
-                        group_number, lecture_number, results["deep_analysis"]
+                if not saved:
+                    logger.warning(
+                        "Score extraction returned no data for Group %d Lecture #%d "
+                        "(score table missing or malformed in deep analysis)",
+                        group_number, lecture_number,
                     )
-                    if not saved:
-                        logger.warning(
-                            "[%s] Score extraction returned no data for Group %d Lecture #%d "
-                            "(score table missing or malformed in deep analysis)",
-                            trace, group_number, lecture_number,
-                        )
-            except Exception as _analytics_err:
-                logger.error("[%s] Score persistence failed (non-fatal): %s", trace, _analytics_err)
-            _stage_times["score_extraction"] = _time.monotonic() - _t0
+        except Exception as _analytics_err:
+            logger.error("Score persistence failed (non-fatal): %s", _analytics_err)
 
         # Step 2: Upload summary to Google Drive
+        if pipeline:
+            pipeline = transition(pipeline, UPLOADING_DOCS)
         summary = results.get("summary", "")
         summary_doc_id = None
-        if pipeline and pipeline.summary_doc_id:
-            summary_doc_id = pipeline.summary_doc_id
-            logger.info("[%s] Skipping summary upload — already done (doc ID: %s)", trace, summary_doc_id)
-        elif summary:
-            if pipeline:
-                pipeline = transition(pipeline, UPLOADING_DOCS)
-            logger.info("[%s] Step 2: Uploading summary to Google Drive...", trace)
-            _t0 = _time.monotonic()
+        if summary:
+            logger.info("Step 2: Uploading summary to Google Drive...")
             summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
-            _stage_times["drive_summary"] = _time.monotonic() - _t0
-            if pipeline and summary_doc_id:
-                pipeline = transition(pipeline, UPLOADING_DOCS, summary_doc_id=summary_doc_id)
 
         # Step 3: Upload private report to Drive (📊 ანალიზი folder, owner-only)
         gap_analysis = results.get("gap_analysis", "")
         deep_analysis = results.get("deep_analysis", "")
         report_doc_id = None
-        if pipeline and pipeline.report_doc_id:
-            report_doc_id = pipeline.report_doc_id
-            logger.info("[%s] Skipping private report upload — already done (doc ID: %s)", trace, report_doc_id)
-        elif gap_analysis or deep_analysis:
-            logger.info("[%s] Step 3: Uploading private analysis to Drive...", trace)
-            _t0 = _time.monotonic()
+        if gap_analysis or deep_analysis:
+            logger.info("Step 3: Uploading private analysis to Drive...")
             report_doc_id = _upload_private_report_to_drive(
                 group_number, lecture_number, gap_analysis, deep_analysis,
             )
-            _stage_times["drive_report"] = _time.monotonic() - _t0
-            if pipeline and report_doc_id:
-                pipeline = transition(pipeline, pipeline.state, report_doc_id=report_doc_id)
 
         # Steps 4-5: Notifications (independent — failure of one does NOT block others)
         if pipeline:
@@ -448,85 +359,64 @@ def transcribe_and_index(
         _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
 
         # Step 6: Index all content types into Pinecone
-        if pipeline and pipeline.pinecone_indexed:
-            logger.info("[%s] Skipping Pinecone indexing — already done", trace)
-            index_counts: dict[str, int] = {}
-        else:
-            if pipeline:
-                pipeline = transition(pipeline, INDEXING)
-            logger.info("[%s] Step 6: Indexing into Pinecone...", trace)
-            _t0 = _time.monotonic()
-            index_counts = {}
-            for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-                text = results.get(content_type, "")
-                if not text:
-                    logger.warning("[%s] No %s content to index", trace, content_type)
-                    continue
+        if pipeline:
+            pipeline = transition(pipeline, INDEXING)
+        logger.info("Step 6: Indexing into Pinecone...")
+        index_counts: dict[str, int] = {}
+        for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
+            text = results.get(content_type, "")
+            if not text:
+                logger.warning("No %s content to index", content_type)
+                continue
 
-                count = _safe_index(group_number, lecture_number, text, content_type)
-                index_counts[content_type] = count
-                if count:
-                    logger.info("[%s] Indexed %d vectors for %s", trace, count, content_type)
-            _stage_times["pinecone"] = _time.monotonic() - _t0
-            if pipeline:
-                pipeline = transition(pipeline, pipeline.state, pinecone_indexed=True)
+            count = _safe_index(group_number, lecture_number, text, content_type)
+            index_counts[content_type] = count
+            if count:
+                logger.info("Indexed %d vectors for %s", count, content_type)
+
+        # Quality gate: warn if critical analysis outputs are empty
+        empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
+        if empty_analyses:
+            warning_msg = (
+                f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
+                f"{', '.join(empty_analyses)}"
+            )
+            logger.warning(warning_msg)
+            _safe_alert(warning_msg)
 
         # Clean up checkpoint files now that the full pipeline succeeded
         deleted = cleanup_checkpoints(group_number, lecture_number)
         if deleted:
-            logger.info("[%s] Cleaned up %d checkpoint files after successful pipeline", trace, deleted)
+            logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
         # Step 7: Sync Obsidian knowledge vault (non-fatal)
-        _t0 = _time.monotonic()
         try:
             from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
-            logger.info("[%s] Step 7: Syncing Obsidian vault...", trace)
+            logger.info("Step 7: Syncing Obsidian vault...")
             sync_result = obsidian_sync(group_number, lecture_number)
             logger.info(
-                "[%s] Obsidian sync: %d concepts, %d relationships, %d files updated",
-                trace,
+                "Obsidian sync: %d concepts, %d relationships, %d files updated",
                 sync_result.get("concepts", 0),
                 sync_result.get("relationships", 0),
                 sync_result.get("files_updated", 0),
             )
         except Exception as _obsidian_err:
-            logger.error("[%s] Obsidian sync failed (non-fatal): %s", trace, _obsidian_err)
-        _stage_times["obsidian"] = _time.monotonic() - _t0
+            logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
 
         if pipeline:
             pipeline = mark_complete(pipeline)
 
         total = sum(index_counts.values())
-
-        # End-to-end pipeline timing breakdown
-        _total = _time.monotonic() - _pipeline_start
-        timing_str = " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items())
         logger.info(
-            "[%s] ⏱️ Pipeline timing: total=%.0fs | %s",
-            trace, _total, timing_str,
-        )
-
-        logger.info(
-            "[%s] Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
-            trace, group_number, lecture_number, total,
+            "Pipeline complete for Group %d, Lecture #%d: %d total vectors indexed",
+            group_number, lecture_number, total,
         )
         return index_counts
 
     except Exception as e:
         if pipeline:
-            # Re-read from disk in case transitions happened since we loaded
-            current = load_state(group_number, lecture_number)
-            if current is not None and current.state not in _TERMINAL_STATES:
-                mark_failed(current, str(e))
+            mark_failed(pipeline, str(e))
         raise
-    finally:
-        stop_heartbeat(group_number, lecture_number)
-        # Safety net: if pipeline exited without reaching terminal state,
-        # mark as FAILED to prevent it from being stuck forever.
-        if pipeline is not None:
-            current = load_state(group_number, lecture_number)
-            if current is not None and current.state not in _TERMINAL_STATES:
-                mark_failed(current, "Pipeline exited without completion")
 
 
 if __name__ == "__main__":

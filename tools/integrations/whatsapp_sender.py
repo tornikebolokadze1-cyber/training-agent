@@ -33,7 +33,6 @@ from tools.core.config import (
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
 )
-from tools.core.api_resilience import resilient_api_call
 from tools.core.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
@@ -288,17 +287,7 @@ def _send_request_raw(method: str, payload: dict[str, Any], purpose: str) -> dic
             response = client.post(url, json=payload)
         if response.status_code == 200:
             data = response.json()
-            # Validate the response indicates actual success
-            id_message = data.get("idMessage")
-            if id_message:
-                logger.info("Message sent successfully: %s", id_message)
-            else:
-                # HTTP 200 but no idMessage — possible session expiry or queue failure
-                error_msg = data.get("message", data.get("error", "unknown"))
-                logger.warning(
-                    "WhatsApp API returned 200 but no idMessage — "
-                    "possible session issue: %s", error_msg,
-                )
+            logger.info("%s sent successfully: %s", purpose, data.get("idMessage", "ok"))
             return data
         # Don't retry on client errors (except 429 rate limit)
         if 400 <= response.status_code < 500 and response.status_code != 429:
@@ -367,112 +356,10 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
 
 
 # ---------------------------------------------------------------------------
-# Email fallback (when Green API QR session expires)
-# ---------------------------------------------------------------------------
-
-
-def send_email_fallback(
-    subject: str,
-    body: str,
-    to_email: str | None = None,
-) -> bool:
-    """Send an email via Gmail SMTP as fallback when WhatsApp is unavailable.
-
-    Uses Google App Password authentication (not OAuth). Credentials come from
-    GMAIL_SENDER_EMAIL and GMAIL_APP_PASSWORD env vars. Recipient defaults to
-    OPERATOR_EMAIL if not provided.
-
-    This function NEVER raises — it is a safety net for the safety net.
-
-    Args:
-        subject: Email subject line.
-        body: Plain-text email body.
-        to_email: Recipient address. Falls back to OPERATOR_EMAIL env var.
-
-    Returns:
-        True if email was sent successfully, False otherwise.
-    """
-    try:
-        sender = os.environ.get("GMAIL_SENDER_EMAIL", "")
-        password = os.environ.get("GMAIL_APP_PASSWORD", "")
-        recipient = to_email or os.environ.get("OPERATOR_EMAIL", "")
-
-        if not sender or not password or not recipient:
-            logger.warning(
-                "Email fallback not configured — set GMAIL_SENDER_EMAIL, "
-                "GMAIL_APP_PASSWORD, and OPERATOR_EMAIL in .env"
-            )
-            return False
-
-        msg = MIMEMultipart()
-        msg["From"] = sender
-        msg["To"] = recipient
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
-            server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
-
-        logger.info("Email fallback sent to %s: %s", recipient, subject)
-        return True
-
-    except Exception as exc:
-        logger.error("Email fallback also failed: %s", exc)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
-
-
-def check_whatsapp_health() -> dict[str, Any]:
-    """Check WhatsApp Green API connection status.
-
-    Calls the getStateInstance endpoint to determine whether the QR session
-    is still active and authorized.  Should be called periodically (e.g. via
-    APScheduler every 5-10 minutes) so session expiry is detected early.
-
-    Returns:
-        Dict with 'connected' (bool), 'state' (str), and optionally 'detail'.
-    """
-    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
-        return {"connected": False, "state": "not_configured", "detail": "GREEN_API credentials missing"}
-
-    url = f"{_base_url()}/getStateInstance/{GREEN_API_TOKEN}"
-    try:
-        with httpx.Client(timeout=5) as client:
-            response = client.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            state_value = data.get("stateInstance", "unknown")
-            connected = state_value == "authorized"
-            if not connected:
-                logger.warning(
-                    "WhatsApp health check: NOT CONNECTED (state=%s). "
-                    "QR re-scan may be needed.", state_value,
-                )
-            return {
-                "connected": connected,
-                "state": state_value,
-            }
-        return {
-            "connected": False,
-            "state": "error",
-            "detail": f"HTTP {response.status_code}",
-        }
-    except Exception as exc:
-        return {"connected": False, "state": "error", "detail": str(exc)}
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
-@resilient_api_call(service="whatsapp", operation="send_message", max_attempts=3)
 def send_message_to_chat(chat_id: str, message: str) -> dict[str, Any]:
     """Send a text message to a WhatsApp chat (individual or group).
 
@@ -519,14 +406,10 @@ def send_group_reminder(group_number: int, zoom_link: str, lecture_number: int) 
     chat_id = _GROUP_CHAT_IDS.get(group_number)
 
     if not chat_id:
-        logger.warning(
-            "No WhatsApp group ID for Group %d — sending reminder to operator instead",
-            group_number,
+        raise ValueError(
+            f"No WhatsApp group ID configured for Group {group_number}. "
+            "Set WHATSAPP_GROUP1_ID / WHATSAPP_GROUP2_ID in .env"
         )
-        chat_id = WHATSAPP_TORNIKE_PHONE
-        if not chat_id:
-            logger.error("No group ID and no operator phone — cannot send reminder")
-            return
 
     message = (
         f"🎓 შეხსენება — ლექცია #{lecture_number}\n\n"
@@ -579,18 +462,7 @@ def send_group_upload_notification(
         f"წარმატებებს გისურვებთ! 🚀"
     )
 
-    try:
-        return send_message_to_chat(chat_id, message)
-    except Exception as exc:
-        logger.error(
-            "WhatsApp group notification failed for Group %d, Lecture #%d: %s",
-            group_number, lecture_number, exc,
-        )
-        send_email_fallback(
-            subject=f"ლექცია #{lecture_number} — მასალა ატვირთულია (ჯგუფი {group_number})",
-            body=message,
-        )
-        raise
+    return send_message_to_chat(chat_id, message)
 
 
 def send_private_report(report_text: str) -> dict[str, Any]:
@@ -607,15 +479,7 @@ def send_private_report(report_text: str) -> dict[str, Any]:
 
     chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
     logger.info("Sending private report to Tornike...")
-    try:
-        return send_message_to_chat(chat_id, report_text)
-    except Exception as exc:
-        logger.error("WhatsApp private report failed: %s", exc)
-        send_email_fallback(
-            subject="📊 ლექციის ანალიზი — Private Report",
-            body=report_text,
-        )
-        raise
+    return send_message_to_chat(chat_id, report_text)
 
 
 def alert_operator(message: str) -> None:

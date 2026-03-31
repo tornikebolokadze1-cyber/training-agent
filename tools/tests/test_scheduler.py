@@ -760,9 +760,7 @@ class TestPostMeetingJob:
 
         mock_loop.run_in_executor.assert_called_once()
         call_args = mock_loop.run_in_executor.call_args[0]
-        # Uses dedicated PIPELINE_EXECUTOR (not None/default)
-        from tools.app.orchestrator import PIPELINE_EXECUTOR
-        assert call_args[0] is PIPELINE_EXECUTOR
+        assert call_args[0] is None
         assert call_args[1] is sched._run_post_meeting_pipeline
         assert call_args[2:] == (1, 5, "mtg-123")
 

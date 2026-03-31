@@ -24,7 +24,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
-from tools.core.api_resilience import resilient_api_call
 from tools.core.config import (
     GROUPS,
     IS_RAILWAY,
@@ -604,7 +603,6 @@ def list_files_in_folder(folder_id: str) -> list[dict]:
 # Google Doc Creation
 # ---------------------------------------------------------------------------
 
-@resilient_api_call(service="drive", operation="create_google_doc", max_attempts=3)
 def create_google_doc(title: str, content: str, folder_id: str) -> str:
     """Create or update a Google Doc with the given content in the specified folder.
 

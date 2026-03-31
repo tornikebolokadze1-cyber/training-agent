@@ -36,9 +36,6 @@ from tools.core.config import (
 from tools.core.pipeline_state import (
     is_pipeline_active,
     is_pipeline_done,
-    load_state,
-    mark_failed,
-    _TERMINAL_STATES,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -273,49 +270,25 @@ def check_recording_ready(
         if mp4_files:
             logger.info(
                 "[recording] Found %d completed MP4 segment(s) for meeting %s "
-                "— stabilizing segment count (need 2 consecutive stable polls)...",
+                "— waiting one more poll to catch late segments...",
                 len(mp4_files),
                 meeting_id,
             )
-            # Stabilization loop: keep polling until segment count is stable
-            # for 2 consecutive polls, catching 3rd-wave late arrivals.
-            stable_count = 0
-            while stable_count < 2:
-                time.sleep(RECORDING_POLL_INTERVAL)
-                elapsed += RECORDING_POLL_INTERVAL
-                try:
-                    recordings = zm.get_meeting_recordings(meeting_id)
-                    files = recordings.get("recording_files", [])
-                    new_mp4s = [
-                        f for f in files
-                        if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
-                        and f.get("status", "").upper() == "COMPLETED"
-                    ]
-                    if len(new_mp4s) == len(mp4_files):
-                        stable_count += 1
-                        logger.debug(
-                            "[recording] Segment count stable at %d (stable_count=%d/2)",
-                            len(mp4_files), stable_count,
-                        )
-                    else:
-                        logger.info(
-                            "[recording] New segment appeared (%d -> %d) — resetting stabilization",
-                            len(mp4_files), len(new_mp4s),
-                        )
-                        mp4_files = new_mp4s
-                        stable_count = 0  # Reset, new segment appeared
-                except Exception as exc:
-                    logger.warning(
-                        "[recording] Stabilization poll failed: %s — counting as stable",
-                        exc,
-                    )
-                    stable_count += 1  # Error counts as stable (conservative)
-                if elapsed >= RECORDING_POLL_TIMEOUT:
-                    logger.warning(
-                        "[recording] Timeout reached during stabilization — proceeding with %d segment(s)",
-                        len(mp4_files),
-                    )
-                    break
+            # Wait one extra cycle — a second segment may still be processing
+            time.sleep(RECORDING_POLL_INTERVAL)
+            try:
+                recordings = zm.get_meeting_recordings(meeting_id)
+                files = recordings.get("recording_files", [])
+                mp4_files = [
+                    f for f in files
+                    if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
+                    and f.get("status", "").upper() == "COMPLETED"
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "[recording] Extra poll failed: %s — proceeding with %d segment(s)",
+                    exc, len(mp4_files),
+                )
 
             logger.info(
                 "[recording] Final count: %d MP4 segment(s) for meeting %s",
@@ -376,10 +349,7 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
 
     concat_list = output_path.parent / f"{output_path.stem}_segments.txt"
     concat_list.write_text(
-        "\n".join(
-            f"file '{str(p).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'"
-            for p in segment_paths
-        ),
+        "\n".join(f"file '{p}'" for p in segment_paths),
         encoding="utf-8",
     )
 
@@ -782,14 +752,10 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
         meeting_id,
     )
 
-    # Use the dedicated pipeline executor to avoid starving the default
-    # thread pool (which is shared with recording polling sleeps).
-    from tools.app.orchestrator import PIPELINE_EXECUTOR
-
     loop = asyncio.get_running_loop()
     await asyncio.wait_for(
         loop.run_in_executor(
-            PIPELINE_EXECUTOR,
+            None,
             _run_post_meeting_pipeline,
             group_number,
             lecture_number,
@@ -971,36 +937,20 @@ def start_scheduler() -> AsyncIOScheduler:
     )
 
     # ------------------------------------------------------------------ #
-    #  Health monitoring — every 30 minutes                               #
+    #  Nightly catch-all — 02:00 Tbilisi time every day                   #
     # ------------------------------------------------------------------ #
-    from tools.core.health_monitor import run_daily_morning_report, run_health_check_job
+    from tools.core.pipeline_retry import nightly_catch_all
 
     scheduler.add_job(
-        run_health_check_job,
+        nightly_catch_all,
         trigger=CronTrigger(
-            minute="*/30",
-            timezone=TBILISI_TZ,
-        ),
-        id="health_check",
-        name="Health check (every 30 min)",
-        replace_existing=True,
-        executor="threadpool",
-    )
-
-    # ------------------------------------------------------------------ #
-    #  Daily morning report — 09:00 Tbilisi time                          #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        run_daily_morning_report,
-        trigger=CronTrigger(
-            hour=9,
+            hour=2,
             minute=0,
             timezone=TBILISI_TZ,
         ),
-        id="daily_morning_report",
-        name="Daily morning report (09:00)",
+        id="nightly_catch_all",
+        name="Nightly catch-all: retry unprocessed lectures",
         replace_existing=True,
-        executor="threadpool",
     )
 
     scheduler.start()
