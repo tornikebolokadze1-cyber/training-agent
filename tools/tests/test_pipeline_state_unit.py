@@ -27,9 +27,7 @@ Run with:
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -45,7 +43,6 @@ from tools.core.pipeline_state import (
     load_state,
     mark_complete,
     mark_failed,
-    save_state,
     state_file_path,
     transition,
     try_claim_pipeline,
@@ -235,7 +232,7 @@ class TestCleanupStaleFailed:
         """A FAILED state that is younger than the threshold must be kept."""
         self._write_state_with_old_timestamp(_G98, _L_BASE + 3, FAILED, age_hours=2.0)
 
-        deleted = cleanup_stale_failed(max_age_hours=12)
+        cleanup_stale_failed(max_age_hours=12)
 
         assert load_state(_G98, _L_BASE + 3) is not None
         assert load_state(_G98, _L_BASE + 3).state == FAILED

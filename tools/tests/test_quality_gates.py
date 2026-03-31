@@ -17,11 +17,8 @@ from __future__ import annotations
 import pytest
 
 from tools.core.quality_gates import (
-    MAX_REPETITION_RATIO,
-    MIN_CLAUDE_RESPONSE_CHARS,
     MIN_GAP_ANALYSIS_CHARS,
     MIN_GEORGIAN_RATIO,
-    MIN_SUMMARY_DOC_CHARS,
     MIN_TRANSCRIPT_CHARS,
     PipelineOutputs,
     QualityResult,

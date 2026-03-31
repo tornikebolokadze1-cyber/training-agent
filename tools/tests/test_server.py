@@ -1526,7 +1526,7 @@ class TestEvictStaleTasksWithStateFiles:
         from tools.core.pipeline_state import create_pipeline, load_state, FAILED
 
         # Create a real pipeline state file
-        state = create_pipeline(group=1, lecture=7, meeting_id="test-meeting-stale")
+        create_pipeline(group=1, lecture=7, meeting_id="test-meeting-stale")
 
         # Back-date it beyond the eviction threshold
         self._backdate_state_file(1, 7, hours_ago=STALE_TASK_HOURS + 1)

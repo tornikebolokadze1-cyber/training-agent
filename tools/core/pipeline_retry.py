@@ -18,10 +18,9 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-from tools.core.config import GROUPS, TBILISI_TZ, TMP_DIR, TOTAL_LECTURES
+from tools.core.config import GROUPS, TBILISI_TZ, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -459,15 +458,7 @@ async def nightly_catch_all() -> dict[str, Any]:
     Returns:
         Summary dict with counts of actions taken.
     """
-    import asyncio
 
-    from tools.core.pipeline_state import (
-        COMPLETE,
-        FAILED,
-        list_all_pipelines,
-        load_state,
-        reset_failed,
-    )
 
     logger.info("[nightly] Starting catch-all scan...")
     now = datetime.now(tz=TBILISI_TZ)
@@ -673,12 +664,12 @@ async def _check_pinecone_gaps(
             try:
                 dummy_embedding = [0.0] * 3072
                 result = await asyncio.to_thread(
-                    lambda g=group_number, l=lecture_number: index.query(
+                    lambda g=group_number, lec=lecture_number: index.query(
                         vector=dummy_embedding,
                         top_k=1,
                         filter={
                             "group_number": {"$eq": g},
-                            "lecture_number": {"$eq": l},
+                            "lecture_number": {"$eq": lec},
                         },
                     )
                 )

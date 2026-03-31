@@ -143,32 +143,7 @@ def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
     )
 
 
-def lecture_exists_in_index(group_number: int, lecture_number: int) -> bool:
-    """Check if a lecture has been indexed in Pinecone.
-
-    Uses list() with ID prefix instead of a dummy vector query,
-    avoiding undefined cosine similarity behavior with zero vectors.
-    """
-    try:
-        index = get_pinecone_index()
-        # Vector IDs follow the pattern: g{group}_l{lecture}_{type}_{chunk}
-        prefix = f"g{group_number}_l{lecture_number}_"
-        # list() returns vectors matching the prefix — if any exist, the lecture is indexed
-        results = index.list(prefix=prefix, limit=1)
-        # Pinecone list returns a ListResponse with vectors attribute
-        vectors = getattr(results, 'vectors', results) if not isinstance(results, list) else results
-        if hasattr(vectors, '__len__'):
-            return len(vectors) > 0
-        # Fallback: try iterating
-        for _ in vectors:
-            return True
-        return False
-    except Exception as exc:
-        logger.warning(
-            "Pinecone existence check failed for G%d L%d: %s — assuming not indexed",
-            group_number, lecture_number, exc,
-        )
-        return False
+# lecture_exists_in_index is defined below (line ~334) with content_type support
 
 
 # ---------------------------------------------------------------------------
@@ -437,10 +412,10 @@ def check_pinecone_health() -> PineconeHealthReport:
         # stats can be a dict or an object
         if isinstance(stats, dict):
             total = stats.get("total_vector_count", 0)
-            namespaces = stats.get("namespaces", {})
+            stats.get("namespaces", {})
         else:
             total = getattr(stats, "total_vector_count", 0)
-            namespaces = getattr(stats, "namespaces", {})
+            getattr(stats, "namespaces", {})
 
         # Build per-group, per-lecture counts by listing with prefixes
         lecture_counts: dict[str, int] = {}
@@ -871,7 +846,6 @@ def index_obsidian_knowledge() -> int:
     Returns:
         Total number of vectors indexed.
     """
-    from pathlib import Path
 
     from tools.core.config import PROJECT_ROOT
 

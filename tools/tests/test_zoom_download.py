@@ -16,9 +16,8 @@ Run with:
 from __future__ import annotations
 
 import hashlib
-import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -163,7 +162,7 @@ class TestDownloadResumption:
         client = _make_client(resp)
 
         with patch("tools.integrations.zoom_manager.httpx.Client", return_value=client):
-            result = zm.download_recording(
+            zm.download_recording(
                 "https://zoom.us/dl", "tok", dest, resume=False,
             )
 

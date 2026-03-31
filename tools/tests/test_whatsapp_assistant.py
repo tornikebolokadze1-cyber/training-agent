@@ -1396,7 +1396,7 @@ class TestRespondToMissedGroupIsolation:
         }), patch.object(wa_mod, "send_message_to_chat"):
             asyncio.run(assistant._respond_to_missed(msg_g1, 1))
             # Reset call tracking between the two runs
-            call_log_before_g2 = list(assistant._memory.search.call_args_list)
+            list(assistant._memory.search.call_args_list)
             assistant._memory.search.reset_mock()
 
             asyncio.run(assistant._respond_to_missed(msg_g2, 2))

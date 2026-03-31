@@ -584,7 +584,7 @@ class TestPipelineResume:
         with (
             patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
             patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
-            patch(_PATCH_ANALYZE) as mock_analyze,
+            patch(_PATCH_ANALYZE),
             patch(_PATCH_INDEX, return_value=5),
             patch(_PATCH_ALERT),
             patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),

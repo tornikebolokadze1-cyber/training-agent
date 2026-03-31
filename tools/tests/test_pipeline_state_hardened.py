@@ -15,9 +15,7 @@ Run with:
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -42,7 +40,6 @@ from tools.core.pipeline_state import (
     create_pipeline,
     get_last_activity_time,
     invalidate_checkpoint,
-    is_pipeline_done,
     load_state,
     mark_complete,
     mark_failed,
@@ -296,7 +293,7 @@ class TestPipelineGuard:
                 pass
 
     def test_guard_load_existing_pipeline(self):
-        original = create_pipeline(_G, _L, meeting_id="existing")
+        create_pipeline(_G, _L, meeting_id="existing")
         with pipeline_guard(_G, _L, create_new=False) as s:
             assert s.meeting_id == "existing"
             mark_complete(s)

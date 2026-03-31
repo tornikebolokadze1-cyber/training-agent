@@ -14,11 +14,8 @@ Run with:
 
 from __future__ import annotations
 
-import json
 import threading
-import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,7 +31,6 @@ from tools.core.pipeline_state import (
     release_pipeline,
     release_pipeline_lock,
     save_state,
-    state_file_path,
     try_claim_pipeline,
 )
 
@@ -277,7 +273,7 @@ class TestTimezoneConsistency:
         from tools.app.server import _evict_stale_tasks
         evicted = _evict_stale_tasks()
         # Fresh pipeline should not be evicted
-        assert f"g1_l10" not in evicted
+        assert "g1_l10" not in evicted
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +472,7 @@ class TestPostMeetingJobDedup:
 
         with (
             patch("tools.app.server._evict_stale_tasks"),
-            patch("tools.app.scheduler._run_post_meeting_pipeline") as mock_run,
+            patch("tools.app.scheduler._run_post_meeting_pipeline"),
             patch("tools.app.orchestrator.PIPELINE_EXECUTOR", None),
             patch("asyncio.get_running_loop") as mock_loop,
             patch("asyncio.wait_for") as mock_wait_for,

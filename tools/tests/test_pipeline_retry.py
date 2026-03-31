@@ -16,19 +16,17 @@ Run with:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.core.config import TBILISI_TZ, TMP_DIR
+from tools.core.config import TBILISI_TZ
 from tools.core.pipeline_retry import (
     BACKOFF_MINUTES,
     MAX_RETRIES,
     PERMANENTLY_FAILED,
-    RETRY_TRACKER_PATH,
     RetryOrchestrator,
     RetryRecord,
     _execute_retry,
