@@ -706,12 +706,6 @@ async def health_check(request: Request):
     report["status"] = report["overall_status"]
     report["tasks_in_progress"] = len(_processing_tasks)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-    # Disk space check
-    disk = shutil.disk_usage(str(TMP_DIR))
-    free_gb = disk.free / (1024 ** 3)
-=======
     # Include retry orchestrator status
     retry_info: dict[str, Any] = {}
     try:
@@ -721,7 +715,6 @@ async def health_check(request: Request):
         checks["permanently_failed"] = str(retry_info.get("total_permanently_failed", 0))
     except Exception:
         checks["pending_retries"] = "unavailable"
->>>>>>> f90e9bc (fix: Training agent changes)
 
     overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
     if free_gb < 1.0:
@@ -734,11 +727,7 @@ async def health_check(request: Request):
             "service": "training-agent",
             "timestamp": datetime.now().isoformat(),
             "checks": checks,
-<<<<<<< HEAD
-            "disk_free_gb": round(free_gb, 2),
-=======
             "retry_status": retry_info,
->>>>>>> f90e9bc (fix: Training agent changes)
         },
         status_code=status_code,
     )
@@ -746,7 +735,7 @@ async def health_check(request: Request):
     status_code = 200 if report["overall_status"] == "healthy" else 503
 
     return JSONResponse(content=report, status_code=status_code)
->>>>>>> db560f8 (fix: Training agent changes)
+
 
 
 @app.get("/status")

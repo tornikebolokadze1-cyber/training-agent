@@ -212,9 +212,6 @@ def create_all_lecture_folders() -> dict[int, dict[int, str]]:
 # File Upload
 # ---------------------------------------------------------------------------
 
-<<<<<<< HEAD
-@resilient_api_call(service="drive", operation="upload_file", max_attempts=5)
-=======
 def _find_existing_file(
     service,
     filename: str,
@@ -361,7 +358,6 @@ def trash_old_recordings(folder_id: str, group: int, lecture: int) -> int:
     return trashed
 
 
->>>>>>> 7633921 (fix: Training agent changes)
 def upload_file(
     file_path: str | Path,
     folder_id: str,
@@ -395,33 +391,10 @@ def upload_file(
 
     service = get_drive_service()
 
-<<<<<<< HEAD
-    # Dedup: check if file with same name already exists in folder
-    safe_name = file_path.name.replace("\\", "\\\\").replace("'", "\\'")
-    query = (
-        f"name = '{safe_name}' "
-        f"and '{folder_id}' in parents "
-        f"and trashed = false"
-    )
-    existing = (
-        service.files()
-        .list(q=query, fields="files(id)", pageSize=1)
-        .execute()
-        .get("files", [])
-    )
-    if existing:
-        file_id = existing[0]["id"]
-        logger.info(
-            "File '%s' already exists in folder (ID: %s) — skipping upload",
-            file_path.name, file_id,
-        )
-        return file_id
-=======
     # Dedup: check if file with same name AND similar size already exists
     existing_id = _find_existing_file(service, file_path.name, folder_id, local_size)
     if existing_id:
         return existing_id
->>>>>>> 7633921 (fix: Training agent changes)
 
     metadata = {"name": file_path.name, "parents": [folder_id]}
     media = MediaFileUpload(
@@ -444,14 +417,6 @@ def upload_file(
             status, response = request.next_chunk()
             if status:
                 progress = int(status.progress() * 100)
-<<<<<<< HEAD
-                logger.info("Upload progress: %d%%", progress)
-        except HttpError as e:
-            if e.resp.status in (401, 403, 404):
-                # Non-retryable: auth failure, quota exhausted, folder not found
-                logger.error("Non-retryable Drive error (HTTP %d): %s", e.resp.status, e)
-                raise
-=======
                 if is_large:
                     quarter = progress // 25
                     if quarter > last_logged_quarter:
@@ -501,16 +466,11 @@ def upload_file(
                 logger.error("Folder not found (HTTP 404): %s", e)
                 raise
 
->>>>>>> 7633921 (fix: Training agent changes)
             # Retryable: 500, 502, 503, 429, etc.
             max_retries -= 1
             if max_retries <= 0:
                 logger.error("Upload failed after retries: %s", e)
                 raise
-<<<<<<< HEAD
-            import time
-=======
->>>>>>> 7633921 (fix: Training agent changes)
             delay = 2 ** (5 - max_retries)
             logger.warning(
                 "Upload chunk failed (%d retries left): %s — retrying in %ds",
@@ -518,10 +478,6 @@ def upload_file(
             )
             time.sleep(delay)
         except Exception as e:
-<<<<<<< HEAD
-            # Retry transient errors with exponential backoff
-=======
->>>>>>> 7633921 (fix: Training agent changes)
             max_retries -= 1
             if max_retries <= 0:
                 logger.error("Upload failed after retries: %s", e)
@@ -610,12 +566,6 @@ def download_file(
 
 
 def list_files_in_folder(folder_id: str) -> list[dict]:
-<<<<<<< HEAD
-    """List all files in a Google Drive folder with pagination."""
-    service = get_drive_service()
-    all_files: list[dict] = []
-    page_token = None
-=======
     """List ALL files in a Google Drive folder using full pagination.
 
     Fetches every page (100 files per page) via nextPageToken to ensure
@@ -625,40 +575,28 @@ def list_files_in_folder(folder_id: str) -> list[dict]:
     all_files: list[dict] = []
     page_token: str | None = None
     page_count = 0
->>>>>>> 7633921 (fix: Training agent changes)
 
     while True:
         response = service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
-<<<<<<< HEAD
-            fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
-=======
             fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
->>>>>>> 7633921 (fix: Training agent changes)
             pageSize=100,
             pageToken=page_token,
         ).execute()
 
-<<<<<<< HEAD
-        all_files.extend(response.get("files", []))
-=======
         batch = response.get("files", [])
         all_files.extend(batch)
         page_count += 1
->>>>>>> 7633921 (fix: Training agent changes)
         page_token = response.get("nextPageToken")
         if not page_token:
             break
 
-<<<<<<< HEAD
-=======
     if page_count > 1:
         logger.info(
             "Listed %d files in folder %s across %d pages",
             len(all_files), folder_id, page_count,
         )
 
->>>>>>> 7633921 (fix: Training agent changes)
     return all_files
 
 

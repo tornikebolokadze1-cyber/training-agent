@@ -857,24 +857,15 @@ class TestStartScheduler:
         assert result is mock_scheduler_instance
         mock_scheduler_instance.start.assert_called_once()
 
-<<<<<<< HEAD
-    def test_registers_five_cron_jobs(self):
-=======
     def test_registers_six_jobs(self):
         """4 pre-meeting cron jobs + health_check + daily_morning_report."""
->>>>>>> db560f8 (fix: Training agent changes)
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
 
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
-<<<<<<< HEAD
-        # 4 pre-meeting cron jobs + 1 nightly_catch_all = 5
-        assert mock_scheduler_instance.add_job.call_count == 5
-=======
         assert mock_scheduler_instance.add_job.call_count == 6
->>>>>>> db560f8 (fix: Training agent changes)
 
     def test_sets_module_level_scheduler_ref(self):
         mock_scheduler_instance = MagicMock()
@@ -899,10 +890,6 @@ class TestStartScheduler:
         expected = {
             "pre_group1_tuesday", "pre_group1_friday",
             "pre_group2_monday", "pre_group2_thursday",
-<<<<<<< HEAD
-            "nightly_catch_all",
-=======
             "health_check", "daily_morning_report",
->>>>>>> db560f8 (fix: Training agent changes)
         }
         assert set(job_ids) == expected

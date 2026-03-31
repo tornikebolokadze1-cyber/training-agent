@@ -570,23 +570,6 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
-<<<<<<< HEAD
-        # Guarantee FAILED marking on the pipeline state
-        try:
-            current = load_state(group_number, lecture_number)
-            if current is not None and current.state not in _TERMINAL_STATES:
-                mark_failed(current, f"Post-meeting pipeline failed: {exc}")
-        except Exception as mark_exc:
-            logger.error("[post] Failed to mark pipeline as FAILED: %s", mark_exc)
-
-        try:
-            alert_operator(
-                f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
-                f"Error: {exc}"
-            )
-        except Exception:
-            logger.error("[post] alert_operator failed for G%d L%d", group_number, lecture_number)
-=======
         # Schedule automatic retry instead of just alerting
         try:
             from tools.core.pipeline_retry import retry_orchestrator
@@ -605,7 +588,6 @@ def _run_post_meeting_pipeline(
             f"Error: {exc}\n"
             f"Automatic retry has been scheduled."
         )
->>>>>>> f90e9bc (fix: Training agent changes)
     finally:
         # Clean up in-memory cache — always, even if already cleaned in early return
         _cleanup_dedup()
@@ -989,22 +971,6 @@ def start_scheduler() -> AsyncIOScheduler:
     )
 
     # ------------------------------------------------------------------ #
-<<<<<<< HEAD
-    #  Nightly catch-all — 02:00 Tbilisi time every day                   #
-    # ------------------------------------------------------------------ #
-    from tools.core.pipeline_retry import nightly_catch_all
-
-    scheduler.add_job(
-        nightly_catch_all,
-        trigger=CronTrigger(
-            hour=2,
-            minute=0,
-            timezone=TBILISI_TZ,
-        ),
-        id="nightly_catch_all",
-        name="Nightly catch-all: retry unprocessed lectures",
-        replace_existing=True,
-=======
     #  Health monitoring — every 30 minutes                               #
     # ------------------------------------------------------------------ #
     from tools.core.health_monitor import run_daily_morning_report, run_health_check_job
@@ -1035,7 +1001,6 @@ def start_scheduler() -> AsyncIOScheduler:
         name="Daily morning report (09:00)",
         replace_existing=True,
         executor="threadpool",
->>>>>>> db560f8 (fix: Training agent changes)
     )
 
     scheduler.start()

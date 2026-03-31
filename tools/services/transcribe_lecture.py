@@ -26,13 +26,9 @@ from tools.core.pipeline_state import (
     load_state,
     mark_complete,
     mark_failed,
-<<<<<<< HEAD
-    PENDING,
-=======
     start_heartbeat,
     stop_heartbeat,
     transition,
->>>>>>> 37f39d2 (fix: Training agent changes)
     TRANSCRIBING,
     UPLOADING_DOCS,
     NOTIFYING,
@@ -216,25 +212,8 @@ def _send_private_report_to_tornike(
             f"⚠️ Drive-ზე ატვირთვა ვერ მოხერხდა"
         )
 
-<<<<<<< HEAD
-    try:
-        send_private_report(message)
-        logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
-    except Exception as e:
-        logger.error("Failed to send private report link via WhatsApp: %s", e)
-        # Try email fallback before giving up
-        email_sent = send_email_fallback(
-            subject=f"📊 ლექცია #{lecture_number} ანალიზი — {group_name}",
-            body=message,
-        )
-        if email_sent:
-            logger.info("Private report link sent via email fallback for G%d L#%d", group_number, lecture_number)
-        else:
-            logger.critical("CRITICAL: Private report delivery failed (WhatsApp + Email) for G%d L#%d: %s", group_number, lecture_number, e)
-=======
     send_private_report(message)
     logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
->>>>>>> bbda80d (fix: Training agent changes)
 
 
 # ---------------------------------------------------------------------------
@@ -320,33 +299,9 @@ def transcribe_and_index(
     # Load pipeline state if it exists (created by server.py or scheduler.py)
     pipeline = load_state(group_number, lecture_number)
 
-<<<<<<< HEAD
-    # Resume support: if pipeline is past TRANSCRIBING, load cached results
-    skip_analysis = False
-    if pipeline and pipeline.state not in (PENDING, TRANSCRIBING, ""):
-        cached = _load_cached_results(group_number, lecture_number)
-        if cached.get("transcript") and cached.get("summary"):
-            logger.info(
-                "[%s] Resuming from state %s — loading cached results (%d content types)",
-                trace, pipeline.state, len(cached),
-            )
-            results = cached
-            skip_analysis = True
-            # Validate cached results even on resume (prevent garbage propagation)
-            for _key, _min in [("summary", 500), ("gap_analysis", 300), ("deep_analysis", 300)]:
-                _text = results.get(_key, "")
-                if not _text or len(_text.strip()) < _min:
-                    logger.warning(
-                        "[%s] Cached %s too short (%d chars) — falling back to full analysis",
-                        trace, _key, len(_text.strip()) if _text else 0,
-                    )
-                    skip_analysis = False
-                    break
-=======
     # Start heartbeat if pipeline exists (updates last_heartbeat every 5 min)
     if pipeline is not None:
         start_heartbeat(group_number, lecture_number)
->>>>>>> 37f39d2 (fix: Training agent changes)
 
     logger.info(
         "[%s] Starting full pipeline for Group %d, Lecture #%d (%s)",
@@ -366,15 +321,6 @@ def transcribe_and_index(
         if len(candidate.strip()) >= 2000:
             existing_transcript = candidate
             logger.info(
-<<<<<<< HEAD
-                "[%s] Found existing transcript (%d chars) — skipping transcription",
-                trace, len(existing_transcript),
-            )
-        else:
-            logger.warning(
-                "[%s] Existing transcript too short (%d chars) — will re-transcribe",
-                trace, len(candidate),
-=======
                 "Found valid transcript checkpoint (%d chars) — skipping transcription",
                 len(existing_transcript),
             )
@@ -382,7 +328,6 @@ def transcribe_and_index(
             logger.warning(
                 "Transcript checkpoint invalid (%d chars stripped) — deleting and re-transcribing",
                 len(candidate.strip()),
->>>>>>> 37f39d2 (fix: Training agent changes)
             )
             try:
                 transcript_path.unlink(missing_ok=True)
@@ -489,32 +434,6 @@ def transcribe_and_index(
             if pipeline and report_doc_id:
                 pipeline = transition(pipeline, pipeline.state, report_doc_id=report_doc_id)
 
-<<<<<<< HEAD
-        # Step 4: Send WhatsApp notification to group (video + summary are ready)
-        if pipeline and pipeline.group_notified:
-            logger.info("[%s] Skipping WhatsApp group notification — already sent", trace)
-        else:
-            if pipeline:
-                pipeline = transition(pipeline, NOTIFYING)
-            logger.info("[%s] Step 4: Notifying WhatsApp group...", trace)
-            _t0 = _time.monotonic()
-            recording_file_id = _find_recording_in_drive(group_number, lecture_number)
-            _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
-            _stage_times["whatsapp_group"] = _time.monotonic() - _t0
-            if pipeline:
-                pipeline = transition(pipeline, pipeline.state, group_notified=True)
-
-        # Step 5: Send private report link to Tornike via WhatsApp
-        if pipeline and pipeline.private_notified:
-            logger.info("[%s] Skipping private report notification — already sent", trace)
-        else:
-            logger.info("[%s] Step 5: Sending private report link to Tornike...", trace)
-            _t0 = _time.monotonic()
-            _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
-            _stage_times["whatsapp_private"] = _time.monotonic() - _t0
-            if pipeline:
-                pipeline = transition(pipeline, pipeline.state, private_notified=True)
-=======
         # Steps 4-5: Notifications (independent — failure of one does NOT block others)
         if pipeline:
             pipeline = transition(pipeline, NOTIFYING)
@@ -527,7 +446,6 @@ def transcribe_and_index(
         # Step 5: Send private report link to Tornike via WhatsApp (independent)
         logger.info("Step 5: Sending private report link to Tornike...")
         _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
->>>>>>> bbda80d (fix: Training agent changes)
 
         # Step 6: Index all content types into Pinecone
         if pipeline and pipeline.pinecone_indexed:

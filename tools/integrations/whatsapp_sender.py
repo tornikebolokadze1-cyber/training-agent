@@ -15,18 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
-<<<<<<< HEAD
-import os
-import smtplib
-import time
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-=======
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
->>>>>>> bbda80d (fix: Training agent changes)
 from typing import Any
 
 import httpx
@@ -643,18 +635,6 @@ def alert_operator(message: str) -> None:
         prefix = "⚠️ Training Agent ALERT\n\n"
         full_message = prefix + message
 
-<<<<<<< HEAD
-    # Fallback 1: Email
-    email_sent = send_email_fallback(
-        subject="⚠️ Training Agent ALERT",
-        body=message,
-    )
-    if email_sent:
-        return
-
-    # Fallback 2: CRITICAL log — appears in console + log file
-    logger.critical("OPERATOR ALERT (WhatsApp + Email unavailable): %s", message)
-=======
         # Attempt WhatsApp delivery
         whatsapp_sent = False
         try:
@@ -690,7 +670,6 @@ def alert_operator(message: str) -> None:
             )
         except BaseException:
             pass  # Truly nothing we can do
->>>>>>> bbda80d (fix: Training agent changes)
 
 
 # ---------------------------------------------------------------------------
