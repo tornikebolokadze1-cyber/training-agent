@@ -14,6 +14,7 @@ import traceback
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -710,9 +711,21 @@ async def health_check(request: Request):
     # Report in-flight tasks
     checks["tasks_in_progress"] = str(len(_processing_tasks))
 
+<<<<<<< HEAD
     # Disk space check
     disk = shutil.disk_usage(str(TMP_DIR))
     free_gb = disk.free / (1024 ** 3)
+=======
+    # Include retry orchestrator status
+    retry_info: dict[str, Any] = {}
+    try:
+        from tools.core.pipeline_retry import retry_orchestrator
+        retry_info = retry_orchestrator.get_retry_status()
+        checks["pending_retries"] = str(retry_info.get("total_pending", 0))
+        checks["permanently_failed"] = str(retry_info.get("total_permanently_failed", 0))
+    except Exception:
+        checks["pending_retries"] = "unavailable"
+>>>>>>> f90e9bc (fix: Training agent changes)
 
     overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
     if free_gb < 1.0:
@@ -725,7 +738,11 @@ async def health_check(request: Request):
             "service": "training-agent",
             "timestamp": datetime.now().isoformat(),
             "checks": checks,
+<<<<<<< HEAD
             "disk_free_gb": round(free_gb, 2),
+=======
+            "retry_status": retry_info,
+>>>>>>> f90e9bc (fix: Training agent changes)
         },
         status_code=status_code,
     )
@@ -1509,6 +1526,136 @@ async def retry_latest(
         "status": "all_processed",
         "message": "All recent recordings are already processed",
         "recordings_checked": len(meetings),
+    }
+
+
+class RetryLectureRequest(BaseModel):
+    """Payload for the /retry-lecture endpoint."""
+
+    group_number: int
+    lecture_number: int
+
+
+@app.post("/retry-lecture")
+@limiter.limit("5/minute")
+async def retry_lecture(
+    request: Request,
+    payload: RetryLectureRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Reset state and start the pipeline for a specific lecture.
+
+    Simple endpoint that accepts group_number and lecture_number, resets
+    any existing pipeline state, clears retry records, and starts fresh.
+    No code knowledge needed -- just curl.
+
+    Operator-only endpoint: requires WEBHOOK_SECRET.
+    """
+    verify_webhook_secret(authorization)
+
+    group_number = payload.group_number
+    lecture_number = payload.lecture_number
+
+    if group_number not in (1, 2):
+        raise HTTPException(status_code=422, detail=f"Invalid group_number: {group_number}")
+    if not (1 <= lecture_number <= 15):
+        raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {lecture_number}")
+
+    from tools.app.scheduler import _run_post_meeting_pipeline
+    from tools.core.pipeline_retry import retry_orchestrator
+
+    # Reset any existing pipeline state (FAILED or stuck)
+    from tools.core.pipeline_state import FAILED, load_state
+    existing = load_state(group_number, lecture_number)
+    if existing and existing.state == FAILED:
+        reset_failed(group_number, lecture_number)
+    elif existing and existing.state not in ("COMPLETE",):
+        # Force-reset stuck pipelines by deleting the state file
+        from tools.core.pipeline_state import state_file_path
+        try:
+            state_file_path(group_number, lecture_number).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Clear retry tracker record so it starts fresh
+    retry_orchestrator.clear_retry(group_number, lecture_number)
+
+    # Discover the meeting ID from Zoom
+    poll_id = ""
+    try:
+        zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
+        today = datetime.now(TBILISI_TZ).date()
+        from_date = (today - timedelta(days=7)).isoformat()
+        to_date = today.isoformat()
+        meetings = await asyncio.to_thread(zm.list_user_recordings, from_date, to_date)
+
+        from tools.core.config import extract_group_from_topic, get_lecture_number as _get_ln
+        for meeting in (meetings or []):
+            topic = meeting.get("topic", "")
+            g = extract_group_from_topic(topic)
+            if g != group_number:
+                continue
+            start_time_str = meeting.get("start_time", "")
+            try:
+                meeting_date = datetime.fromisoformat(
+                    start_time_str.replace("Z", "+00:00")
+                ).date()
+            except (ValueError, AttributeError):
+                meeting_date = today
+            ln = _get_ln(g, for_date=meeting_date)
+            if ln == lecture_number:
+                poll_id = str(meeting.get("uuid", "")) or str(meeting.get("id", ""))
+                break
+    except Exception as exc:
+        logger.warning("[retry-lecture] Could not discover meeting ID from Zoom: %s", exc)
+
+    if not poll_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Zoom recording found for Group {group_number}, "
+                   f"Lecture #{lecture_number} in the last 7 days. "
+                   f"Use /manual-trigger with a Drive file ID instead.",
+        )
+
+    # Claim dedup key
+    _evict_stale_tasks()
+    key = _task_key(group_number, lecture_number)
+    with _processing_lock:
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Group {group_number}, Lecture #{lecture_number} "
+                       f"is already being processed.",
+            )
+        _processing_tasks[key] = datetime.now()
+        try:
+            create_pipeline(group_number, lecture_number, meeting_id=poll_id)
+        except ValueError:
+            pass
+
+    logger.info(
+        "[retry-lecture] Starting fresh pipeline for G%d L%d (poll_id=%s)",
+        group_number, lecture_number, poll_id,
+    )
+
+    def _run_retry_lecture(gn: int, ln: int, pid: str) -> None:
+        try:
+            _run_post_meeting_pipeline(gn, ln, pid, skip_initial_delay=True)
+        finally:
+            _processing_tasks.pop(_task_key(gn, ln), None)
+
+    background_tasks.add_task(
+        _run_retry_lecture, group_number, lecture_number, poll_id,
+    )
+
+    return {
+        "status": "accepted",
+        "message": f"Fresh pipeline started for Group {group_number}, "
+                   f"Lecture #{lecture_number}",
+        "group": group_number,
+        "lecture": lecture_number,
+        "poll_id": poll_id,
     }
 
 

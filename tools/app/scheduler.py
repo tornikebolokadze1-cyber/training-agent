@@ -570,6 +570,7 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
+<<<<<<< HEAD
         # Guarantee FAILED marking on the pipeline state
         try:
             current = load_state(group_number, lecture_number)
@@ -585,6 +586,26 @@ def _run_post_meeting_pipeline(
             )
         except Exception:
             logger.error("[post] alert_operator failed for G%d L%d", group_number, lecture_number)
+=======
+        # Schedule automatic retry instead of just alerting
+        try:
+            from tools.core.pipeline_retry import retry_orchestrator
+            retry_result = retry_orchestrator.schedule_retry(
+                group_number, lecture_number, meeting_id, str(exc),
+            )
+            logger.info(
+                "[post] Retry scheduled for G%d L%d: %s",
+                group_number, lecture_number, retry_result,
+            )
+        except Exception as retry_exc:
+            logger.error("[post] Failed to schedule retry: %s", retry_exc)
+
+        alert_operator(
+            f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+            f"Error: {exc}\n"
+            f"Automatic retry has been scheduled."
+        )
+>>>>>>> f90e9bc (fix: Training agent changes)
     finally:
         # Clean up in-memory cache — always, even if already cleaned in early return
         _cleanup_dedup()
@@ -964,6 +985,23 @@ def start_scheduler() -> AsyncIOScheduler:
         args=[2],
         id="pre_group2_thursday",
         name="Pre-meeting: Group 2 (Thursday)",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Nightly catch-all — 02:00 Tbilisi time every day                   #
+    # ------------------------------------------------------------------ #
+    from tools.core.pipeline_retry import nightly_catch_all
+
+    scheduler.add_job(
+        nightly_catch_all,
+        trigger=CronTrigger(
+            hour=2,
+            minute=0,
+            timezone=TBILISI_TZ,
+        ),
+        id="nightly_catch_all",
+        name="Nightly catch-all: retry unprocessed lectures",
         replace_existing=True,
     )
 
