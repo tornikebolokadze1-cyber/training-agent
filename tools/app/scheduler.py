@@ -989,6 +989,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
 
     # ------------------------------------------------------------------ #
+<<<<<<< HEAD
     #  Nightly catch-all — 02:00 Tbilisi time every day                   #
     # ------------------------------------------------------------------ #
     from tools.core.pipeline_retry import nightly_catch_all
@@ -1003,6 +1004,38 @@ def start_scheduler() -> AsyncIOScheduler:
         id="nightly_catch_all",
         name="Nightly catch-all: retry unprocessed lectures",
         replace_existing=True,
+=======
+    #  Health monitoring — every 30 minutes                               #
+    # ------------------------------------------------------------------ #
+    from tools.core.health_monitor import run_daily_morning_report, run_health_check_job
+
+    scheduler.add_job(
+        run_health_check_job,
+        trigger=CronTrigger(
+            minute="*/30",
+            timezone=TBILISI_TZ,
+        ),
+        id="health_check",
+        name="Health check (every 30 min)",
+        replace_existing=True,
+        executor="threadpool",
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Daily morning report — 09:00 Tbilisi time                          #
+    # ------------------------------------------------------------------ #
+    scheduler.add_job(
+        run_daily_morning_report,
+        trigger=CronTrigger(
+            hour=9,
+            minute=0,
+            timezone=TBILISI_TZ,
+        ),
+        id="daily_morning_report",
+        name="Daily morning report (09:00)",
+        replace_existing=True,
+        executor="threadpool",
+>>>>>>> db560f8 (fix: Training agent changes)
     )
 
     scheduler.start()

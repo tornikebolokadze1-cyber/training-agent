@@ -692,25 +692,21 @@ async def _send_callback(payload: CallbackPayload) -> None:
 @app.get("/health")
 @limiter.limit("60/minute")
 async def health_check(request: Request):
-    """Health check endpoint with basic dependency verification."""
-    checks: dict[str, str] = {}
+    """Health check endpoint with comprehensive dependency verification.
 
-    # Check tmp directory is writable
-    try:
-        test_file = TMP_DIR / ".health_check"
-        test_file.write_text("ok")
-        test_file.unlink()
-        checks["tmp_dir"] = "ok"
-    except Exception as e:
-        checks["tmp_dir"] = f"error: {e}"
+    Returns structured JSON from the proactive HealthMonitor, covering
+    all external services, disk space, and pipeline state.
+    """
+    from tools.core.health_monitor import check_all
 
-    # Check critical env vars are present
-    checks["webhook_secret"] = "configured" if WEBHOOK_SECRET else "MISSING"
-    checks["n8n_callback"] = "configured" if N8N_CALLBACK_URL else "not set"
+    report = check_all()
 
-    # Report in-flight tasks
-    checks["tasks_in_progress"] = str(len(_processing_tasks))
+    # Add legacy fields for backward compatibility
+    report["service"] = "training-agent"
+    report["status"] = report["overall_status"]
+    report["tasks_in_progress"] = len(_processing_tasks)
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     # Disk space check
     disk = shutil.disk_usage(str(TMP_DIR))
@@ -746,6 +742,11 @@ async def health_check(request: Request):
         },
         status_code=status_code,
     )
+=======
+    status_code = 200 if report["overall_status"] == "healthy" else 503
+
+    return JSONResponse(content=report, status_code=status_code)
+>>>>>>> db560f8 (fix: Training agent changes)
 
 
 @app.get("/status")

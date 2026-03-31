@@ -166,9 +166,35 @@ async def _async_client():
 
 @pytest.mark.asyncio
 class TestHealthEndpoint:
+    """Tests for the /health endpoint which now delegates to HealthMonitor.check_all()."""
+
+    def _mock_check_all_healthy(self):
+        """Return a mock check_all result for a healthy system."""
+        return {
+            "overall_status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "checks": [
+                {"name": "disk_space", "severity": "ok", "message": "OK", "details": {}},
+            ],
+            "warnings_count": 0,
+            "critical_count": 0,
+        }
+
+    def _mock_check_all_degraded(self):
+        """Return a mock check_all result for a degraded system."""
+        return {
+            "overall_status": "degraded",
+            "timestamp": datetime.now().isoformat(),
+            "checks": [
+                {"name": "disk_space", "severity": "warning", "message": "Low", "details": {}},
+            ],
+            "warnings_count": 1,
+            "critical_count": 0,
+        }
+
     async def test_healthy_returns_200(self, patched_secrets, tmp_path):
-        """GET /health returns 200 and status=healthy when WEBHOOK_SECRET is set."""
-        with patch.object(srv, "TMP_DIR", tmp_path):
+        """GET /health returns 200 and status=healthy when all checks pass."""
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         assert resp.status_code == 200
@@ -178,32 +204,27 @@ class TestHealthEndpoint:
 
     async def test_healthy_response_has_timestamp(self, patched_secrets, tmp_path):
         """Health response includes an ISO timestamp."""
-        with patch.object(srv, "TMP_DIR", tmp_path):
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         data = resp.json()
         assert "timestamp" in data
-        # Verify it is at least parseable as a datetime string
         datetime.fromisoformat(data["timestamp"])
 
-    async def test_healthy_includes_checks_dict(self, patched_secrets, tmp_path):
-        """Health response includes a checks dict with expected keys."""
-        with patch.object(srv, "TMP_DIR", tmp_path):
+    async def test_healthy_includes_checks_list(self, patched_secrets, tmp_path):
+        """Health response includes a checks list with check results."""
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         data = resp.json()
         assert "checks" in data
-        checks = data["checks"]
-        assert "webhook_secret" in checks
-        assert "tmp_dir" in checks
-        assert "tasks_in_progress" in checks
+        assert isinstance(data["checks"], list)
+        assert len(data["checks"]) > 0
+        assert "name" in data["checks"][0]
 
-    async def test_degraded_when_webhook_secret_missing(self, tmp_path):
-        """GET /health returns 503 when WEBHOOK_SECRET is not configured."""
-        with (
-            patch.object(srv, "WEBHOOK_SECRET", ""),
-            patch.object(srv, "TMP_DIR", tmp_path),
-        ):
+    async def test_degraded_returns_503(self, tmp_path):
+        """GET /health returns 503 when system is degraded."""
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_degraded()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         assert resp.status_code == 503
@@ -211,25 +232,22 @@ class TestHealthEndpoint:
         assert data["status"] == "degraded"
 
     async def test_webhook_secret_check_shows_missing(self, tmp_path):
-        """Health checks dict shows MISSING when WEBHOOK_SECRET is unset."""
-        with (
-            patch.object(srv, "WEBHOOK_SECRET", ""),
-            patch.object(srv, "TMP_DIR", tmp_path),
-        ):
+        """Health returns degraded when a check is warning."""
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_degraded()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         data = resp.json()
-        assert data["checks"]["webhook_secret"] == "MISSING"
+        assert data["warnings_count"] == 1
 
     async def test_in_flight_task_count_reflected(self, patched_secrets, tmp_path):
         """Health endpoint reports the current number of in-progress tasks."""
         _processing_tasks["g1_l3"] = datetime.now()
         _processing_tasks["g2_l5"] = datetime.now()
-        with patch.object(srv, "TMP_DIR", tmp_path):
+        with patch("tools.core.health_monitor.check_all", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
                 resp = await client.get("/health")
         data = resp.json()
-        assert data["checks"]["tasks_in_progress"] == "2"
+        assert data["tasks_in_progress"] == 2
 
 
 # ===========================================================================
