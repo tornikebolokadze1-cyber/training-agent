@@ -1,9 +1,20 @@
-"""Google Drive operations: folder creation, file upload, Google Doc creation."""
+"""Google Drive operations: folder creation, file upload, Google Doc creation.
+
+Upload features:
+- Deduplication: skips upload if file with same name+size already exists
+- Pagination: list_files_in_folder fetches ALL files via nextPageToken
+- Auth discrimination: 401 triggers token refresh then retry; 403 fails immediately
+- Post-upload verification: GET check after upload completes
+- Progress logging: large files (>100MB) log every 25%
+- Old version cleanup: trash_old_recordings removes stale retry artifacts
+"""
 
 from __future__ import annotations
 
 import io
 import logging
+import re
+import time
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -34,6 +45,10 @@ SCOPES = [
 
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB chunks for resumable upload
+
+# Size thresholds
+LARGE_FILE_PROGRESS_THRESHOLD = 100 * 1024 * 1024  # 100 MB — log progress every 25%
+SIZE_TOLERANCE = 0.01  # 1% tolerance for dedup size comparison
 
 
 _token_path_cache: Path | None = None
@@ -197,7 +212,156 @@ def create_all_lecture_folders() -> dict[int, dict[int, str]]:
 # File Upload
 # ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 @resilient_api_call(service="drive", operation="upload_file", max_attempts=5)
+=======
+def _find_existing_file(
+    service,
+    filename: str,
+    folder_id: str,
+    local_size: int,
+) -> str | None:
+    """Check if a file with the same name and similar size exists in folder.
+
+    Returns the existing file ID if found and size matches within tolerance,
+    or None if no suitable duplicate exists.
+    """
+    safe_name = filename.replace("\\", "\\\\").replace("'", "\\'")
+    query = (
+        f"name = '{safe_name}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed = false"
+    )
+    existing = (
+        service.files()
+        .list(q=query, fields="files(id, name, size)", pageSize=1)
+        .execute()
+        .get("files", [])
+    )
+    if not existing:
+        return None
+
+    remote_file = existing[0]
+    remote_size = int(remote_file.get("size", 0))
+    file_id = remote_file["id"]
+
+    # Size comparison with tolerance (within 1%)
+    if local_size > 0 and remote_size > 0:
+        ratio = abs(remote_size - local_size) / local_size
+        if ratio <= SIZE_TOLERANCE:
+            logger.info(
+                "Skipping duplicate upload: %s already exists in folder "
+                "(ID: %s, remote=%d bytes, local=%d bytes, diff=%.2f%%)",
+                filename, file_id, remote_size, local_size, ratio * 100,
+            )
+            return file_id
+        else:
+            logger.info(
+                "File '%s' exists but size differs (remote=%d, local=%d, diff=%.1f%%) "
+                "— will re-upload",
+                filename, remote_size, local_size, ratio * 100,
+            )
+            return None
+
+    # If we can't determine size, skip by name only (legacy dedup behavior)
+    logger.info(
+        "Skipping duplicate upload: %s already exists in folder (ID: %s) — size unknown",
+        filename, file_id,
+    )
+    return file_id
+
+
+def _refresh_credentials_and_rebuild_service() -> None:
+    """Force-refresh OAuth2 credentials and rebuild the Drive service cache.
+
+    Called when a 401 (token expired) is encountered during upload.
+    """
+    global _drive_service_cache
+    logger.info("Refreshing Google Drive credentials after 401 error")
+    _drive_service_cache = None  # Clear cached service
+    creds = _get_credentials()
+    _drive_service_cache = build("drive", "v3", credentials=creds)
+    logger.info("Drive service rebuilt with fresh credentials")
+
+
+def _verify_upload(service, file_id: str, expected_size: int) -> bool:
+    """Verify an uploaded file exists and has the correct size.
+
+    Returns True if verification passes, False otherwise.
+    """
+    try:
+        file_meta = (
+            service.files()
+            .get(fileId=file_id, fields="id, name, size")
+            .execute()
+        )
+        remote_size = int(file_meta.get("size", 0))
+        if expected_size > 0 and remote_size > 0:
+            ratio = abs(remote_size - expected_size) / expected_size
+            if ratio > SIZE_TOLERANCE:
+                logger.warning(
+                    "Post-upload verification FAILED: size mismatch "
+                    "(remote=%d, expected=%d, diff=%.1f%%)",
+                    remote_size, expected_size, ratio * 100,
+                )
+                return False
+        logger.info(
+            "Post-upload verification passed: %s (ID: %s, size=%d)",
+            file_meta.get("name", "?"), file_id, remote_size,
+        )
+        return True
+    except Exception as e:
+        logger.warning("Post-upload verification failed: %s", e)
+        return False
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as human-readable string."""
+    if size_bytes >= 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 ** 3):.1f}GB"
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 ** 2):.0f}MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f}KB"
+    return f"{size_bytes}B"
+
+
+def trash_old_recordings(folder_id: str, group: int, lecture: int) -> int:
+    """Trash old recording versions matching group{N}_lecture{N}_*.mp4 pattern.
+
+    Returns the number of files trashed.
+    """
+    service = get_drive_service()
+    pattern = re.compile(
+        rf"group{group}_lecture{lecture}_.*\.mp4",
+        re.IGNORECASE,
+    )
+
+    all_files = list_files_in_folder(folder_id)
+    trashed = 0
+    for f in all_files:
+        name = f.get("name", "")
+        mime = f.get("mimeType", "")
+        if mime.startswith("video/") and pattern.match(name):
+            try:
+                service.files().update(
+                    fileId=f["id"],
+                    body={"trashed": True},
+                ).execute()
+                logger.info("Trashed old recording: %s (ID: %s)", name, f["id"])
+                trashed += 1
+            except Exception as e:
+                logger.warning("Failed to trash old recording %s: %s", name, e)
+
+    if trashed:
+        logger.info(
+            "Trashed %d old recording(s) for group%d_lecture%d in folder %s",
+            trashed, group, lecture, folder_id,
+        )
+    return trashed
+
+
+>>>>>>> 7633921 (fix: Training agent changes)
 def upload_file(
     file_path: str | Path,
     folder_id: str,
@@ -205,11 +369,19 @@ def upload_file(
 ) -> str:
     """Upload a file to Google Drive using resumable upload.
 
+    Features:
+    - Deduplication: skips if file with same name AND size (within 1%) exists
+    - Auth discrimination: 401 refreshes token then retries; 403 fails immediately
+    - Progress logging: files >100MB log every 25%
+    - Post-upload verification: confirms file exists with correct size
+
     Returns the file ID.
     """
     file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
+
+    local_size = file_path.stat().st_size
 
     if mime_type is None:
         suffix = file_path.suffix.lower()
@@ -223,6 +395,7 @@ def upload_file(
 
     service = get_drive_service()
 
+<<<<<<< HEAD
     # Dedup: check if file with same name already exists in folder
     safe_name = file_path.name.replace("\\", "\\\\").replace("'", "\\'")
     query = (
@@ -243,6 +416,12 @@ def upload_file(
             file_path.name, file_id,
         )
         return file_id
+=======
+    # Dedup: check if file with same name AND similar size already exists
+    existing_id = _find_existing_file(service, file_path.name, folder_id, local_size)
+    if existing_id:
+        return existing_id
+>>>>>>> 7633921 (fix: Training agent changes)
 
     metadata = {"name": file_path.name, "parents": [folder_id]}
     media = MediaFileUpload(
@@ -254,25 +433,84 @@ def upload_file(
 
     request = service.files().create(body=metadata, media_body=media, fields="id")
 
+    is_large = local_size >= LARGE_FILE_PROGRESS_THRESHOLD
+    last_logged_quarter = -1  # Track which 25% milestone was last logged
+
     response = None
     max_retries = 5
+    auth_retried = False  # Only refresh credentials once per upload
     while response is None:
         try:
             status, response = request.next_chunk()
             if status:
                 progress = int(status.progress() * 100)
+<<<<<<< HEAD
                 logger.info("Upload progress: %d%%", progress)
         except HttpError as e:
             if e.resp.status in (401, 403, 404):
                 # Non-retryable: auth failure, quota exhausted, folder not found
                 logger.error("Non-retryable Drive error (HTTP %d): %s", e.resp.status, e)
                 raise
+=======
+                if is_large:
+                    quarter = progress // 25
+                    if quarter > last_logged_quarter:
+                        last_logged_quarter = quarter
+                        uploaded = int(status.progress() * local_size)
+                        logger.info(
+                            "Uploading %s: %d%% (%s/%s)",
+                            file_path.name,
+                            progress,
+                            _format_size(uploaded),
+                            _format_size(local_size),
+                        )
+                else:
+                    logger.info("Upload progress: %d%%", progress)
+        except HttpError as e:
+            status_code = e.resp.status if hasattr(e, "resp") else 0
+
+            # 401: Token expired — refresh credentials, rebuild service, retry once
+            if status_code == 401 and not auth_retried:
+                auth_retried = True
+                logger.warning("Got 401 during upload — refreshing credentials")
+                _refresh_credentials_and_rebuild_service()
+                service = get_drive_service()
+                media = MediaFileUpload(
+                    str(file_path),
+                    mimetype=mime_type,
+                    chunksize=CHUNK_SIZE,
+                    resumable=True,
+                )
+                request = service.files().create(
+                    body=metadata, media_body=media, fields="id"
+                )
+                response = None
+                last_logged_quarter = -1
+                continue
+
+            # 403: Permission denied — fail immediately, no retry
+            if status_code == 403:
+                logger.error(
+                    "Permission denied (HTTP 403) uploading '%s': %s",
+                    file_path.name, e,
+                )
+                raise
+
+            # 404: Folder not found — fail immediately
+            if status_code == 404:
+                logger.error("Folder not found (HTTP 404): %s", e)
+                raise
+
+>>>>>>> 7633921 (fix: Training agent changes)
             # Retryable: 500, 502, 503, 429, etc.
             max_retries -= 1
             if max_retries <= 0:
                 logger.error("Upload failed after retries: %s", e)
                 raise
+<<<<<<< HEAD
             import time
+=======
+>>>>>>> 7633921 (fix: Training agent changes)
             delay = 2 ** (5 - max_retries)
             logger.warning(
                 "Upload chunk failed (%d retries left): %s — retrying in %ds",
@@ -280,12 +518,14 @@ def upload_file(
             )
             time.sleep(delay)
         except Exception as e:
+<<<<<<< HEAD
             # Retry transient errors with exponential backoff
+=======
+>>>>>>> 7633921 (fix: Training agent changes)
             max_retries -= 1
             if max_retries <= 0:
                 logger.error("Upload failed after retries: %s", e)
                 raise
-            import time
             delay = 2 ** (5 - max_retries)
             logger.warning(
                 "Upload chunk failed (%d retries left): %s — retrying in %ds",
@@ -295,6 +535,38 @@ def upload_file(
 
     file_id = response["id"]
     logger.info("Uploaded '%s' to Drive (ID: %s)", file_path.name, file_id)
+
+    # Post-upload verification
+    if not _verify_upload(service, file_id, local_size):
+        logger.warning(
+            "Post-upload verification failed for '%s' — retrying upload",
+            file_path.name,
+        )
+        try:
+            service.files().update(
+                fileId=file_id, body={"trashed": True}
+            ).execute()
+        except Exception as trash_err:
+            logger.warning("Failed to trash bad upload %s: %s", file_id, trash_err)
+
+        media2 = MediaFileUpload(
+            str(file_path),
+            mimetype=mime_type,
+            chunksize=CHUNK_SIZE,
+            resumable=True,
+        )
+        request2 = service.files().create(
+            body=metadata, media_body=media2, fields="id"
+        )
+        response2 = None
+        while response2 is None:
+            _status, response2 = request2.next_chunk()
+        file_id = response2["id"]
+        logger.info(
+            "Re-uploaded '%s' after verification failure (ID: %s)",
+            file_path.name, file_id,
+        )
+
     return file_id
 
 
@@ -338,24 +610,55 @@ def download_file(
 
 
 def list_files_in_folder(folder_id: str) -> list[dict]:
+<<<<<<< HEAD
     """List all files in a Google Drive folder with pagination."""
     service = get_drive_service()
     all_files: list[dict] = []
     page_token = None
+=======
+    """List ALL files in a Google Drive folder using full pagination.
+
+    Fetches every page (100 files per page) via nextPageToken to ensure
+    no files are missed even in folders with >100 items.
+    """
+    service = get_drive_service()
+    all_files: list[dict] = []
+    page_token: str | None = None
+    page_count = 0
+>>>>>>> 7633921 (fix: Training agent changes)
 
     while True:
         response = service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
+<<<<<<< HEAD
             fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
+=======
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+>>>>>>> 7633921 (fix: Training agent changes)
             pageSize=100,
             pageToken=page_token,
         ).execute()
 
+<<<<<<< HEAD
         all_files.extend(response.get("files", []))
+=======
+        batch = response.get("files", [])
+        all_files.extend(batch)
+        page_count += 1
+>>>>>>> 7633921 (fix: Training agent changes)
         page_token = response.get("nextPageToken")
         if not page_token:
             break
 
+<<<<<<< HEAD
+=======
+    if page_count > 1:
+        logger.info(
+            "Listed %d files in folder %s across %d pages",
+            len(all_files), folder_id, page_count,
+        )
+
+>>>>>>> 7633921 (fix: Training agent changes)
     return all_files
 
 

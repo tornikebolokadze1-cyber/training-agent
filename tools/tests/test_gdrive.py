@@ -25,6 +25,7 @@ import types
 from unittest.mock import MagicMock, patch
 
 import pytest
+from googleapiclient.errors import HttpError
 
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
@@ -257,10 +258,16 @@ class TestUploadFile:
         fake_file.write_bytes(b"\x00" * 100)
 
         svc = MagicMock()
+        # Dedup check returns no existing files
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
         # next_chunk returns (None, response) on first call to signal completion
         svc.files.return_value.create.return_value.next_chunk.return_value = (
             None, {"id": "uploaded-id"}
         )
+        # Post-upload verification
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "uploaded-id", "name": "lecture.mp4", "size": "100"
+        }
 
         with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
@@ -273,9 +280,15 @@ class TestUploadFile:
         fake_file.write_bytes(b"\x00" * 50)
 
         svc = MagicMock()
+        # Dedup check returns no existing files
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
         svc.files.return_value.create.return_value.next_chunk.return_value = (
             None, {"id": "some-id"}
         )
+        # Post-upload verification
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "some-id", "name": "recording.mp4", "size": "50"
+        }
 
         with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.integrations.gdrive_manager.MediaFileUpload") as mock_mfu:
@@ -296,9 +309,13 @@ class TestUploadFile:
         fake_file.write_text("hello", encoding="utf-8")
 
         svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
         svc.files.return_value.create.return_value.next_chunk.return_value = (
             None, {"id": "txt-id"}
         )
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "txt-id", "name": "notes.txt", "size": "5"
+        }
 
         with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.integrations.gdrive_manager.MediaFileUpload") as mock_mfu:
@@ -676,11 +693,17 @@ class TestUploadFileRetry:
         fake_file.write_bytes(b"\x00" * 100)
 
         svc = MagicMock()
+        # Dedup check returns no existing files
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
         # First call raises, second succeeds
         svc.files.return_value.create.return_value.next_chunk.side_effect = [
             Exception("Connection reset"),
             (None, {"id": "retry-success-id"}),
         ]
+        # Post-upload verification
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "retry-success-id", "name": "video.mp4", "size": "100"
+        }
 
         with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
             with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
@@ -694,6 +717,8 @@ class TestUploadFileRetry:
         fake_file.write_bytes(b"\x00" * 100)
 
         svc = MagicMock()
+        # Dedup check returns no existing files
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
         # Always raises
         svc.files.return_value.create.return_value.next_chunk.side_effect = Exception("Persistent failure")
 
@@ -728,3 +753,380 @@ class TestCreateFolder:
         svc = _make_drive_service(create_response={"id": "abc-123"})
         result = gdrive.create_folder(svc, "Test", "parent")
         assert result == "abc-123"
+
+
+# ===========================================================================
+# 16. _find_existing_file — deduplication with name + size
+# ===========================================================================
+
+
+class TestFindExistingFile:
+    """_find_existing_file must match by name AND size within tolerance."""
+
+    def test_returns_none_when_no_file_exists(self):
+        svc = _make_drive_service(list_response={"files": []})
+        result = gdrive._find_existing_file(svc, "lecture.mp4", "folder-id", 1000000)
+        assert result is None
+
+    def test_returns_file_id_when_size_matches_exactly(self):
+        svc = _make_drive_service(
+            list_response={"files": [{"id": "dup-id", "name": "lecture.mp4", "size": "1000000"}]}
+        )
+        result = gdrive._find_existing_file(svc, "lecture.mp4", "folder-id", 1000000)
+        assert result == "dup-id"
+
+    def test_returns_file_id_when_size_within_tolerance(self):
+        local_size = 1000000
+        remote_size = 1005000  # 0.5% larger — within 1% tolerance
+        svc = _make_drive_service(
+            list_response={"files": [{"id": "dup-id", "name": "f.mp4", "size": str(remote_size)}]}
+        )
+        result = gdrive._find_existing_file(svc, "f.mp4", "folder-id", local_size)
+        assert result == "dup-id"
+
+    def test_returns_none_when_size_exceeds_tolerance(self):
+        local_size = 1000000
+        remote_size = 1050000  # 5% larger — exceeds 1% tolerance
+        svc = _make_drive_service(
+            list_response={"files": [{"id": "dup-id", "name": "f.mp4", "size": str(remote_size)}]}
+        )
+        result = gdrive._find_existing_file(svc, "f.mp4", "folder-id", local_size)
+        assert result is None
+
+    def test_returns_file_id_when_size_unknown(self):
+        svc = _make_drive_service(
+            list_response={"files": [{"id": "dup-id", "name": "f.mp4"}]}
+        )
+        result = gdrive._find_existing_file(svc, "f.mp4", "folder-id", 1000)
+        assert result == "dup-id"
+
+
+# ===========================================================================
+# 17. _verify_upload — post-upload verification
+# ===========================================================================
+
+
+class TestVerifyUpload:
+    """_verify_upload must confirm file exists with correct size."""
+
+    def test_returns_true_when_size_matches(self):
+        svc = MagicMock()
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "file-id", "name": "lecture.mp4", "size": "5000000"
+        }
+        assert gdrive._verify_upload(svc, "file-id", 5000000) is True
+
+    def test_returns_false_when_size_mismatch(self):
+        svc = MagicMock()
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "file-id", "name": "lecture.mp4", "size": "1000"
+        }
+        assert gdrive._verify_upload(svc, "file-id", 5000000) is False
+
+    def test_returns_false_on_api_error(self):
+        svc = MagicMock()
+        svc.files.return_value.get.return_value.execute.side_effect = Exception("API error")
+        assert gdrive._verify_upload(svc, "file-id", 5000000) is False
+
+    def test_returns_true_when_size_within_tolerance(self):
+        svc = MagicMock()
+        local = 10000000
+        remote = 10005000  # 0.05% diff
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "file-id", "name": "f.mp4", "size": str(remote)
+        }
+        assert gdrive._verify_upload(svc, "file-id", local) is True
+
+
+# ===========================================================================
+# 18. _format_size — human-readable formatting
+# ===========================================================================
+
+
+class TestFormatSize:
+    """_format_size must produce human-readable size strings."""
+
+    def test_bytes(self):
+        assert gdrive._format_size(500) == "500B"
+
+    def test_kilobytes(self):
+        assert gdrive._format_size(2048) == "2KB"
+
+    def test_megabytes(self):
+        assert gdrive._format_size(150 * 1024 * 1024) == "150MB"
+
+    def test_gigabytes(self):
+        result = gdrive._format_size(2 * 1024 * 1024 * 1024)
+        assert "2.0GB" in result
+
+
+# ===========================================================================
+# 19. list_files_in_folder — pagination
+# ===========================================================================
+
+
+class TestListFilesInFolderPagination:
+    """list_files_in_folder must paginate through ALL pages via nextPageToken."""
+
+    def setup_method(self):
+        gdrive._drive_service_cache = None
+
+    def test_single_page_no_token(self):
+        files = [{"id": "f1", "name": "a.mp4"}]
+        svc = _make_drive_service(list_response={"files": files})
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            result = gdrive.list_files_in_folder("folder-id")
+
+        assert len(result) == 1
+
+    def test_multi_page_pagination(self):
+        """Verify that nextPageToken causes additional API calls."""
+        svc = MagicMock()
+        page1_files = [{"id": f"f{i}", "name": f"file{i}.mp4"} for i in range(100)]
+        page2_files = [{"id": f"f{i}", "name": f"file{i}.mp4"} for i in range(100, 150)]
+
+        svc.files.return_value.list.return_value.execute.side_effect = [
+            {"files": page1_files, "nextPageToken": "token-page-2"},
+            {"files": page2_files},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            result = gdrive.list_files_in_folder("big-folder")
+
+        assert len(result) == 150
+        assert svc.files.return_value.list.return_value.execute.call_count == 2
+
+    def test_three_pages(self):
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.side_effect = [
+            {"files": [{"id": "a"}], "nextPageToken": "t2"},
+            {"files": [{"id": "b"}], "nextPageToken": "t3"},
+            {"files": [{"id": "c"}]},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            result = gdrive.list_files_in_folder("folder")
+
+        assert len(result) == 3
+        assert [f["id"] for f in result] == ["a", "b", "c"]
+
+
+# ===========================================================================
+# 20. trash_old_recordings — cleanup by pattern
+# ===========================================================================
+
+
+class TestTrashOldRecordings:
+    """trash_old_recordings must trash files matching group{N}_lecture{N}_*.mp4."""
+
+    def setup_method(self):
+        gdrive._drive_service_cache = None
+
+    def test_trashes_matching_files(self):
+        svc = MagicMock()
+        files = [
+            {"id": "old1", "name": "group1_lecture3_2026-03-28.mp4", "mimeType": "video/mp4"},
+            {"id": "old2", "name": "group1_lecture3_retry.mp4", "mimeType": "video/mp4"},
+            {"id": "keep", "name": "summary.txt", "mimeType": "text/plain"},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.list_files_in_folder", return_value=files):
+                count = gdrive.trash_old_recordings("folder-id", group=1, lecture=3)
+
+        assert count == 2
+        assert svc.files.return_value.update.call_count == 2
+
+    def test_skips_non_matching_files(self):
+        svc = MagicMock()
+        files = [
+            {"id": "keep", "name": "group2_lecture5_2026.mp4", "mimeType": "video/mp4"},
+            {"id": "keep2", "name": "notes.pdf", "mimeType": "application/pdf"},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.list_files_in_folder", return_value=files):
+                count = gdrive.trash_old_recordings("folder-id", group=1, lecture=3)
+
+        assert count == 0
+        svc.files.return_value.update.assert_not_called()
+
+    def test_handles_trash_failure_gracefully(self):
+        svc = MagicMock()
+        svc.files.return_value.update.return_value.execute.side_effect = Exception("API error")
+        files = [
+            {"id": "old1", "name": "group1_lecture1_old.mp4", "mimeType": "video/mp4"},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.list_files_in_folder", return_value=files):
+                count = gdrive.trash_old_recordings("folder-id", group=1, lecture=1)
+
+        assert count == 0
+
+
+# ===========================================================================
+# 21. upload_file — auth error discrimination (401 vs 403)
+# ===========================================================================
+
+
+class TestUploadFileAuthErrors:
+    """upload_file must refresh on 401 and fail immediately on 403."""
+
+    def _make_http_error(self, status_code: int) -> HttpError:
+        resp = MagicMock()
+        resp.status = status_code
+        return HttpError(resp, b"error")
+
+    def test_401_triggers_credential_refresh_and_retry(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"\x00" * 100)
+
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
+        svc.files.return_value.create.return_value.next_chunk.side_effect = [
+            self._make_http_error(401),
+        ]
+
+        svc2 = MagicMock()
+        svc2.files.return_value.create.return_value.next_chunk.return_value = (
+            None, {"id": "success-after-refresh"}
+        )
+        svc2.files.return_value.get.return_value.execute.return_value = {
+            "id": "success-after-refresh", "name": "video.mp4", "size": "100"
+        }
+
+        call_count = {"n": 0}
+
+        def mock_get_service():
+            call_count["n"] += 1
+            return svc if call_count["n"] <= 1 else svc2
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", side_effect=mock_get_service):
+            with patch("tools.integrations.gdrive_manager._refresh_credentials_and_rebuild_service"):
+                with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
+                    file_id = gdrive.upload_file(fake_file, "folder-id")
+
+        assert file_id == "success-after-refresh"
+
+    def test_403_fails_immediately_no_retry(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"\x00" * 100)
+
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
+        svc.files.return_value.create.return_value.next_chunk.side_effect = (
+            self._make_http_error(403)
+        )
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
+                with pytest.raises(HttpError):
+                    gdrive.upload_file(fake_file, "folder-id")
+
+
+# ===========================================================================
+# 22. upload_file — dedup with size check
+# ===========================================================================
+
+
+class TestUploadFileDedupWithSize:
+    """upload_file must skip upload when name+size match."""
+
+    def test_skips_when_name_and_size_match(self, tmp_path):
+        fake_file = tmp_path / "lecture.mp4"
+        fake_file.write_bytes(b"\x00" * 10000)
+
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {
+            "files": [{"id": "existing-id", "name": "lecture.mp4", "size": "10000"}]
+        }
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            file_id = gdrive.upload_file(fake_file, "folder-id")
+
+        assert file_id == "existing-id"
+        svc.files.return_value.create.return_value.next_chunk.assert_not_called()
+
+    def test_uploads_when_size_differs(self, tmp_path):
+        fake_file = tmp_path / "lecture.mp4"
+        fake_file.write_bytes(b"\x00" * 10000)
+
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {
+            "files": [{"id": "old-id", "name": "lecture.mp4", "size": "500"}]
+        }
+        svc.files.return_value.create.return_value.next_chunk.return_value = (
+            None, {"id": "new-upload-id"}
+        )
+        svc.files.return_value.get.return_value.execute.return_value = {
+            "id": "new-upload-id", "name": "lecture.mp4", "size": "10000"
+        }
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
+                file_id = gdrive.upload_file(fake_file, "folder-id")
+
+        assert file_id == "new-upload-id"
+
+
+# ===========================================================================
+# 23. upload_file — post-upload verification triggers retry
+# ===========================================================================
+
+
+class TestUploadFileVerification:
+    """upload_file must retry when post-upload verification fails."""
+
+    def test_retries_on_verification_failure(self, tmp_path):
+        fake_file = tmp_path / "lecture.mp4"
+        fake_file.write_bytes(b"\x00" * 10000)
+
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.return_value = {"files": []}
+
+        svc.files.return_value.create.return_value.next_chunk.side_effect = [
+            (None, {"id": "bad-upload"}),
+            (None, {"id": "good-upload"}),
+        ]
+        svc.files.return_value.get.return_value.execute.side_effect = [
+            {"id": "bad-upload", "name": "lecture.mp4", "size": "1"},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaFileUpload"):
+                file_id = gdrive.upload_file(fake_file, "folder-id")
+
+        trash_calls = [
+            call for call in svc.files.return_value.update.call_args_list
+            if call[1].get("body", {}).get("trashed") is True
+        ]
+        assert len(trash_calls) >= 1
+        assert file_id == "good-upload"
+
+
+# ===========================================================================
+# 24. _refresh_credentials_and_rebuild_service
+# ===========================================================================
+
+
+class TestRefreshCredentials:
+    """_refresh_credentials_and_rebuild_service must clear cache and rebuild."""
+
+    def setup_method(self):
+        gdrive._drive_service_cache = None
+
+    def test_clears_cache_and_rebuilds(self):
+        gdrive._drive_service_cache = MagicMock()
+        mock_creds = MagicMock()
+        mock_new_svc = MagicMock()
+
+        with patch("tools.integrations.gdrive_manager._get_credentials", return_value=mock_creds):
+            with patch("tools.integrations.gdrive_manager.build", return_value=mock_new_svc):
+                gdrive._refresh_credentials_and_rebuild_service()
+
+        assert gdrive._drive_service_cache is mock_new_svc
+
+    def teardown_method(self):
+        gdrive._drive_service_cache = None
