@@ -31,6 +31,24 @@ from tools.core.config import TBILISI_TZ, TMP_DIR
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Per-pipeline locking — prevents two different lectures from being
+# serialized behind a single global lock.
+# ---------------------------------------------------------------------------
+
+_PIPELINE_LOCKS: dict[tuple[int, int], threading.Lock] = {}
+_LOCKS_LOCK = threading.Lock()  # protects the _PIPELINE_LOCKS dict itself
+
+
+def _get_pipeline_lock(group: int, lecture: int) -> threading.Lock:
+    """Return (or create) a lock specific to a (group, lecture) pair."""
+    key = (group, lecture)
+    with _LOCKS_LOCK:
+        if key not in _PIPELINE_LOCKS:
+            _PIPELINE_LOCKS[key] = threading.Lock()
+        return _PIPELINE_LOCKS[key]
+
+
+# ---------------------------------------------------------------------------
 # State constants
 # ---------------------------------------------------------------------------
 
@@ -569,6 +587,67 @@ def mark_complete(state: PipelineState) -> PipelineState:
     return transition(state, COMPLETE)
 
 
+def try_claim_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+) -> PipelineState | None:
+    """Atomically claim a pipeline for processing, returning None on conflict.
+
+    Uses a per-(group, lecture) lock so that two *different* lectures can
+    be claimed concurrently — only the same lecture is serialized.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1-15).
+        meeting_id: Zoom meeting UUID associated with this recording.
+
+    Returns:
+        A new PipelineState in PENDING if the claim succeeded, or None if
+        another thread already holds an active pipeline for this slot.
+    """
+    lock = _get_pipeline_lock(group, lecture)
+    if not lock.acquire(blocking=False):
+        logger.info(
+            "Pipeline claim rejected (lock held): g%d/l%d",
+            group,
+            lecture,
+        )
+        return None
+
+    try:
+        if is_pipeline_active(group, lecture):
+            logger.info(
+                "Pipeline claim rejected (already active): g%d/l%d",
+                group,
+                lecture,
+            )
+            return None
+        return create_pipeline(group, lecture, meeting_id=meeting_id)
+    except Exception:
+        lock.release()
+        raise
+    # NOTE: the caller is responsible for releasing the lock when the
+    # pipeline finishes (via release_pipeline_lock).
+
+
+def release_pipeline_lock(group: int, lecture: int) -> None:
+    """Release the per-pipeline lock after processing completes.
+
+    Safe to call even if the lock is not held (e.g. during cleanup).
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+    """
+    lock = _get_pipeline_lock(group, lecture)
+    try:
+        lock.release()
+    except RuntimeError:
+        # Lock was not held — harmless.
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
@@ -722,6 +801,74 @@ def cleanup_stale_failed(max_age_hours: int = 12) -> int:
     if deleted:
         logger.info("Stale FAILED pipeline cleanup: removed %d file(s).", deleted)
     return deleted
+
+
+def cleanup_stale_pending(max_age_minutes: int = 30) -> int:
+    """Reset non-terminal pipeline states older than max_age_minutes.
+
+    Called at startup to recover from Railway restarts that killed
+    in-progress pipelines.  PENDING/ACTIVE states from before the
+    restart are stuck and must be cleared so the lecture can be
+    reprocessed.
+
+    Args:
+        max_age_minutes: Age threshold in minutes.  Non-terminal states
+            whose ``started_at`` timestamp is older than this are marked
+            FAILED.  Defaults to 30 minutes.
+
+    Returns:
+        Number of pipeline states marked FAILED.
+    """
+    recovered = 0
+    now = datetime.now(tz=TBILISI_TZ)
+
+    for state in list_all_pipelines():
+        # Only touch non-terminal states (PENDING, DOWNLOADING, etc.)
+        if state.state in _TERMINAL_STATES:
+            continue
+
+        # Use started_at as the reference — it reflects when the
+        # pipeline was originally created, not the last transition.
+        timestamp_str = state.started_at or state.updated_at
+        try:
+            started = datetime.fromisoformat(timestamp_str)
+        except (ValueError, TypeError):
+            # Unparseable timestamp — mark as stale to be safe.
+            logger.warning(
+                "Pipeline g%d/l%d has unparseable started_at=%r — marking FAILED.",
+                state.group,
+                state.lecture,
+                state.started_at,
+            )
+            mark_failed(state, "Stale pipeline recovered at startup (bad timestamp)")
+            recovered += 1
+            continue
+
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=TBILISI_TZ)
+
+        age_minutes = (now - started).total_seconds() / 60.0
+        if age_minutes >= max_age_minutes:
+            logger.info(
+                "Recovering stale %s pipeline: g%d/l%d (age=%.1fm)",
+                state.state,
+                state.group,
+                state.lecture,
+                age_minutes,
+            )
+            mark_failed(
+                state,
+                f"Stale {state.state} pipeline recovered at startup "
+                f"(age={age_minutes:.0f}m, threshold={max_age_minutes}m)",
+            )
+            recovered += 1
+
+    if recovered:
+        logger.info(
+            "Stale pending pipeline cleanup: recovered %d pipeline(s).",
+            recovered,
+        )
+    return recovered
 
 
 def cleanup_completed(max_age_hours: int = 24) -> int:

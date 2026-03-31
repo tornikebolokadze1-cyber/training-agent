@@ -129,9 +129,8 @@ def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
             fire_time = datetime.fromisoformat(entry["fire_time"])
         except (ValueError, KeyError):
             continue
-        # Skip jobs more than 24 hours in the past (too stale).
-        # Was 2h — too aggressive; server crash overnight would lose lectures.
-        if fire_time < now - timedelta(hours=24):
+        # Skip jobs more than 2 hours in the past (too stale)
+        if fire_time < now - timedelta(hours=2):
             logger.info("[persist] Skipping stale job: G%d L%d (fire_time=%s)",
                         entry.get("group"), entry.get("lecture"), entry.get("fire_time"))
             continue
@@ -269,53 +268,62 @@ def check_recording_ready(
         ]
 
         if mp4_files:
-            prev_count = len(mp4_files)
             logger.info(
                 "[recording] Found %d completed MP4 segment(s) for meeting %s "
-                "— waiting for segment count to stabilize...",
-                prev_count, meeting_id,
+                "— stabilizing segment count (need 2 consecutive stable polls)...",
+                len(mp4_files),
+                meeting_id,
             )
-            # Wait for segment count to stabilize across 2 consecutive polls
-            time.sleep(RECORDING_POLL_INTERVAL)
-            elapsed += RECORDING_POLL_INTERVAL
-            try:
-                recordings = zm.get_meeting_recordings(meeting_id)
-                files = recordings.get("recording_files", [])
-                mp4_files = [
-                    f for f in files
-                    if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
-                    and f.get("status", "").upper() == "COMPLETED"
-                ]
-            except Exception as exc:
-                logger.warning(
-                    "[recording] Stability check failed: %s — proceeding with %d segment(s)",
-                    exc, prev_count,
-                )
-
-            new_count = len(mp4_files)
-            if new_count > prev_count:
-                # New segment appeared — do one more stabilization poll
-                logger.info(
-                    "[recording] Segment count changed (%d → %d) — one more poll...",
-                    prev_count, new_count,
-                )
+            # Stabilization loop: keep polling until segment count is stable
+            # for 2 consecutive polls, catching 3rd-wave late arrivals.
+            stable_count = 0
+            while stable_count < 2:
                 time.sleep(RECORDING_POLL_INTERVAL)
                 elapsed += RECORDING_POLL_INTERVAL
                 try:
                     recordings = zm.get_meeting_recordings(meeting_id)
                     files = recordings.get("recording_files", [])
-                    mp4_files = [
+                    new_mp4s = [
                         f for f in files
                         if f.get("file_type", "").upper() in {"MP4", "VIDEO"}
                         and f.get("status", "").upper() == "COMPLETED"
                     ]
+                    if len(new_mp4s) == len(mp4_files):
+                        stable_count += 1
+                        logger.debug(
+                            "[recording] Segment count stable at %d (stable_count=%d/2)",
+                            len(mp4_files), stable_count,
+                        )
+                    else:
+                        logger.info(
+                            "[recording] New segment appeared (%d -> %d) — resetting stabilization",
+                            len(mp4_files), len(new_mp4s),
+                        )
+                        mp4_files = new_mp4s
+                        stable_count = 0  # Reset, new segment appeared
                 except Exception as exc:
-                    logger.warning("[recording] Final poll failed: %s", exc)
+                    logger.warning(
+                        "[recording] Stabilization poll failed: %s — counting as stable",
+                        exc,
+                    )
+                    stable_count += 1  # Error counts as stable (conservative)
+                if elapsed >= RECORDING_POLL_TIMEOUT:
+                    logger.warning(
+                        "[recording] Timeout reached during stabilization — proceeding with %d segment(s)",
+                        len(mp4_files),
+                    )
+                    break
 
             logger.info(
                 "[recording] Final count: %d MP4 segment(s) for meeting %s",
-                len(mp4_files), meeting_id,
+                len(mp4_files),
+                meeting_id,
             )
+            for i, seg in enumerate(mp4_files, 1):
+                logger.info(
+                    "[recording]   Segment %d: %s",
+                    i, seg.get("download_url", "(no url)"),
+                )
             return mp4_files
 
         logger.info(
@@ -365,7 +373,10 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
 
     concat_list = output_path.parent / f"{output_path.stem}_segments.txt"
     concat_list.write_text(
-        "\n".join(f"file '{p}'" for p in segment_paths),
+        "\n".join(
+            f"file '{str(p).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'"
+            for p in segment_paths
+        ),
         encoding="utf-8",
     )
 
@@ -383,28 +394,6 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     logger.info("[post] Concatenation complete: %.1f MB", size_mb)
-
-
-def _emergency_disk_cleanup() -> None:
-    """Emergency cleanup: remove all stale .mp4 files in TMP_DIR."""
-    import time as _time
-    now = _time.time()
-    for f in TMP_DIR.glob("*.mp4"):
-        try:
-            # Keep files modified in the last 10 minutes (likely current pipeline)
-            if (now - f.stat().st_mtime) > 600:
-                f.unlink()
-                logger.info("[cleanup] Emergency: removed stale %s", f.name)
-        except OSError:
-            pass
-    # Also clean stale .chunk*.mp4 files from gemini_analyzer
-    for f in TMP_DIR.glob("*.chunk*.mp4"):
-        try:
-            if (now - f.stat().st_mtime) > 600:
-                f.unlink()
-                logger.info("[cleanup] Emergency: removed stale chunk %s", f.name)
-        except OSError:
-            pass
 
 
 def _run_post_meeting_pipeline(
@@ -541,14 +530,6 @@ def _run_post_meeting_pipeline(
                 )
                 return
 
-            # Delete segments immediately — merged file is the source of truth now
-            for seg in segment_paths:
-                if seg.exists():
-                    seg.unlink()
-                    logger.info("[post] Freed segment: %s", seg.name)
-            # Remove segments from temp_files since they're already cleaned
-            temp_files = [p for p in temp_files if p not in segment_paths]
-
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         logger.info(
             "[post] Recording ready: %.1f MB (%d segment(s))",
@@ -570,14 +551,6 @@ def _run_post_meeting_pipeline(
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
         # and Pinecone indexing to the single source of truth.
-
-        # Re-check disk space before heavy analysis (ffmpeg chunks will be created)
-        disk_usage = shutil.disk_usage(str(TMP_DIR))
-        free_gb = disk_usage.free / (1024 ** 3)
-        if free_gb < 1.5:
-            logger.warning("[post] Low disk before analysis: %.1f GB free — cleaning old tmp files", free_gb)
-            _emergency_disk_cleanup()
-
         logger.info("[post] Running full analysis pipeline...")
         index_counts = transcribe_and_index(group_number, lecture_number, local_path)
         logger.info(
@@ -587,19 +560,6 @@ def _run_post_meeting_pipeline(
             sum(index_counts.values()),
         )
 
-        # Notify n8n of success (if callback URL is configured)
-        try:
-            from tools.app.server import _send_callback, CallbackPayload
-            _cb_loop = asyncio.new_event_loop()
-            _cb_loop.run_until_complete(_send_callback(CallbackPayload(
-                status="success",
-                group_number=group_number,
-                lecture_number=lecture_number,
-            )))
-            _cb_loop.close()
-        except (ImportError, Exception) as cb_err:
-            logger.debug("[post] n8n callback skipped: %s", cb_err)
-
     except Exception as exc:
         logger.exception(
             "[post] Pipeline failed for Group %d, Lecture #%d: %s",
@@ -607,30 +567,6 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
-
-        # Mark pipeline state as FAILED
-        try:
-            from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_ps
-            _ps = _load_ps(group_number, lecture_number)
-            if _ps and _ps.state not in ("COMPLETE", "FAILED"):
-                _mark_ps(_ps, str(exc))
-        except Exception as state_err:
-            logger.warning("[post] Failed to mark pipeline state: %s", state_err)
-
-        # Notify n8n of failure (if callback URL is configured)
-        try:
-            from tools.app.server import _send_callback, CallbackPayload
-            _cb_loop = asyncio.new_event_loop()
-            _cb_loop.run_until_complete(_send_callback(CallbackPayload(
-                status="error",
-                group_number=group_number,
-                lecture_number=lecture_number,
-                error_message=str(exc),
-            )))
-            _cb_loop.close()
-        except (ImportError, Exception) as cb_err:
-            logger.debug("[post] n8n failure callback skipped: %s", cb_err)
-
         alert_operator(
             f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
             f"Error: {exc}"
@@ -795,27 +731,31 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
         lecture_number: Lecture ordinal (passed from schedule time, not re-derived).
         meeting_id: Zoom meeting UUID (preferred) or numeric ID.
     """
-    # Use the unified dedup authority instead of ad-hoc checks
+    # Check if webhook already started processing this lecture.
+    # Evict stale tasks first (mirrors server.py behavior) so a crashed
+    # pipeline from >4 hours ago doesn't permanently block the fallback.
     try:
-        from tools.core.pipeline_state import try_claim_pipeline
-        pipeline = try_claim_pipeline(group_number, lecture_number, meeting_id=meeting_id)
-        if pipeline is None:
-            logger.info(
-                "[post] Scheduler FALLBACK skipped — pipeline already claimed/complete "
-                "for Group %d, Lecture #%d",
-                group_number, lecture_number,
-            )
-            return
+        from tools.app.server import _evict_stale_tasks, _processing_lock, _processing_tasks, _task_key
+        _evict_stale_tasks()
+        key = _task_key(group_number, lecture_number)
+        with _processing_lock:
+            if key in _processing_tasks:
+                logger.info(
+                    "[post] Scheduler FALLBACK skipped — %s already processing "
+                    "(webhook handled it)",
+                    key,
+                )
+                return
+            # Also check persistent pipeline state
+            if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
+                logger.info("[post] Pipeline already active/complete for G%d L%d — skipping", group_number, lecture_number)
+                return
+            # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
+            # Atomic check-and-set under lock prevents webhook+scheduler race.
+            _processing_tasks[key] = datetime.now()
+        logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
-        logger.warning("[post] pipeline_state not available — proceeding without dedup")
-
-    # Update in-memory cache for /status visibility
-    try:
-        from tools.app.server import _processing_tasks, _task_key
-        from tools.core.config import TBILISI_TZ
-        _processing_tasks[_task_key(group_number, lecture_number)] = datetime.now(TBILISI_TZ)
-    except (ImportError, Exception):
-        pass
+        pass  # server module not available (standalone scheduler mode)
 
     logger.info(
         "[post] Scheduler FALLBACK firing — webhook did not handle "
@@ -914,239 +854,6 @@ def _schedule_post_meeting(
 
 
 # ---------------------------------------------------------------------------
-# Periodic WhatsApp → Obsidian sync (runs in thread executor)
-# ---------------------------------------------------------------------------
-
-
-async def whatsapp_obsidian_sync_job() -> None:
-    """Sync WhatsApp chat history into the Obsidian vault.
-
-    Runs every 6 hours via cron trigger.  Non-fatal: failures are logged
-    but never crash the scheduler.
-    """
-    logger.info("[whatsapp-sync] Starting periodic WhatsApp → Obsidian sync...")
-    try:
-        from tools.integrations.obsidian_sync import sync_whatsapp
-
-        loop = asyncio.get_running_loop()
-        count = await loop.run_in_executor(None, sync_whatsapp)
-        logger.info("[whatsapp-sync] Synced %d WhatsApp message(s) to Obsidian vault", count)
-    except Exception as exc:
-        logger.error("[whatsapp-sync] WhatsApp sync failed: %s", exc, exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# Periodic background jobs
-# ---------------------------------------------------------------------------
-
-
-async def _process_dlq_job() -> None:
-    """Process pending Dead Letter Queue items every 10 minutes."""
-    try:
-        from tools.core.dlq import process_pending_items, cleanup_old_dead_letters
-        loop = asyncio.get_running_loop()
-        stats = await loop.run_in_executor(None, process_pending_items)
-        if stats.get("processed", 0) > 0:
-            logger.info("[dlq] Processed: %s", stats)
-        # Weekly cleanup of old dead letters
-        cleanup_old_dead_letters(max_age_days=7)
-    except ImportError:
-        logger.debug("[dlq] DLQ module not available")
-    except Exception as exc:
-        logger.error("[dlq] DLQ processing failed: %s", exc)
-
-
-# Track WhatsApp connection state for reconnection detection
-_whatsapp_was_connected: bool = True
-_whatsapp_disconnected_at: int | None = None
-
-
-async def _whatsapp_health_check_job() -> None:
-    """Proactive WhatsApp health check — alerts via EMAIL if unhealthy.
-
-    Tracks connection state across checks. When a disconnected→connected
-    transition is detected, automatically triggers the assistant's catch-up
-    pipeline to process messages missed during downtime.
-    """
-    global _whatsapp_was_connected, _whatsapp_disconnected_at
-
-    try:
-        from tools.integrations.whatsapp_sender import check_whatsapp_health, send_email_fallback
-        loop = asyncio.get_running_loop()
-        health = await loop.run_in_executor(None, check_whatsapp_health)
-
-        is_connected = health.get("connected", False)
-
-        if not is_connected:
-            state = health.get("state", "unknown")
-            logger.error(
-                "[whatsapp-health] WhatsApp NOT CONNECTED (state=%s). QR re-scan needed!", state
-            )
-
-            # Record when we first noticed the disconnection
-            if _whatsapp_was_connected:
-                _whatsapp_disconnected_at = int(time.time())
-                logger.info("[whatsapp-health] Disconnection detected at %s",
-                            datetime.now(TBILISI_TZ).strftime("%H:%M"))
-
-            _whatsapp_was_connected = False
-
-            # Alert via EMAIL since WhatsApp is the thing that's broken
-            send_email_fallback(
-                subject="WhatsApp DISCONNECTED — QR re-scan needed",
-                body=(
-                    f"WhatsApp health check failed.\n"
-                    f"State: {state}\n"
-                    f"Time: {datetime.now(TBILISI_TZ).isoformat()}\n\n"
-                    f"Action needed: Re-scan the QR code in Green API dashboard."
-                ),
-            )
-        else:
-            # Connected — check if this is a reconnection
-            if not _whatsapp_was_connected:
-                logger.info(
-                    "[whatsapp-health] WhatsApp RECONNECTED! Triggering catch-up..."
-                )
-                # Run catch-up in background (don't block the health check)
-                asyncio.create_task(_run_catch_up(_whatsapp_disconnected_at))
-                _whatsapp_disconnected_at = None
-
-            _whatsapp_was_connected = True
-            logger.debug("[whatsapp-health] WhatsApp connected (state=%s)", health.get("state"))
-    except Exception as exc:
-        logger.error("[whatsapp-health] Health check failed: %s", exc)
-
-
-async def _run_catch_up(disconnected_at: int | None = None) -> None:
-    """Run the assistant's catch-up pipeline after reconnection.
-
-    Args:
-        disconnected_at: Unix epoch when disconnection was first detected.
-            Passed as ``since_timestamp`` to the assistant's ``catch_up()``
-            method so it only processes messages from the downtime window.
-    """
-    try:
-        from tools.app.server import assistant
-        if assistant is None:
-            logger.warning("[catch-up] WhatsApp assistant not initialised — skipping")
-            return
-
-        logger.info("[catch-up] Starting catch-up from %s...",
-                     time.strftime("%H:%M", time.localtime(disconnected_at)) if disconnected_at else "4h ago")
-        stats = await assistant.catch_up(since_timestamp=disconnected_at)
-        logger.info("[catch-up] Complete: %s", stats)
-
-        # Notify operator about catch-up results
-        if stats["responded"] > 0 or stats["errors"] > 0:
-            from tools.integrations.whatsapp_sender import alert_operator
-            alert_operator(
-                f"Catch-up done: {stats['processed']} messages processed, "
-                f"{stats['responded']} responded, {stats['memorised']} memorised, "
-                f"{stats['errors']} errors"
-            )
-    except Exception as exc:
-        logger.error("[catch-up] Catch-up pipeline failed: %s", exc, exc_info=True)
-
-
-async def _nightly_recording_scan() -> None:
-    """Safety net: scan Zoom for unprocessed recordings from the past 24 hours.
-
-    Catches any lectures that were missed due to server downtime during the
-    meeting window.  Runs at 01:00 Tbilisi time (after all lectures end at ~22:00).
-    """
-    from tools.core.pipeline_state import try_claim_pipeline
-
-    logger.info("[nightly-scan] Checking Zoom for unprocessed recordings…")
-
-    try:
-        zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
-    except ImportError:
-        logger.warning("[nightly-scan] zoom_manager not available — skipping")
-        return
-
-    today = datetime.now(TBILISI_TZ).date()
-    from_date = (today - timedelta(days=1)).isoformat()
-    today_str = today.isoformat()
-
-    try:
-        loop = asyncio.get_running_loop()
-        meetings = await loop.run_in_executor(
-            None, zm.list_user_recordings, from_date, today_str,
-        )
-    except Exception as exc:
-        logger.warning("[nightly-scan] Failed to list recordings: %s", exc)
-        return
-
-    if not meetings:
-        logger.info("[nightly-scan] No recordings in last 24h")
-        return
-
-    logger.info("[nightly-scan] Found %d recording(s) — checking each", len(meetings))
-
-    for meeting in meetings:
-        topic = meeting.get("topic", "")
-        # Extract group number from meeting topic
-        group_number = None
-        if "#1" in topic or "ჯგუფი #1" in topic:
-            group_number = 1
-        elif "#2" in topic or "ჯგუფი #2" in topic:
-            group_number = 2
-        if group_number is None:
-            continue
-
-        start_time_str = meeting.get("start_time", "")
-        try:
-            meeting_date = datetime.fromisoformat(
-                start_time_str.replace("Z", "+00:00")
-            ).date()
-        except (ValueError, AttributeError):
-            meeting_date = today
-
-        lecture_number = get_lecture_number(group_number, for_date=meeting_date)
-        if lecture_number == 0 or lecture_number > TOTAL_LECTURES:
-            continue
-
-        # Check if already indexed in Pinecone
-        already_indexed = False
-        try:
-            from tools.integrations.knowledge_indexer import lecture_exists_in_index
-            already_indexed = await loop.run_in_executor(
-                None, lecture_exists_in_index, group_number, lecture_number,
-            )
-        except Exception:
-            pass  # assume not indexed
-
-        if already_indexed:
-            logger.info("[nightly-scan] G%d L%d already indexed — skip", group_number, lecture_number)
-            continue
-
-        # Check if already done in pipeline state
-        if is_pipeline_done(group_number, lecture_number):
-            logger.info("[nightly-scan] G%d L%d pipeline COMPLETE — skip", group_number, lecture_number)
-            continue
-
-        # Try to claim and process
-        meeting_uuid = meeting.get("uuid", "")
-        poll_id = meeting_uuid or str(meeting.get("id", ""))
-        pipeline = try_claim_pipeline(group_number, lecture_number, meeting_id=poll_id)
-        if pipeline is None:
-            logger.info("[nightly-scan] G%d L%d claim rejected — skip", group_number, lecture_number)
-            continue
-
-        logger.info(
-            "[nightly-scan] Starting pipeline for MISSED recording: Group %d, Lecture #%d",
-            group_number, lecture_number,
-        )
-        loop.run_in_executor(
-            None,
-            _run_post_meeting_pipeline,
-            group_number,
-            lecture_number,
-            poll_id,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1213,7 +920,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
 
     # ------------------------------------------------------------------ #
-    #  Group 2 — Monday (dow=0) and Thursday (dow=3)                     #
+    #  Group 2 — Monday (dow=0) and Thursday (dow=3)                      #
     # ------------------------------------------------------------------ #
     scheduler.add_job(
         pre_meeting_job,
@@ -1239,54 +946,6 @@ def start_scheduler() -> AsyncIOScheduler:
         args=[2],
         id="pre_group2_thursday",
         name="Pre-meeting: Group 2 (Thursday)",
-        replace_existing=True,
-    )
-
-    # ------------------------------------------------------------------ #
-    #  Periodic: WhatsApp → Obsidian sync (every 6 hours)                #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        whatsapp_obsidian_sync_job,
-        trigger=CronTrigger(
-            hour="0,6,12,18",
-            minute=30,
-            timezone=TBILISI_TZ,
-        ),
-        id="whatsapp_obsidian_sync",
-        name="WhatsApp → Obsidian sync (every 6h)",
-        replace_existing=True,
-    )
-
-    # ------------------------------------------------------------------ #
-    #  Periodic: Dead Letter Queue processor (every 10 minutes)          #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        _process_dlq_job,
-        trigger=CronTrigger(minute="*/10", timezone=TBILISI_TZ),
-        id="dlq_processor",
-        name="DLQ: Process pending retries",
-        replace_existing=True,
-    )
-
-    # ------------------------------------------------------------------ #
-    #  Periodic: WhatsApp health check (every 30 minutes)                #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        _whatsapp_health_check_job,
-        trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
-        id="whatsapp_health_check",
-        name="WhatsApp: Proactive health check",
-        replace_existing=True,
-    )
-
-    # ------------------------------------------------------------------ #
-    #  Nightly: Scan Zoom for missed recordings (01:00 Tbilisi)          #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        _nightly_recording_scan,
-        trigger=CronTrigger(hour=1, minute=0, timezone=TBILISI_TZ),
-        id="nightly_recording_scan",
-        name="Nightly: Scan Zoom for missed recordings",
         replace_existing=True,
     )
 
