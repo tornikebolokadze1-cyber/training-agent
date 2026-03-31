@@ -36,6 +36,9 @@ from tools.core.config import (
 from tools.core.pipeline_state import (
     is_pipeline_active,
     is_pipeline_done,
+    load_state,
+    mark_failed,
+    _TERMINAL_STATES,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -567,10 +570,21 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
-        alert_operator(
-            f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
-            f"Error: {exc}"
-        )
+        # Guarantee FAILED marking on the pipeline state
+        try:
+            current = load_state(group_number, lecture_number)
+            if current is not None and current.state not in _TERMINAL_STATES:
+                mark_failed(current, f"Post-meeting pipeline failed: {exc}")
+        except Exception as mark_exc:
+            logger.error("[post] Failed to mark pipeline as FAILED: %s", mark_exc)
+
+        try:
+            alert_operator(
+                f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+                f"Error: {exc}"
+            )
+        except Exception:
+            logger.error("[post] alert_operator failed for G%d L%d", group_number, lecture_number)
     finally:
         # Clean up in-memory cache — always, even if already cleaned in early return
         _cleanup_dedup()

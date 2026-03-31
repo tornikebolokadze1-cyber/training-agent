@@ -7,11 +7,28 @@ Each pipeline instance corresponds to one lecture for one group and is
 persisted as a JSON file in TMP_DIR so that crashes and restarts can
 resume mid-pipeline without reprocessing completed stages.
 
+**Forward-only transitions** are enforced: states can only move forward
+in the lifecycle (PENDING → DOWNLOADING → ... → COMPLETE).  Any attempt
+to move backwards raises ``ValueError``.  The only exception is that
+FAILED can be reset to PENDING via ``reset_failed()``.
+
+**Error history** is recorded in the state file so recurring failures
+can be diagnosed without needing Railway logs.
+
+**Heartbeat** timestamps are updated periodically so stale-eviction
+can distinguish truly stuck pipelines from legitimately long-running ones.
+
 Usage::
 
     state = create_pipeline(group=1, lecture=3, meeting_id="abc123")
     state = transition(state, DOWNLOADING, video_path="/tmp/rec.mp4")
     state = mark_complete(state)
+
+    # Or use the context manager for guaranteed FAILED marking:
+    with pipeline_guard(group=1, lecture=3, meeting_id="abc123") as state:
+        state = transition(state, DOWNLOADING, video_path="/tmp/rec.mp4")
+        ...
+        mark_complete(state)
 """
 
 from __future__ import annotations
@@ -21,10 +38,14 @@ import json
 import logging
 import os
 import threading
+<<<<<<< HEAD
+=======
+from contextlib import contextmanager
+>>>>>>> 37f39d2 (fix: Training agent changes)
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from tools.core.config import TBILISI_TZ, TMP_DIR
 
@@ -88,6 +109,17 @@ ALL_STATES: tuple[str, ...] = (
     FAILED,
 )
 
+# Forward-only ordering: maps each state to its ordinal position.
+# FAILED is special — it can be reached from any state but cannot
+# transition forward to anything (only reset_failed → new pipeline).
+_STATE_ORDER: dict[str, int] = {
+    state: idx for idx, state in enumerate(ALL_STATES)
+}
+
+
+class PipelineClaimError(RuntimeError):
+    """Raised when a pipeline cannot be claimed (already active or conflict)."""
+
 
 # ---------------------------------------------------------------------------
 # PipelineState dataclass
@@ -130,6 +162,7 @@ class PipelineState:
     meeting_id: str = ""
     started_at: str = ""
     updated_at: str = ""
+    last_heartbeat: str = ""
     video_path: str = ""
     drive_video_id: str = ""
     transcript_chunks_done: tuple[int, ...] = field(default_factory=tuple)
@@ -143,6 +176,7 @@ class PipelineState:
     error: str = ""
     retry_count: int = 0
     cost_estimate_usd: float = 0.0
+    errors: tuple[dict[str, str], ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +266,14 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
     raw_chunks = data.get("transcript_chunks_done", [])
     chunks: tuple[int, ...] = tuple(int(c) for c in raw_chunks)
 
+    # Convert error history list[dict] → tuple[dict]
+    raw_errors = data.get("errors", [])
+    errors: tuple[dict[str, str], ...] = tuple(
+        {"timestamp": str(e.get("timestamp", "")), "error": str(e.get("error", ""))}
+        for e in raw_errors
+        if isinstance(e, dict)
+    )
+
     return PipelineState(
         group=int(data.get("group", 0)),
         lecture=int(data.get("lecture", 0)),
@@ -239,6 +281,7 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
         meeting_id=str(data.get("meeting_id", "")),
         started_at=str(data.get("started_at", "")),
         updated_at=str(data.get("updated_at", "")),
+        last_heartbeat=str(data.get("last_heartbeat", "")),
         video_path=str(data.get("video_path", "")),
         drive_video_id=str(data.get("drive_video_id", "")),
         transcript_chunks_done=chunks,
@@ -252,6 +295,7 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
         error=str(data.get("error", "")),
         retry_count=int(data.get("retry_count", 0)),
         cost_estimate_usd=float(data.get("cost_estimate_usd", 0.0)),
+        errors=errors,
     )
 
 
@@ -335,6 +379,11 @@ def transition(
     Produces an immutable new ``PipelineState`` via ``dataclasses.replace``,
     logs the transition, and persists the result to disk.
 
+    **Forward-only enforcement**: states can only move forward in the
+    lifecycle ordering.  Re-entering the same state is allowed (e.g.
+    updating chunk progress within TRANSCRIBING).  Moving to FAILED is
+    always allowed.  Moving backwards raises ``ValueError``.
+
     Args:
         state: The current pipeline state (will not be mutated).
         new_state: The target state string (one of the module-level constants).
@@ -345,7 +394,8 @@ def transition(
         stamped to the current Tbilisi time, and any *updates* applied.
 
     Raises:
-        ValueError: If *new_state* is not a recognised state constant.
+        ValueError: If *new_state* is not a recognised state constant, or
+            if the transition would move backwards in the lifecycle.
     """
     if new_state not in ALL_STATES:
         raise ValueError(
@@ -353,6 +403,7 @@ def transition(
             f"Valid states: {ALL_STATES}"
         )
 
+<<<<<<< HEAD
     if new_state != FAILED:  # FAILED can be reached from any state
         current_idx = ALL_STATES.index(state.state) if state.state in ALL_STATES else -1
         new_idx = ALL_STATES.index(new_state)
@@ -362,6 +413,33 @@ def transition(
                 state.group, state.lecture, state.state, new_state,
             )
             return state  # Return unchanged state instead of corrupting
+=======
+    # Enforce forward-only transitions.
+    # - FAILED can be reached from any state (it's always "forward" to error).
+    # - Same-state is allowed (e.g. updating fields within TRANSCRIBING).
+    # - From a terminal state, only FAILED is allowed (and only if not already FAILED).
+    current_order = _STATE_ORDER.get(state.state, -1)
+    new_order = _STATE_ORDER.get(new_state, -1)
+
+    if new_state != FAILED and new_order < current_order:
+        msg = (
+            f"Backward transition rejected: {state.state} (#{current_order}) "
+            f"→ {new_state} (#{new_order}) for g{state.group}/l{state.lecture}. "
+            f"States can only move forward in the lifecycle."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+
+    # Prevent transitioning out of COMPLETE (except to FAILED).
+    if state.state == COMPLETE and new_state != FAILED:
+        msg = (
+            f"Transition from COMPLETE rejected: cannot move to {new_state} "
+            f"for g{state.group}/l{state.lecture}. "
+            f"Use reset_failed() + create_pipeline() to restart."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+>>>>>>> 37f39d2 (fix: Training agent changes)
 
     now = _now_iso()
     new = _replace_state(state, state=new_state, updated_at=now, **updates)  # type: ignore[call-arg]
@@ -381,8 +459,7 @@ def _replace_state(source: PipelineState, **updates: Any) -> PipelineState:
     """Return a new PipelineState with the given fields replaced.
 
     A thin wrapper around ``dataclasses.replace`` that converts any list
-    value for ``transcript_chunks_done`` into a tuple to preserve the
-    field's immutable type contract.
+    values for tuple fields into tuples to preserve immutability.
 
     Args:
         source: Source state (frozen dataclass).
@@ -394,6 +471,10 @@ def _replace_state(source: PipelineState, **updates: Any) -> PipelineState:
     if "transcript_chunks_done" in updates:
         raw = updates["transcript_chunks_done"]
         updates["transcript_chunks_done"] = tuple(raw) if raw is not None else ()
+
+    if "errors" in updates:
+        raw = updates["errors"]
+        updates["errors"] = tuple(raw) if raw is not None else ()
 
     import dataclasses  # local import to keep module-level namespace clean
 
@@ -554,6 +635,9 @@ def release_pipeline(group: int, lecture: int) -> None:
 def mark_failed(state: PipelineState, error: str) -> PipelineState:
     """Transition a pipeline to the FAILED state with an error message.
 
+    Appends the error to the error history list with a timestamp so
+    recurring failures can be diagnosed without needing external logs.
+
     Args:
         state: The current pipeline state.
         error: Human-readable description of what went wrong.
@@ -567,7 +651,10 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
         state.lecture,
         error,
     )
-    return transition(state, FAILED, error=error)
+    # Append to error history (keep last 20 entries to bound file size)
+    error_entry = {"timestamp": _now_iso(), "error": error}
+    new_errors = (*state.errors, error_entry)[-20:]
+    return transition(state, FAILED, error=error, errors=new_errors)
 
 
 def mark_complete(state: PipelineState) -> PipelineState:
@@ -653,6 +740,33 @@ def release_pipeline_lock(group: int, lecture: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def get_last_activity_time(state: PipelineState) -> datetime | None:
+    """Return the most recent activity timestamp for a pipeline.
+
+    Uses ``last_heartbeat`` if available, falling back to ``updated_at``,
+    then ``started_at``.  This is the preferred timestamp for stale
+    pipeline detection — it reflects actual liveness, not just the last
+    state transition.
+
+    Args:
+        state: The pipeline state to inspect.
+
+    Returns:
+        A timezone-aware datetime, or None if no valid timestamp exists.
+    """
+    for ts_field in (state.last_heartbeat, state.updated_at, state.started_at):
+        if not ts_field:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts_field)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TBILISI_TZ)
+            return dt
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def is_pipeline_active(group: int, lecture: int) -> bool:
     """Return True if a non-terminal pipeline exists for this group/lecture.
 
@@ -720,6 +834,254 @@ def list_all_pipelines() -> list[PipelineState]:
             )
     results.sort(key=lambda s: (s.group, s.lecture))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat
+# ---------------------------------------------------------------------------
+
+# Background heartbeat threads, keyed by (group, lecture).
+_heartbeat_threads: dict[tuple[int, int], threading.Event] = {}
+
+HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+def update_heartbeat(state: PipelineState) -> PipelineState:
+    """Update the last_heartbeat timestamp on the pipeline state file.
+
+    Called periodically while a pipeline is running so that stale-eviction
+    logic can distinguish truly stuck pipelines from long-running ones.
+
+    Args:
+        state: The current pipeline state.
+
+    Returns:
+        New PipelineState with ``last_heartbeat`` updated.
+    """
+    now = _now_iso()
+    new = _replace_state(state, last_heartbeat=now)
+    save_state(new)
+    logger.debug(
+        "Heartbeat updated for g%d/l%d at %s",
+        state.group, state.lecture, now,
+    )
+    return new
+
+
+def _heartbeat_loop(group: int, lecture: int, stop_event: threading.Event) -> None:
+    """Background thread that updates the heartbeat every 5 minutes."""
+    while not stop_event.wait(timeout=HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            current = load_state(group, lecture)
+            if current is None or current.state in _TERMINAL_STATES:
+                break
+            update_heartbeat(current)
+        except Exception as exc:
+            logger.warning("Heartbeat update failed for g%d/l%d: %s", group, lecture, exc)
+
+
+def start_heartbeat(group: int, lecture: int) -> None:
+    """Start a background heartbeat thread for a pipeline.
+
+    The thread updates ``last_heartbeat`` every 5 minutes and stops when
+    the pipeline reaches a terminal state or ``stop_heartbeat()`` is called.
+    """
+    key = (group, lecture)
+    stop_existing = _heartbeat_threads.pop(key, None)
+    if stop_existing is not None:
+        stop_existing.set()
+
+    stop_event = threading.Event()
+    _heartbeat_threads[key] = stop_event
+    thread = threading.Thread(
+        target=_heartbeat_loop,
+        args=(group, lecture, stop_event),
+        daemon=True,
+        name=f"heartbeat-g{group}-l{lecture}",
+    )
+    thread.start()
+    logger.debug("Heartbeat thread started for g%d/l%d", group, lecture)
+
+
+def stop_heartbeat(group: int, lecture: int) -> None:
+    """Stop the background heartbeat thread for a pipeline."""
+    key = (group, lecture)
+    stop_event = _heartbeat_threads.pop(key, None)
+    if stop_event is not None:
+        stop_event.set()
+        logger.debug("Heartbeat thread stopped for g%d/l%d", group, lecture)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint validation
+# ---------------------------------------------------------------------------
+
+# Minimum size thresholds for checkpoint files (bytes)
+_CHECKPOINT_MIN_SIZES: dict[str, int] = {
+    "transcript": 100,
+    "summary": 100,
+    "gap_analysis": 50,
+    "deep_analysis": 50,
+}
+
+
+def validate_checkpoint(
+    group: int,
+    lecture: int,
+    content_type: str,
+) -> bool:
+    """Validate a checkpoint file for a specific pipeline stage.
+
+    Checks that the checkpoint file exists, is non-empty, meets a minimum
+    size threshold, and (for JSON files) parses correctly.  For text
+    checkpoints (transcript, summary), verifies the content contains
+    actual text, not just whitespace.
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+        content_type: One of ``transcript``, ``summary``, ``gap_analysis``,
+            ``deep_analysis``.
+
+    Returns:
+        True if the checkpoint is valid and can be resumed from.
+    """
+    checkpoint_path = TMP_DIR / f"g{group}_l{lecture}_{content_type}.txt"
+
+    if not checkpoint_path.exists():
+        return False
+
+    try:
+        file_size = checkpoint_path.stat().st_size
+    except OSError:
+        return False
+
+    min_size = _CHECKPOINT_MIN_SIZES.get(content_type, 50)
+    if file_size < min_size:
+        logger.warning(
+            "Checkpoint %s too small (%d bytes, min %d) — invalid",
+            checkpoint_path.name, file_size, min_size,
+        )
+        return False
+
+    # Read and validate content
+    try:
+        content = checkpoint_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning("Checkpoint %s unreadable: %s", checkpoint_path.name, exc)
+        return False
+
+    # Check for actual text content (not just whitespace)
+    if not content.strip():
+        logger.warning("Checkpoint %s contains only whitespace", checkpoint_path.name)
+        return False
+
+    # For JSON checkpoint files, validate JSON parsing
+    if checkpoint_path.suffix == ".json":
+        try:
+            json.loads(content)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Checkpoint %s has invalid JSON: %s", checkpoint_path.name, exc
+            )
+            return False
+
+    return True
+
+
+def invalidate_checkpoint(group: int, lecture: int, content_type: str) -> bool:
+    """Delete an invalid checkpoint file so the stage restarts from scratch.
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+        content_type: Content type identifier.
+
+    Returns:
+        True if the file was deleted, False if it didn't exist.
+    """
+    checkpoint_path = TMP_DIR / f"g{group}_l{lecture}_{content_type}.txt"
+    if checkpoint_path.exists():
+        try:
+            checkpoint_path.unlink()
+            logger.info(
+                "Invalidated checkpoint %s — stage will restart",
+                checkpoint_path.name,
+            )
+            return True
+        except OSError as exc:
+            logger.warning("Failed to delete checkpoint %s: %s", checkpoint_path.name, exc)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Pipeline guard context manager
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def pipeline_guard(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+    *,
+    create_new: bool = True,
+) -> Generator[PipelineState, None, None]:
+    """Context manager that guarantees FAILED marking on unhandled exceptions.
+
+    Creates (or loads) a pipeline state, starts a heartbeat, yields it
+    to the caller, and ensures the pipeline is marked FAILED if the block
+    exits without reaching COMPLETE or FAILED.
+
+    Args:
+        group: Training group number.
+        lecture: Lecture number.
+        meeting_id: Zoom meeting ID (used when creating a new pipeline).
+        create_new: If True (default), create a new pipeline. If False,
+            load the existing one (raises PipelineClaimError if not found).
+
+    Yields:
+        The pipeline state for the caller to use and transition.
+
+    Raises:
+        PipelineClaimError: If the pipeline cannot be claimed (already
+            active when create_new=True, or not found when create_new=False).
+    """
+    pipeline: PipelineState | None = None
+    try:
+        if create_new:
+            try:
+                pipeline = create_pipeline(group, lecture, meeting_id)
+            except ValueError as exc:
+                raise PipelineClaimError(
+                    f"Cannot claim pipeline for g{group}/l{lecture}: {exc}"
+                ) from exc
+        else:
+            pipeline = load_state(group, lecture)
+            if pipeline is None:
+                raise PipelineClaimError(
+                    f"No existing pipeline found for g{group}/l{lecture}"
+                )
+
+        start_heartbeat(group, lecture)
+        yield pipeline
+    except PipelineClaimError:
+        raise
+    except Exception as exc:
+        if pipeline is not None:
+            # Only mark_failed if not already in a terminal state
+            current = load_state(group, lecture)
+            if current is not None and current.state not in _TERMINAL_STATES:
+                mark_failed(current, str(exc))
+        raise
+    finally:
+        stop_heartbeat(group, lecture)
+        # Safety net: if pipeline exited without reaching terminal state,
+        # mark as FAILED to prevent it from being stuck forever.
+        if pipeline is not None:
+            current = load_state(group, lecture)
+            if current is not None and current.state not in _TERMINAL_STATES:
+                mark_failed(current, "Pipeline exited without completion")
 
 
 # ---------------------------------------------------------------------------

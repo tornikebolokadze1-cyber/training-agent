@@ -22,11 +22,17 @@ from tools.core.config import (
     get_lecture_folder_name,
 )
 from tools.core.pipeline_state import (
+    _TERMINAL_STATES,
     load_state,
-    transition,
     mark_complete,
     mark_failed,
+<<<<<<< HEAD
     PENDING,
+=======
+    start_heartbeat,
+    stop_heartbeat,
+    transition,
+>>>>>>> 37f39d2 (fix: Training agent changes)
     TRANSCRIBING,
     UPLOADING_DOCS,
     NOTIFYING,
@@ -314,6 +320,7 @@ def transcribe_and_index(
     # Load pipeline state if it exists (created by server.py or scheduler.py)
     pipeline = load_state(group_number, lecture_number)
 
+<<<<<<< HEAD
     # Resume support: if pipeline is past TRANSCRIBING, load cached results
     skip_analysis = False
     if pipeline and pipeline.state not in (PENDING, TRANSCRIBING, ""):
@@ -335,20 +342,31 @@ def transcribe_and_index(
                     )
                     skip_analysis = False
                     break
+=======
+    # Start heartbeat if pipeline exists (updates last_heartbeat every 5 min)
+    if pipeline is not None:
+        start_heartbeat(group_number, lecture_number)
+>>>>>>> 37f39d2 (fix: Training agent changes)
 
     logger.info(
         "[%s] Starting full pipeline for Group %d, Lecture #%d (%s)",
         trace, group_number, lecture_number, video_path.name,
     )
 
-    # Check for existing transcript (resume support)
+    # Check for existing transcript (resume support) with validation
     transcript_path = TMP_DIR / f"g{group_number}_l{lecture_number}_transcript.txt"
     existing_transcript = None
     if transcript_path.exists():
-        candidate = transcript_path.read_text(encoding="utf-8")
+        try:
+            candidate = transcript_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Transcript checkpoint unreadable: %s — will re-transcribe", exc)
+            candidate = ""
+
         if len(candidate.strip()) >= 2000:
             existing_transcript = candidate
             logger.info(
+<<<<<<< HEAD
                 "[%s] Found existing transcript (%d chars) — skipping transcription",
                 trace, len(existing_transcript),
             )
@@ -356,7 +374,20 @@ def transcribe_and_index(
             logger.warning(
                 "[%s] Existing transcript too short (%d chars) — will re-transcribe",
                 trace, len(candidate),
+=======
+                "Found valid transcript checkpoint (%d chars) — skipping transcription",
+                len(existing_transcript),
             )
+        else:
+            logger.warning(
+                "Transcript checkpoint invalid (%d chars stripped) — deleting and re-transcribing",
+                len(candidate.strip()),
+>>>>>>> 37f39d2 (fix: Training agent changes)
+            )
+            try:
+                transcript_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     try:
         if not skip_analysis:
@@ -565,8 +596,19 @@ def transcribe_and_index(
 
     except Exception as e:
         if pipeline:
-            mark_failed(pipeline, str(e))
+            # Re-read from disk in case transitions happened since we loaded
+            current = load_state(group_number, lecture_number)
+            if current is not None and current.state not in _TERMINAL_STATES:
+                mark_failed(current, str(e))
         raise
+    finally:
+        stop_heartbeat(group_number, lecture_number)
+        # Safety net: if pipeline exited without reaching terminal state,
+        # mark as FAILED to prevent it from being stuck forever.
+        if pipeline is not None:
+            current = load_state(group_number, lecture_number)
+            if current is not None and current.state not in _TERMINAL_STATES:
+                mark_failed(current, "Pipeline exited without completion")
 
 
 if __name__ == "__main__":
