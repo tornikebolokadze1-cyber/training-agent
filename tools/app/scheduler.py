@@ -765,10 +765,14 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
         meeting_id,
     )
 
+    # Use the dedicated pipeline executor to avoid starving the default
+    # thread pool (which is shared with recording polling sleeps).
+    from tools.app.orchestrator import PIPELINE_EXECUTOR
+
     loop = asyncio.get_running_loop()
     await asyncio.wait_for(
         loop.run_in_executor(
-            None,
+            PIPELINE_EXECUTOR,
             _run_post_meeting_pipeline,
             group_number,
             lecture_number,

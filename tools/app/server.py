@@ -238,12 +238,15 @@ async def _check_unprocessed_recordings() -> None:
             group_number, lecture_number, poll_id,
         )
 
-        # Run in background thread (non-blocking)
+        # Run in background thread (non-blocking) using dedicated pipeline executor
         # Startup recovery — skip 15-min initial delay since recording is already on Zoom
         from functools import partial
+
+        from tools.app.orchestrator import PIPELINE_EXECUTOR
+
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
-            None,
+            PIPELINE_EXECUTOR,
             partial(_run_post_meeting_pipeline, skip_initial_delay=True),
             group_number,
             lecture_number,

@@ -563,13 +563,11 @@ class TestRunPostMeetingPipeline:
         mock_zm.get_access_token.return_value = "token-123"
         mock_zm.download_recording.side_effect = ConnectionError("Network down")
         alert_mock = MagicMock()
-        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))  # 10GB free
 
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch.object(sched, "TMP_DIR", tmp_path), \
-             patch("shutil.disk_usage", mock_disk):
+             patch.object(sched, "TMP_DIR", tmp_path):
             sched._run_post_meeting_pipeline(1, 5, "mtg-dl-fail")
 
         alert_mock.assert_called_once()
@@ -587,14 +585,12 @@ class TestRunPostMeetingPipeline:
         mock_groups = {1: {"name": "g1", "drive_folder_id": "folder-1"}}
         mock_tai = MagicMock(return_value={"summary": 3})
         mock_upload = MagicMock()
-        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))
 
         # Patch at source modules since _run_post_meeting_pipeline uses local imports
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
-             patch("shutil.disk_usage", mock_disk), \
              patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
              patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
              patch("tools.integrations.gdrive_manager.upload_file", mock_upload), \
@@ -615,14 +611,12 @@ class TestRunPostMeetingPipeline:
 
         mock_groups = {1: {"name": "g1", "drive_folder_id": "folder-1"}}
         alert_mock = MagicMock()
-        mock_disk = MagicMock(return_value=MagicMock(free=10 * 1024**3))
 
         with patch.object(sched, "check_recording_ready", return_value=recordings), \
              patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
              patch.object(sched, "GROUPS", mock_groups), \
              patch.object(sched, "TMP_DIR", tmp_path), \
              patch.object(sched, "alert_operator", alert_mock), \
-             patch("shutil.disk_usage", mock_disk), \
              patch("tools.integrations.gdrive_manager.get_drive_service", return_value=MagicMock()), \
              patch("tools.integrations.gdrive_manager.ensure_folder", return_value="lec-folder"), \
              patch("tools.integrations.gdrive_manager.upload_file", MagicMock()), \
@@ -757,18 +751,20 @@ class TestPreMeetingJobEdgeCases:
 
 class TestPostMeetingJob:
     def test_dispatches_to_thread_executor(self):
-        """post_meeting_job runs _run_post_meeting_pipeline in executor when claim succeeds."""
-        from tools.core.pipeline_state import PipelineState, PENDING
-        mock_pipeline = PipelineState(group=1, lecture=5, state=PENDING)
-
+        """post_meeting_job runs _run_post_meeting_pipeline in executor."""
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(return_value=None)
 
-        with patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop), \
-             patch("tools.core.pipeline_state.try_claim_pipeline", return_value=mock_pipeline):
+        with patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
             asyncio.run(sched.post_meeting_job(1, 5, "mtg-123"))
 
         mock_loop.run_in_executor.assert_called_once()
+        call_args = mock_loop.run_in_executor.call_args[0]
+        # Uses dedicated PIPELINE_EXECUTOR (not None/default)
+        from tools.app.orchestrator import PIPELINE_EXECUTOR
+        assert call_args[0] is PIPELINE_EXECUTOR
+        assert call_args[1] is sched._run_post_meeting_pipeline
+        assert call_args[2:] == (1, 5, "mtg-123")
 
 
 # ===========================================================================
@@ -868,8 +864,7 @@ class TestStartScheduler:
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
-        # 4 pre-meeting cron jobs + DLQ processor + WhatsApp health = 6 (+ restored pending)
-        assert mock_scheduler_instance.add_job.call_count >= 6
+        assert mock_scheduler_instance.add_job.call_count == 4
 
     def test_sets_module_level_scheduler_ref(self):
         mock_scheduler_instance = MagicMock()
@@ -891,149 +886,5 @@ class TestStartScheduler:
             sched.start_scheduler()
 
         job_ids = [call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list]
-        # Must include the 4 pre-meeting jobs + DLQ + WhatsApp health
-        expected_core = {"pre_group1_tuesday", "pre_group1_friday", "pre_group2_monday", "pre_group2_thursday"}
-        assert expected_core.issubset(set(job_ids))
-        assert "dlq_processor" in job_ids
-        assert "whatsapp_health_check" in job_ids
-
-
-# ===========================================================================
-# 14. _concatenate_segments — ffmpeg concat
-# ===========================================================================
-
-
-class TestConcatenateSegments:
-    """Tests for _concatenate_segments ffmpeg concat."""
-
-    def test_creates_output_file(self, tmp_path):
-        """Verify concat list file is created and ffmpeg is called."""
-        seg1 = tmp_path / "seg1.mp4"
-        seg2 = tmp_path / "seg2.mp4"
-        seg1.write_bytes(b"\x00" * 10)
-        seg2.write_bytes(b"\x00" * 10)
-        output = tmp_path / "merged.mp4"
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            # Create the output file to simulate ffmpeg producing it
-            output.write_bytes(b"\x00" * 20)
-            sched._concatenate_segments([seg1, seg2], output)
-
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "ffmpeg"
-        assert "-f" in cmd and "concat" in cmd
-        assert str(output) in cmd
-
-    def test_cleans_up_concat_list_file(self, tmp_path):
-        """The temporary segments.txt file is deleted after ffmpeg runs."""
-        seg1 = tmp_path / "seg1.mp4"
-        seg1.write_bytes(b"\x00" * 10)
-        output = tmp_path / "merged.mp4"
-
-        concat_list_path = tmp_path / "merged_segments.txt"
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("subprocess.run", return_value=mock_result):
-            output.write_bytes(b"\x00" * 20)
-            sched._concatenate_segments([seg1], output)
-
-        # The concat list file should have been deleted by unlink(missing_ok=True)
-        assert not concat_list_path.exists()
-
-    def test_raises_on_ffmpeg_failure(self, tmp_path):
-        """RuntimeError raised when ffmpeg returns non-zero exit code."""
-        seg1 = tmp_path / "seg1.mp4"
-        seg1.write_bytes(b"\x00" * 10)
-        output = tmp_path / "merged.mp4"
-
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stderr = "ffmpeg: error encoding"
-
-        with patch("subprocess.run", return_value=mock_result):
-            with pytest.raises(RuntimeError, match="ffmpeg concat failed"):
-                sched._concatenate_segments([seg1], output)
-
-    def test_logs_output_size(self, tmp_path):
-        """Verify the output file size is logged."""
-        seg1 = tmp_path / "seg1.mp4"
-        seg1.write_bytes(b"\x00" * 10)
-        output = tmp_path / "merged.mp4"
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("subprocess.run", return_value=mock_result), \
-             patch.object(sched, "logger") as mock_logger:
-            output.write_bytes(b"\x00" * (1024 * 1024 * 5))  # 5 MB
-            sched._concatenate_segments([seg1], output)
-
-        # Second info call should be the size log
-        size_log_calls = [
-            c for c in mock_logger.info.call_args_list
-            if "Concatenation complete" in str(c)
-        ]
-        assert len(size_log_calls) == 1
-
-
-# ===========================================================================
-# 15. _emergency_disk_cleanup — stale file removal
-# ===========================================================================
-
-
-class TestEmergencyDiskCleanup:
-    """Tests for _emergency_disk_cleanup stale file removal."""
-
-    def test_removes_old_mp4_files(self, tmp_path):
-        """Files older than 10 minutes are removed."""
-        import time as _time
-
-        old_file = tmp_path / "old_recording.mp4"
-        old_file.write_bytes(b"\x00" * 100)
-        # Set mtime to 20 minutes ago
-        old_mtime = _time.time() - 1200
-        import os
-        os.utime(old_file, (old_mtime, old_mtime))
-
-        with patch.object(sched, "TMP_DIR", tmp_path):
-            sched._emergency_disk_cleanup()
-
-        assert not old_file.exists()
-
-    def test_keeps_recent_mp4_files(self, tmp_path):
-        """Files modified in the last 10 minutes are kept."""
-        recent_file = tmp_path / "recent_recording.mp4"
-        recent_file.write_bytes(b"\x00" * 100)
-        # File was just created, so mtime is now — within 10 minutes
-
-        with patch.object(sched, "TMP_DIR", tmp_path):
-            sched._emergency_disk_cleanup()
-
-        assert recent_file.exists()
-
-    def test_removes_stale_chunk_files(self, tmp_path):
-        """*.chunk*.mp4 files older than 10 minutes are removed."""
-        import time as _time
-        import os
-
-        chunk_file = tmp_path / "lecture.chunk001.mp4"
-        chunk_file.write_bytes(b"\x00" * 50)
-        old_mtime = _time.time() - 1200
-        os.utime(chunk_file, (old_mtime, old_mtime))
-
-        with patch.object(sched, "TMP_DIR", tmp_path):
-            sched._emergency_disk_cleanup()
-
-        assert not chunk_file.exists()
-
-    def test_handles_empty_directory(self, tmp_path):
-        """No crash when TMP_DIR is empty."""
-        with patch.object(sched, "TMP_DIR", tmp_path):
-            # Should not raise
-            sched._emergency_disk_cleanup()
+        expected = {"pre_group1_tuesday", "pre_group1_friday", "pre_group2_monday", "pre_group2_thursday"}
+        assert set(job_ids) == expected

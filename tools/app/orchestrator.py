@@ -11,6 +11,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import logging.handlers
 import signal
@@ -92,6 +93,132 @@ def validate_credentials() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dedicated thread pool for pipeline work
+# ---------------------------------------------------------------------------
+# The default asyncio thread pool is shared with recording polling (which does
+# long time.sleep calls). A dedicated executor prevents pipeline work from
+# being starved when all default threads are blocked on polling sleeps.
+
+PIPELINE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=3,
+    thread_name_prefix="pipeline",
+)
+
+
+# ---------------------------------------------------------------------------
+# DLQ handler registration and retry logic
+# ---------------------------------------------------------------------------
+
+
+def _register_dlq_handlers() -> None:
+    """Register retry handlers for all DLQ operation types.
+
+    Called once at startup. Each handler receives the payload dict from the
+    DLQ entry and calls the real integration function. Exceptions propagate
+    to the DLQ processor so it can track retry counts.
+    """
+    from tools.core.dlq import register_handler
+
+    register_handler("drive_summary", _retry_drive_summary)
+    register_handler("whatsapp_group", _retry_whatsapp_group)
+    register_handler("pinecone_index", _retry_pinecone)
+    logger.info("DLQ handlers registered: drive_summary, whatsapp_group, pinecone_index")
+
+
+def _retry_drive_summary(payload: dict[str, Any]) -> None:
+    """Retry uploading a lecture summary to Google Drive.
+
+    Expected payload keys:
+        title: str — Google Doc title
+        content: str — summary text content
+        folder_id: str — Drive folder ID to create the doc in
+        group: int — group number (for logging)
+        lecture: int — lecture number (for logging)
+    """
+    from tools.integrations.gdrive_manager import create_google_doc
+
+    title = payload["title"]
+    content = payload["content"]
+    folder_id = payload["folder_id"]
+    group = payload.get("group", "?")
+    lecture = payload.get("lecture", "?")
+
+    logger.info(
+        "DLQ retry: Drive summary upload for G%s L%s — title=%r",
+        group, lecture, title,
+    )
+    doc_id = create_google_doc(title, content, folder_id)
+    logger.info(
+        "DLQ retry SUCCESS: Drive summary uploaded — doc_id=%s (G%s L%s)",
+        doc_id, group, lecture,
+    )
+
+
+def _retry_whatsapp_group(payload: dict[str, Any]) -> None:
+    """Retry sending a WhatsApp group notification.
+
+    Expected payload keys:
+        group_number: int
+        lecture_number: int
+        drive_recording_url: str
+        summary_doc_url: str
+    """
+    from tools.integrations.whatsapp_sender import send_group_upload_notification
+
+    group_number = payload["group_number"]
+    lecture_number = payload["lecture_number"]
+    drive_recording_url = payload["drive_recording_url"]
+    summary_doc_url = payload["summary_doc_url"]
+
+    logger.info(
+        "DLQ retry: WhatsApp group notification for G%d L%d",
+        group_number, lecture_number,
+    )
+    send_group_upload_notification(
+        group_number=group_number,
+        lecture_number=lecture_number,
+        drive_recording_url=drive_recording_url,
+        summary_doc_url=summary_doc_url,
+    )
+    logger.info(
+        "DLQ retry SUCCESS: WhatsApp group notification sent (G%d L%d)",
+        group_number, lecture_number,
+    )
+
+
+def _retry_pinecone(payload: dict[str, Any]) -> None:
+    """Retry indexing lecture content in Pinecone.
+
+    Expected payload keys:
+        group_number: int
+        lecture_number: int
+        content: str — text content to index
+        content_type: str — e.g. "summary", "transcript", "report"
+    """
+    from tools.integrations.knowledge_indexer import index_lecture_content
+
+    group_number = payload["group_number"]
+    lecture_number = payload["lecture_number"]
+    content = payload["content"]
+    content_type = payload["content_type"]
+
+    logger.info(
+        "DLQ retry: Pinecone indexing for G%d L%d (%s, %d chars)",
+        group_number, lecture_number, content_type, len(content),
+    )
+    count = index_lecture_content(
+        group_number=group_number,
+        lecture_number=lecture_number,
+        content=content,
+        content_type=content_type,
+    )
+    logger.info(
+        "DLQ retry SUCCESS: Pinecone indexed %d vectors (G%d L%d, %s)",
+        count, group_number, lecture_number, content_type,
+    )
+
+
+# ---------------------------------------------------------------------------
 # /status endpoint — mounted on the imported FastAPI app
 # ---------------------------------------------------------------------------
 
@@ -157,37 +284,6 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
     last_results: list[dict[str, Any]] = getattr(app.state, "last_execution_results", [])
     state["last_execution_results"] = last_results
 
-    # --- whatsapp ---
-    from tools.integrations.whatsapp_sender import check_whatsapp_health
-    state["whatsapp"] = check_whatsapp_health()
-
-    # --- DLQ (dead-letter queue) ---
-    try:
-        from tools.core.dlq import get_queue_status
-        state["dlq"] = get_queue_status()
-    except ImportError:
-        state["dlq"] = {"pending": 0, "permanently_failed": 0}
-
-    # --- Active pipelines from server's in-memory tracker ---
-    try:
-        from tools.app.server import _processing_tasks, _processing_lock, _task_key
-        from tools.core.config import TBILISI_TZ
-        from datetime import datetime as _dt
-        active_tasks = []
-        with _processing_lock:
-            for key, started in _processing_tasks.items():
-                elapsed = (_dt.now(TBILISI_TZ) - started).total_seconds()
-                active_tasks.append({
-                    "key": key,
-                    "started": started.isoformat(),
-                    "elapsed_minutes": round(elapsed / 60, 1),
-                })
-        state["active_pipelines"] = active_tasks
-        state["active_pipeline_count"] = len(active_tasks)
-    except (ImportError, Exception) as exc:
-        state["active_pipelines"] = []
-        state["active_pipeline_count"] = 0
-
     # --- server meta ---
     state["server"] = {
         "host": SERVER_HOST,
@@ -219,86 +315,30 @@ async def _on_startup() -> None:
 
 
 def _cleanup_stale_tmp_files() -> None:
-    """Remove pipeline temp files from .tmp/ on startup.
+    """Remove .mp4 files older than 6 hours from .tmp/ on startup.
 
-    Cleans up leftover files from crashed or restarted pipelines to free disk.
-    Short-lived files (recordings, chunks, concat lists) use a 2-hour threshold.
-    Checkpoint files (transcripts, analysis JSON) use a 24-hour threshold.
+    Prevents disk accumulation when Railway restarts mid-pipeline.
     """
     import time
 
     from tools.core.config import TMP_DIR
 
-    cutoff_2h = time.time() - 2 * 3600
-    cutoff_24h = time.time() - 24 * 3600
+    stale_hours = 6
+    cutoff = time.time() - stale_hours * 3600
     cleaned = 0
-    freed_bytes = 0
 
-    # Short-lived pipeline artifacts: 2-hour threshold
-    for pattern in ("*.mp4", "*.chunk*.mp4", "*_segments.txt"):
+    for pattern in ("*.mp4", "*.chunk*.mp4"):
         for f in TMP_DIR.glob(pattern):
             try:
-                st = f.stat()
-                if st.st_mtime < cutoff_2h:
-                    freed_bytes += st.st_size
+                if f.stat().st_mtime < cutoff:
                     f.unlink()
                     cleaned += 1
-                    logger.debug("Cleaned stale temp file: %s", f.name)
+                    logger.info("Cleaned stale temp file: %s", f.name)
             except OSError as e:
                 logger.warning("Failed to clean %s: %s", f.name, e)
 
-    # Checkpoint / intermediate files: 24-hour threshold
-    for pattern in ("*_transcript.txt", "*_claude_analysis.json"):
-        for f in TMP_DIR.glob(pattern):
-            try:
-                st = f.stat()
-                if st.st_mtime < cutoff_24h:
-                    freed_bytes += st.st_size
-                    f.unlink()
-                    cleaned += 1
-                    logger.debug("Cleaned stale checkpoint file: %s", f.name)
-            except OSError as e:
-                logger.warning("Failed to clean %s: %s", f.name, e)
-
-    freed_mb = freed_bytes / (1024 * 1024)
     if cleaned:
-        logger.info("Startup cleanup: removed %d files, freed %.1f MB", cleaned, freed_mb)
-    else:
-        logger.info("Startup cleanup: no stale temp files found")
-
-
-# ---------------------------------------------------------------------------
-# DLQ handler registration
-# ---------------------------------------------------------------------------
-
-
-def _register_dlq_handlers() -> None:
-    """Register retry handlers for Dead Letter Queue operations."""
-    try:
-        from tools.core.dlq import register_handler
-        from tools.integrations.gdrive_manager import create_google_doc, ensure_folder, get_drive_service
-        from tools.integrations.whatsapp_sender import send_group_upload_notification, send_private_report
-        from tools.integrations.knowledge_indexer import index_lecture_content
-
-        def _retry_drive_summary(payload: dict) -> None:
-            logger.info("DLQ retry: Drive summary upload — %s", payload.get("operation"))
-
-        def _retry_drive_report(payload: dict) -> None:
-            logger.info("DLQ retry: Drive private report — %s", payload.get("operation"))
-
-        def _retry_whatsapp_group(payload: dict) -> None:
-            logger.info("DLQ retry: WhatsApp group notification — %s", payload.get("operation"))
-
-        def _retry_pinecone(payload: dict) -> None:
-            logger.info("DLQ retry: Pinecone indexing — %s", payload.get("operation"))
-
-        register_handler("drive_summary_upload", _retry_drive_summary)
-        register_handler("drive_private_report_upload", _retry_drive_report)
-        register_handler("whatsapp_group_notify", _retry_whatsapp_group)
-        register_handler("pinecone_indexing", _retry_pinecone)
-        logger.info("DLQ handlers registered: 4 operations")
-    except Exception as exc:
-        logger.error("DLQ handler registration FAILED: %s", exc, exc_info=True)
+        logger.info("Startup cleanup: removed %d stale temp file(s)", cleaned)
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +351,17 @@ async def _async_start() -> None:
     Shutdown is triggered by SIGINT/SIGTERM — both components are shut down
     gracefully before the process exits.
     """
-    # ---- Disk cleanup (before scheduler, so pipelines start with free disk) --
-    _cleanup_stale_tmp_files()
-
-    # ---- DLQ handler registration -------------------------------------------
+    # ---- DLQ handlers -------------------------------------------------------
     _register_dlq_handlers()
+
+    # ---- Cleanup stale PENDING pipelines from prior crash/restart ----------
+    from tools.core.pipeline_state import cleanup_stale_pending
+
+    stale_count = cleanup_stale_pending()
+    if stale_count:
+        logger.info(
+            "Startup: marked %d stale PENDING pipeline(s) as FAILED.", stale_count
+        )
 
     # ---- APScheduler --------------------------------------------------------
     from tools.app.scheduler import (
@@ -382,11 +428,6 @@ def start() -> None:
     logger.info("=" * 60)
     logger.info("Training Agent — starting up")
     logger.info("=" * 60)
-
-    # Validate critical config (env vars, API keys) — was previously run at
-    # config import time, now explicit to avoid polluting test imports.
-    from tools.core.config import validate_critical_config
-    validate_critical_config()
 
     try:
         validate_credentials()
