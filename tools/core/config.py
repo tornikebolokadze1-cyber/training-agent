@@ -359,6 +359,15 @@ ASSISTANT_COOLDOWN_SECONDS = 300  # 5 min between passive responses
 ASSISTANT_CLAUDE_MODEL = "claude-sonnet-4-6"  # Was opus — Sonnet saves ~$150/course with minimal quality loss
 GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
 
+# Pinecone relevance score thresholds (cosine similarity).
+# Georgian text similarity scores are naturally lower than English.
+PINECONE_SCORE_THRESHOLD_DIRECT = float(
+    _env("PINECONE_SCORE_THRESHOLD_DIRECT", "0.3")
+)
+PINECONE_SCORE_THRESHOLD_PASSIVE = float(
+    _env("PINECONE_SCORE_THRESHOLD_PASSIVE", "0.4")
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
