@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -79,6 +80,7 @@ def _is_quota_error(error: Exception) -> bool:
     return any(indicator in error_str for indicator in quota_indicators)
 
 
+_cache_lock = threading.Lock()
 _client_cache: dict[str, genai.Client] = {}  # keyed by API key
 
 _anthropic_client_cache: anthropic.Anthropic | None = None
@@ -87,11 +89,12 @@ _anthropic_client_cache: anthropic.Anthropic | None = None
 def _get_anthropic_client() -> anthropic.Anthropic:
     """Return a cached Anthropic client (avoids creating fresh clients per call)."""
     global _anthropic_client_cache
-    if _anthropic_client_cache is None:
-        if not ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
-        _anthropic_client_cache = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _anthropic_client_cache
+    with _cache_lock:
+        if _anthropic_client_cache is None:
+            if not ANTHROPIC_API_KEY:
+                raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
+            _anthropic_client_cache = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        return _anthropic_client_cache
 
 
 def _get_client(use_free: bool = False) -> genai.Client:
@@ -100,31 +103,32 @@ def _get_client(use_free: bool = False) -> genai.Client:
     Primary: paid key (billing-enabled, higher limits).
     Fallback: free key (if paid key fails or is not configured).
     """
-    if use_free:
-        if not GEMINI_API_KEY:
-            raise RuntimeError("Free Gemini API key not configured — set GEMINI_API_KEY in .env")
-        key = GEMINI_API_KEY
+    with _cache_lock:
+        if use_free:
+            if not GEMINI_API_KEY:
+                raise RuntimeError("Free Gemini API key not configured — set GEMINI_API_KEY in .env")
+            key = GEMINI_API_KEY
+            if key not in _client_cache:
+                logger.info("Using FREE Gemini API key (fallback)")
+                _client_cache[key] = genai.Client(api_key=key)
+            return _client_cache[key]
+
+        if not GEMINI_API_KEY_PAID:
+            if not GEMINI_API_KEY:
+                raise RuntimeError(
+                    "No Gemini API key configured — set GEMINI_API_KEY or "
+                    "GEMINI_API_KEY_PAID in .env"
+                )
+            key = GEMINI_API_KEY
+            if key not in _client_cache:
+                logger.warning("Paid key not configured — falling back to free key")
+                _client_cache[key] = genai.Client(api_key=key)
+            return _client_cache[key]
+
+        key = GEMINI_API_KEY_PAID
         if key not in _client_cache:
-            logger.info("Using FREE Gemini API key (fallback)")
             _client_cache[key] = genai.Client(api_key=key)
         return _client_cache[key]
-
-    if not GEMINI_API_KEY_PAID:
-        if not GEMINI_API_KEY:
-            raise RuntimeError(
-                "No Gemini API key configured — set GEMINI_API_KEY or "
-                "GEMINI_API_KEY_PAID in .env"
-            )
-        key = GEMINI_API_KEY
-        if key not in _client_cache:
-            logger.warning("Paid key not configured — falling back to free key")
-            _client_cache[key] = genai.Client(api_key=key)
-        return _client_cache[key]
-
-    key = GEMINI_API_KEY_PAID
-    if key not in _client_cache:
-        _client_cache[key] = genai.Client(api_key=key)
-    return _client_cache[key]
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +162,9 @@ def _validate_media_path(video_path: Path) -> Path:
     """
     resolved = video_path.resolve()
     tmp_resolved = TMP_DIR.resolve()
-    if not str(resolved).startswith(str(tmp_resolved)):
+    try:
+        resolved.relative_to(tmp_resolved)
+    except ValueError:
         raise ValueError(
             f"Media path outside TMP_DIR rejected: {resolved} "
             f"(expected prefix: {tmp_resolved})"
@@ -367,6 +373,7 @@ def _generate_with_retry(
     purpose: str,
     max_output_tokens: int = 8192,
     use_free: bool = False,
+    disable_thinking: bool = False,
 ) -> str:
     """Call generate_content with retry logic and free-tier fallback.
 
@@ -388,6 +395,8 @@ def _generate_with_retry(
                 config=types.GenerateContentConfig(
                     temperature=0.3,
                     max_output_tokens=max_output_tokens,
+                    **({"thinking_config": types.ThinkingConfig(thinking_budget=0)}
+                       if disable_thinking else {}),
                 ),
             )
             try:
@@ -529,6 +538,7 @@ def transcribe_video(file_ref: object, use_free: bool = False,
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
         max_output_tokens=65536,
         use_free=use_free,
+        disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
     )
 
 
@@ -640,14 +650,24 @@ def transcribe_chunked_video(
                 pct, i + 1, total_chunks, len(transcript),
             )
 
-            # Cost budget check (warn operator if exceeding budget)
+            # Cost budget check — halt pipeline if exceeding budget
             # This is approximate — full precision is in the Gemini logs
             chunk_count = len(transcripts)
             estimated_cost = chunk_count * 1.5  # ~$1.50 per chunk on Flash
             if estimated_cost > MAX_COST_PER_LECTURE:
-                logger.warning(
-                    "Cost estimate ($%.2f) exceeds budget ($%.2f) after %d/%d chunks",
-                    estimated_cost, MAX_COST_PER_LECTURE, chunk_count, total_chunks,
+                full_transcript = "\n\n".join(transcripts)
+                logger.error(
+                    "Cost budget EXCEEDED: $%.2f > $%.2f limit for this lecture. "
+                    "Stopping to prevent runaway spend. Partial transcript saved.",
+                    estimated_cost, MAX_COST_PER_LECTURE,
+                )
+                # Save partial transcript before aborting
+                if full_transcript:
+                    partial_path = TMP_DIR / f"{Path(video_path).stem}_partial_transcript.txt"
+                    partial_path.write_text(full_transcript, encoding="utf-8")
+                    logger.info("Partial transcript saved to %s", partial_path)
+                raise RuntimeError(
+                    f"Gemini cost budget exceeded: ${estimated_cost:.2f} > ${MAX_COST_PER_LECTURE:.2f}"
                 )
 
             # Clean up Gemini file immediately (success path)

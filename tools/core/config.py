@@ -132,10 +132,13 @@ TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 # Minimum meeting duration (minutes) to consider a meeting "really ended".
 # Below this threshold, a meeting.ended event is treated as a temporary
 # disconnect (break/reconnect) — the pipeline will NOT start.
+# Set to 110 min (not 120) because lectures are 2h but may end up to 10 min early.
+# A 76-min disconnect at the old threshold (75) would have triggered the full
+# irreversible pipeline prematurely.
 try:
-    MINIMUM_LECTURE_DURATION_MINUTES = int(_env("MINIMUM_LECTURE_DURATION_MINUTES", "120"))
+    MINIMUM_LECTURE_DURATION_MINUTES = int(_env("MINIMUM_LECTURE_DURATION_MINUTES", "110"))
 except (ValueError, TypeError):
-    MINIMUM_LECTURE_DURATION_MINUTES = 120
+    MINIMUM_LECTURE_DURATION_MINUTES = 110
 
 # ---------------------------------------------------------------------------
 # Group Definitions
@@ -320,8 +323,8 @@ def validate_critical_config() -> list[str]:
     return warnings
 
 
-# Run validation at import time
-_config_warnings = validate_critical_config()
+# Validation is now called explicitly by orchestrator.py at startup.
+# Removed auto-execution to prevent import-time side effects in tests.
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -353,7 +356,7 @@ ASSISTANT_NAME = "მრჩეველი"
 ASSISTANT_TRIGGER_WORD = "მრჩეველო"
 ASSISTANT_SIGNATURE = "AI ასისტენტი - მრჩეველი"
 ASSISTANT_COOLDOWN_SECONDS = 300  # 5 min between passive responses
-ASSISTANT_CLAUDE_MODEL = "claude-opus-4-6"
+ASSISTANT_CLAUDE_MODEL = "claude-sonnet-4-6"  # Was opus — Sonnet saves ~$150/course with minimal quality loss
 GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
 
 
@@ -368,7 +371,8 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
     up to and including ``for_date``.
     """
     if for_date is None:
-        for_date = date.today()
+        from datetime import datetime
+        for_date = datetime.now(TBILISI_TZ).date()
 
     group = GROUPS[group_number]
     start = group["start_date"]

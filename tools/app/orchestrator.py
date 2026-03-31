@@ -297,8 +297,8 @@ def _register_dlq_handlers() -> None:
         register_handler("whatsapp_group_notify", _retry_whatsapp_group)
         register_handler("pinecone_indexing", _retry_pinecone)
         logger.info("DLQ handlers registered: 4 operations")
-    except ImportError as exc:
-        logger.warning("DLQ handler registration skipped: %s", exc)
+    except Exception as exc:
+        logger.error("DLQ handler registration FAILED: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +382,11 @@ def start() -> None:
     logger.info("=" * 60)
     logger.info("Training Agent — starting up")
     logger.info("=" * 60)
+
+    # Validate critical config (env vars, API keys) — was previously run at
+    # config import time, now explicit to avoid polluting test imports.
+    from tools.core.config import validate_critical_config
+    validate_critical_config()
 
     try:
         validate_credentials()

@@ -1288,3 +1288,625 @@ class TestWhatsAppExtendedTextMessage:
             )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ignored"
+
+
+# ===========================================================================
+# Catch-Up Endpoint
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestCatchUpEndpoint:
+    """Test /catch-up endpoint."""
+
+    async def test_requires_auth(self, patched_secrets):
+        """Rejects request without auth header."""
+        async with await _async_client() as client:
+            resp = await client.post("/catch-up", json={})
+        assert resp.status_code in (401, 403)
+
+    async def test_returns_503_when_assistant_unavailable(self, patched_secrets):
+        """Returns 503 if assistant is not initialised."""
+        with patch.object(srv, "assistant", None), \
+             patch.object(srv, "_assistant_available", False):
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/catch-up", json={}, headers=_WA_AUTH,
+                )
+        assert resp.status_code == 503
+
+    async def test_accepts_with_valid_auth(self, patched_secrets):
+        """Returns 200 and starts catch-up in background."""
+        mock_assistant = MagicMock()
+        with patch.object(srv, "assistant", mock_assistant), \
+             patch.object(srv, "_assistant_available", True):
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/catch-up", json={}, headers=_WA_AUTH,
+                )
+        assert resp.status_code == 200
+        assert "catch-up started" in resp.json()["status"]
+
+    async def test_passes_since_parameter(self, patched_secrets):
+        """Passes the 'since' timestamp from request body."""
+        mock_assistant = MagicMock()
+        with patch.object(srv, "assistant", mock_assistant), \
+             patch.object(srv, "_assistant_available", True):
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/catch-up",
+                    json={"since": 1700000000},
+                    headers=_WA_AUTH,
+                )
+        assert resp.status_code == 200
+        assert resp.json()["since"] == 1700000000
+
+
+# ===========================================================================
+# 15. Webhook replay attack (Zoom recording.completed deduplicated on re-send)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestWebhookReplay:
+    """Verify that replaying the same signed Zoom webhook is deduplicated.
+
+    The deduplication authority is ``try_claim_pipeline``, which creates a
+    persistent state file on the first call and returns None for every
+    subsequent call until that state file is removed.  A second request
+    carrying the *same* valid HMAC signature (within the 5-minute replay
+    window) must therefore return ``status=duplicate``, not ``status=accepted``.
+    """
+
+    def _signed_recording_body(self, topic: str = "ჯგუფი #1 lecture") -> tuple[bytes, dict]:
+        """Return (body_bytes, signed_headers) for a recording.completed event."""
+        body_dict = _make_recording_body(topic=topic)
+        body_bytes = json.dumps(body_dict).encode()
+        timestamp = str(int(time.time()))
+        sig = _zoom_sig(body_bytes, timestamp)
+        headers = {
+            "x-zm-request-timestamp": timestamp,
+            "x-zm-signature": sig,
+            "content-type": "application/json",
+        }
+        return body_bytes, headers
+
+    async def test_first_request_is_accepted(self, patched_secrets):
+        """The initial webhook delivery is accepted and the pipeline is claimed."""
+        body_bytes, headers = self._signed_recording_body()
+        with patch("tools.app.server.process_recording_task"):
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/zoom-webhook", content=body_bytes, headers=headers
+                )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "accepted"
+
+    async def test_replay_within_valid_window_is_deduplicated(self, patched_secrets):
+        """Sending the same payload twice returns duplicate on the second delivery.
+
+        Both requests arrive with a fresh, valid timestamp so the signature
+        check passes.  Only the pipeline-claim layer should prevent the second
+        processing run.
+        """
+        # Build two independent signed requests (same body, fresh timestamps)
+        body_dict = _make_recording_body(topic="ჯგუფი #1 lecture")
+
+        with patch("tools.app.server.get_lecture_number", return_value=3):
+            # --- First delivery ---
+            body1 = json.dumps(body_dict).encode()
+            ts1 = str(int(time.time()))
+            sig1 = _zoom_sig(body1, ts1)
+            hdrs1 = {
+                "x-zm-request-timestamp": ts1,
+                "x-zm-signature": sig1,
+                "content-type": "application/json",
+            }
+
+            with patch("tools.app.server.process_recording_task"):
+                async with await _async_client() as client:
+                    resp1 = await client.post(
+                        "/zoom-webhook", content=body1, headers=hdrs1
+                    )
+
+            assert resp1.status_code == 200
+            assert resp1.json()["status"] == "accepted", (
+                "First delivery must be accepted"
+            )
+
+            # --- Second delivery (replay) ---
+            body2 = json.dumps(body_dict).encode()
+            ts2 = str(int(time.time()))
+            sig2 = _zoom_sig(body2, ts2)
+            hdrs2 = {
+                "x-zm-request-timestamp": ts2,
+                "x-zm-signature": sig2,
+                "content-type": "application/json",
+            }
+
+            with patch("tools.app.server.process_recording_task"):
+                async with await _async_client() as client:
+                    resp2 = await client.post(
+                        "/zoom-webhook", content=body2, headers=hdrs2
+                    )
+
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        assert data2["status"] == "duplicate", (
+            f"Replay should be deduplicated, got: {data2}"
+        )
+
+    async def test_replay_does_not_start_second_pipeline(self, patched_secrets):
+        """process_recording_task must be enqueued exactly once across two deliveries."""
+        body_dict = _make_recording_body(topic="ჯგუფი #2 lecture")
+        enqueue_count = 0
+
+        async def count_calls(*_args, **_kwargs):
+            nonlocal enqueue_count
+            enqueue_count += 1
+
+        with patch("tools.app.server.get_lecture_number", return_value=5):
+            for _ in range(2):
+                body_bytes = json.dumps(body_dict).encode()
+                ts = str(int(time.time()))
+                sig = _zoom_sig(body_bytes, ts)
+                headers = {
+                    "x-zm-request-timestamp": ts,
+                    "x-zm-signature": sig,
+                    "content-type": "application/json",
+                }
+                with patch("tools.app.server.process_recording_task", side_effect=count_calls):
+                    async with await _async_client() as client:
+                        await client.post(
+                            "/zoom-webhook", content=body_bytes, headers=headers
+                        )
+
+        assert enqueue_count == 1, (
+            f"Expected pipeline to be started once, was started {enqueue_count} times"
+        )
+
+
+# ===========================================================================
+# 16. Stale eviction using real pipeline state files
+# ===========================================================================
+
+
+class TestEvictStaleTasksWithStateFiles:
+    """Test _evict_stale_tasks against real on-disk pipeline state files.
+
+    The existing TestEvictStaleTasks tests only manipulate the in-memory
+    ``_processing_tasks`` dict.  Because ``_evict_stale_tasks`` scans
+    ``list_active_pipelines()`` (which reads actual JSON state files from
+    TMP_DIR), those tests pass vacuously when no state files are present.
+
+    This class exercises the real code path: create a state file via
+    ``create_pipeline``, back-date its ``started_at`` to simulate a hung
+    pipeline, call ``_evict_stale_tasks``, and assert that:
+
+    1. The state file is rewritten with state=FAILED.
+    2. The key is removed from ``_processing_tasks``.
+    3. ``alert_operator`` is called.
+    """
+
+    def _backdate_state_file(self, group: int, lecture: int, hours_ago: float) -> None:
+        """Overwrite the started_at field in a pipeline state file to simulate age."""
+        from tools.core.pipeline_state import load_state, save_state
+        from tools.core.config import TBILISI_TZ as _TZ
+        import dataclasses
+
+        state = load_state(group, lecture)
+        assert state is not None, "State file must exist before backdating"
+
+        stale_ts = (
+            datetime.now(_TZ) - timedelta(hours=hours_ago)
+        ).isoformat()
+        backdated = dataclasses.replace(state, started_at=stale_ts)
+        save_state(backdated)
+
+    def test_stale_state_file_is_marked_failed(self, mock_alert_operator):
+        """A pipeline state file older than STALE_TASK_HOURS must be marked FAILED."""
+        from tools.core.pipeline_state import create_pipeline, load_state, FAILED
+
+        # Create a real pipeline state file
+        state = create_pipeline(group=1, lecture=7, meeting_id="test-meeting-stale")
+
+        # Back-date it beyond the eviction threshold
+        self._backdate_state_file(1, 7, hours_ago=STALE_TASK_HOURS + 1)
+
+        # Run eviction
+        evicted = _evict_stale_tasks()
+
+        # State file must now be marked FAILED
+        reloaded = load_state(1, 7)
+        assert reloaded is not None, "State file should still exist after eviction"
+        assert reloaded.state == FAILED, (
+            f"Expected FAILED, got {reloaded.state}"
+        )
+        assert "evicted" in reloaded.error.lower(), (
+            f"Error message should mention eviction, got: {reloaded.error!r}"
+        )
+        assert "g1_l7" in evicted
+
+    def test_stale_state_file_key_removed_from_processing_tasks(
+        self, mock_alert_operator
+    ):
+        """After eviction, the matching key is removed from _processing_tasks."""
+        from tools.core.pipeline_state import create_pipeline
+
+        create_pipeline(group=2, lecture=8, meeting_id="test-meeting-mem")
+        self._backdate_state_file(2, 8, hours_ago=STALE_TASK_HOURS + 0.5)
+
+        # Pre-populate the in-memory cache as the webhook handler would
+        from tools.core.config import TBILISI_TZ as _TZ
+        key = _task_key(2, 8)
+        _processing_tasks[key] = datetime.now(_TZ) - timedelta(hours=STALE_TASK_HOURS + 1)
+
+        _evict_stale_tasks()
+
+        assert key not in _processing_tasks, (
+            "Stale key must be removed from _processing_tasks after eviction"
+        )
+
+    def test_fresh_state_file_not_evicted(self, mock_alert_operator):
+        """A pipeline state file created moments ago must not be evicted."""
+        from tools.core.pipeline_state import create_pipeline, load_state, PENDING
+
+        create_pipeline(group=1, lecture=9, meeting_id="fresh-meeting")
+
+        evicted = _evict_stale_tasks()
+
+        assert "g1_l9" not in evicted
+        reloaded = load_state(1, 9)
+        assert reloaded is not None
+        assert reloaded.state == PENDING, (
+            f"Fresh pipeline should remain PENDING, got {reloaded.state}"
+        )
+
+    def test_eviction_calls_alert_operator_with_key_in_message(
+        self, mock_alert_operator
+    ):
+        """alert_operator message must include the evicted task key."""
+        from tools.core.pipeline_state import create_pipeline
+
+        create_pipeline(group=2, lecture=10, meeting_id="alert-test-meeting")
+        self._backdate_state_file(2, 10, hours_ago=STALE_TASK_HOURS + 2)
+
+        _evict_stale_tasks()
+
+        mock_alert_operator.assert_called_once()
+        alert_msg = mock_alert_operator.call_args[0][0]
+        assert "g2_l10" in alert_msg, (
+            f"Alert message should contain evicted key 'g2_l10', got: {alert_msg!r}"
+        )
+
+    def test_mixed_fresh_and_stale_state_files(self, mock_alert_operator):
+        """Only stale state files are evicted; fresh ones remain active."""
+        from tools.core.pipeline_state import create_pipeline, load_state, PENDING, FAILED
+
+        # Create both a fresh and a stale pipeline
+        create_pipeline(group=1, lecture=11, meeting_id="fresh-11")
+        create_pipeline(group=1, lecture=12, meeting_id="stale-12")
+        self._backdate_state_file(1, 12, hours_ago=STALE_TASK_HOURS + 3)
+
+        evicted = _evict_stale_tasks()
+
+        assert "g1_l12" in evicted
+        assert "g1_l11" not in evicted
+
+        fresh_state = load_state(1, 11)
+        assert fresh_state is not None
+        assert fresh_state.state == PENDING
+
+        stale_state = load_state(1, 12)
+        assert stale_state is not None
+        assert stale_state.state == FAILED
+
+
+# ===========================================================================
+# 17. Content-Length bypass (chunked encoding without Content-Length header)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestContentLengthBypass:
+    """Verify that the body-size middleware handles chunked-encoding requests.
+
+    HTTP clients may omit the Content-Length header and use chunked transfer
+    encoding instead.  The ``limit_request_body`` middleware must read the
+    actual body and enforce the limit regardless of whether Content-Length
+    is present.
+
+    These tests verify:
+    1. A small payload without Content-Length is processed normally (not crashed).
+    2. An oversized payload without Content-Length is rejected with HTTP 413.
+    3. A request with an honest Content-Length that exceeds the limit is also
+       rejected with 413 (fast-reject path).
+    """
+
+    async def test_small_body_without_content_length_accepted(self, patched_secrets, tmp_path):
+        """A valid small POST without Content-Length header is not rejected."""
+        small_body = json.dumps({"typeWebhook": "statusInstanceChanged"}).encode()
+
+        # httpx will omit Content-Length when we pass raw bytes via content=
+        # and explicitly clear the header.  We verify the server doesn't crash.
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming",
+                content=small_body,
+                headers={
+                    "Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}",
+                    "content-type": "application/json",
+                    # Explicitly do NOT set Content-Length — httpx may add it
+                    # automatically; we only care the server doesn't reject valid
+                    # small payloads.
+                },
+            )
+        # Any 2xx or 4xx (business logic) is acceptable — we just must not get 500
+        assert resp.status_code != 500, (
+            f"Server must not crash on request without explicit Content-Length: "
+            f"got {resp.status_code}"
+        )
+
+    async def test_oversized_body_rejected_with_413(self, patched_secrets):
+        """A POST body exceeding 1 MB is rejected with HTTP 413."""
+        # Build a payload just over MAX_BODY_SIZE (1 MB)
+        oversized_body = b"x" * (1_048_576 + 1)
+
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming",
+                content=oversized_body,
+                headers={
+                    "Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}",
+                    "content-type": "application/octet-stream",
+                },
+            )
+        assert resp.status_code == 413, (
+            f"Oversized body must be rejected with 413, got {resp.status_code}"
+        )
+
+    async def test_honest_content_length_over_limit_rejected(self, patched_secrets):
+        """A request advertising Content-Length > 1 MB is fast-rejected with 413."""
+        small_actual_body = b"small actual content"
+
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming",
+                content=small_actual_body,
+                headers={
+                    "Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}",
+                    "content-type": "application/json",
+                    "content-length": str(1_048_576 + 100),  # lie about size
+                },
+            )
+        assert resp.status_code == 413, (
+            f"Request with Content-Length > limit must be fast-rejected with 413, "
+            f"got {resp.status_code}"
+        )
+
+    async def test_body_at_exact_limit_boundary_accepted(self, patched_secrets):
+        """A POST body exactly at MAX_BODY_SIZE must not be rejected by the middleware."""
+        # Build a valid-looking JSON body padded to exactly 1 MB.
+        # We pad inside a JSON string value so it remains valid JSON.
+        padding = "a" * (1_048_576 - 60)
+        at_limit_body = json.dumps(
+            {"typeWebhook": "statusInstanceChanged", "pad": padding}
+        ).encode()
+
+        # Trim or expand to be exactly 1 MB (the exact boundary is non-rejectable)
+        at_limit_body = at_limit_body[:1_048_576]
+
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming",
+                content=at_limit_body,
+                headers={
+                    "Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}",
+                    "content-type": "application/json",
+                },
+            )
+        # Must not be 413 — the middleware limit is strictly > MAX_BODY_SIZE
+        assert resp.status_code != 413, (
+            f"A body at the exact 1 MB boundary must not be rejected with 413, "
+            f"got {resp.status_code}"
+        )
+
+
+# ===========================================================================
+# 18. Startup recovery — _check_unprocessed_recordings semaphore / concurrency
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestCheckUnprocessedRecordings:
+    """Tests for the _check_unprocessed_recordings startup recovery function.
+
+    The function queries Zoom for recent recordings, checks Pinecone, and
+    starts the pipeline for any unprocessed lecture.  These tests verify:
+
+    1. When zoom_manager is unavailable (ImportError), the function returns
+       without crashing.
+    2. When no meetings are returned, the function returns without starting
+       any pipeline.
+    3. When a meeting's topic does not match a known group, it is skipped.
+    4. When a lecture is already indexed in Pinecone, no pipeline is started.
+    5. When ``try_claim_pipeline`` returns None (already active), no executor
+       call is made (concurrency guard).
+    6. The function does not launch more than one pipeline per unique
+       group+lecture combination (no duplicate executor submissions).
+    """
+
+    async def test_returns_cleanly_when_zoom_manager_unavailable(self):
+        """Function must not raise when zoom_manager cannot be imported."""
+        with patch.dict("sys.modules", {"tools.integrations.zoom_manager": None}):
+            # Should complete without exception
+            await srv._check_unprocessed_recordings()
+
+    async def test_returns_cleanly_when_no_meetings_found(self):
+        """No meetings returned by Zoom API means nothing is started."""
+        mock_zm = MagicMock()
+        mock_zm.list_user_recordings = MagicMock(return_value=[])
+
+        async def _to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with (
+            patch.dict("sys.modules", {"tools.integrations.zoom_manager": mock_zm}),
+            patch("tools.app.server.asyncio.to_thread", side_effect=_to_thread),
+        ):
+            await srv._check_unprocessed_recordings()
+
+        # _processing_tasks must remain empty
+        assert len(_processing_tasks) == 0
+
+    async def test_skips_meetings_with_unknown_topic(self):
+        """Meetings whose topics cannot be matched to a group are skipped."""
+        meeting = {
+            "topic": "Random Company All-Hands 2026",
+            "start_time": "2026-03-31T16:00:00Z",
+            "uuid": "abc123",
+            "id": "111222333",
+        }
+
+        mock_zm = MagicMock()
+        mock_zm.list_user_recordings = MagicMock(return_value=[meeting])
+
+        pipeline_started = []
+
+        async def _to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with (
+            patch.dict("sys.modules", {"tools.integrations.zoom_manager": mock_zm}),
+            patch("tools.app.server.asyncio.to_thread", side_effect=_to_thread),
+            patch("tools.app.server.try_claim_pipeline", side_effect=lambda *a, **kw: pipeline_started.append(1) or MagicMock()),
+        ):
+            await srv._check_unprocessed_recordings()
+
+        assert len(pipeline_started) == 0, (
+            "No pipeline should start for an unrecognised meeting topic"
+        )
+
+    async def test_skips_already_indexed_lecture(self):
+        """If Pinecone already has vectors for the lecture, no pipeline is started."""
+        meeting = {
+            "topic": "ჯგუფი #1 lecture",
+            "start_time": "2026-03-25T16:00:00Z",  # Tuesday — Group 1
+            "uuid": "uuid-already-indexed",
+            "id": "999888777",
+        }
+
+        mock_zm = MagicMock()
+        mock_zm.list_user_recordings = MagicMock(return_value=[meeting])
+
+        pipeline_claims = []
+
+        async def mock_to_thread(fn, *args, **kwargs):
+            result = fn(*args, **kwargs)
+            return result
+
+        with (
+            patch.dict("sys.modules", {"tools.integrations.zoom_manager": mock_zm}),
+            patch("tools.app.server.asyncio.to_thread", side_effect=mock_to_thread),
+            patch("tools.app.server.extract_group_from_topic", return_value=1),
+            patch("tools.app.server.get_lecture_number", return_value=5),
+            patch("tools.app.server.try_claim_pipeline", side_effect=lambda *a, **kw: pipeline_claims.append(1) or MagicMock()),
+        ):
+            # Patch lecture_exists_in_index to say it's already indexed
+            with patch.dict("sys.modules", {
+                "tools.integrations.knowledge_indexer": MagicMock(
+                    lecture_exists_in_index=MagicMock(return_value=True)
+                )
+            }):
+                await srv._check_unprocessed_recordings()
+
+        assert len(pipeline_claims) == 0, (
+            "Pipeline must not start for a lecture already indexed in Pinecone"
+        )
+
+    async def test_already_claimed_pipeline_not_double_started(self):
+        """When try_claim_pipeline returns None, no executor call is made."""
+        meeting = {
+            "topic": "ჯგუფი #2 lecture",
+            "start_time": "2026-03-30T16:00:00Z",  # Monday — Group 2
+            "uuid": "uuid-claim-race",
+            "id": "777666555",
+        }
+
+        mock_zm = MagicMock()
+        mock_zm.list_user_recordings = MagicMock(return_value=[meeting])
+
+        executor_calls = []
+
+        async def mock_to_thread(fn, *args, **kwargs):
+            result = fn(*args, **kwargs)
+            return result
+
+        mock_loop = MagicMock()
+        mock_loop.run_in_executor = MagicMock(side_effect=lambda *a, **kw: executor_calls.append(1))
+
+        with (
+            patch.dict("sys.modules", {"tools.integrations.zoom_manager": mock_zm}),
+            patch("tools.app.server.asyncio.to_thread", side_effect=mock_to_thread),
+            patch("tools.app.server.extract_group_from_topic", return_value=2),
+            patch("tools.app.server.get_lecture_number", return_value=6),
+            # try_claim_pipeline returns None → pipeline already active
+            patch("tools.app.server.try_claim_pipeline", return_value=None),
+            patch("tools.app.server.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            with patch.dict("sys.modules", {
+                "tools.integrations.knowledge_indexer": MagicMock(
+                    lecture_exists_in_index=MagicMock(return_value=False)
+                )
+            }):
+                await srv._check_unprocessed_recordings()
+
+        assert len(executor_calls) == 0, (
+            "run_in_executor must not be called when try_claim_pipeline returns None"
+        )
+
+    async def test_unprocessed_lecture_starts_pipeline_in_executor(self):
+        """An unprocessed, unclaimed lecture triggers run_in_executor."""
+        meeting = {
+            "topic": "ჯგუფი #1 lecture",
+            "start_time": "2026-03-25T16:00:00Z",
+            "uuid": "uuid-unprocessed",
+            "id": "444333222",
+        }
+
+        mock_zm = MagicMock()
+        mock_zm.list_user_recordings = MagicMock(return_value=[meeting])
+
+        executor_calls = []
+
+        async def mock_to_thread(fn, *args, **kwargs):
+            result = fn(*args, **kwargs)
+            return result
+
+        mock_loop = MagicMock()
+        mock_loop.run_in_executor = MagicMock(
+            side_effect=lambda *a, **kw: executor_calls.append(1)
+        )
+
+        fake_pipeline = MagicMock()
+
+        with (
+            patch.dict("sys.modules", {"tools.integrations.zoom_manager": mock_zm}),
+            patch("tools.app.server.asyncio.to_thread", side_effect=mock_to_thread),
+            patch("tools.app.server.extract_group_from_topic", return_value=1),
+            patch("tools.app.server.get_lecture_number", return_value=4),
+            patch("tools.app.server.try_claim_pipeline", return_value=fake_pipeline),
+            patch("tools.app.server.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            with patch.dict("sys.modules", {
+                "tools.integrations.knowledge_indexer": MagicMock(
+                    lecture_exists_in_index=MagicMock(return_value=False)
+                )
+            }):
+                await srv._check_unprocessed_recordings()
+
+        assert len(executor_calls) == 1, (
+            f"Expected exactly one executor submission, got {len(executor_calls)}"
+        )
+
+

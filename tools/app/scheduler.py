@@ -129,8 +129,9 @@ def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
             fire_time = datetime.fromisoformat(entry["fire_time"])
         except (ValueError, KeyError):
             continue
-        # Skip jobs more than 2 hours in the past (too stale)
-        if fire_time < now - timedelta(hours=2):
+        # Skip jobs more than 24 hours in the past (too stale).
+        # Was 2h — too aggressive; server crash overnight would lose lectures.
+        if fire_time < now - timedelta(hours=24):
             logger.info("[persist] Skipping stale job: G%d L%d (fire_time=%s)",
                         entry.get("group"), entry.get("lecture"), entry.get("fire_time"))
             continue
@@ -955,18 +956,41 @@ async def _process_dlq_job() -> None:
         logger.error("[dlq] DLQ processing failed: %s", exc)
 
 
+# Track WhatsApp connection state for reconnection detection
+_whatsapp_was_connected: bool = True
+_whatsapp_disconnected_at: int | None = None
+
+
 async def _whatsapp_health_check_job() -> None:
-    """Proactive WhatsApp health check — alerts via EMAIL if unhealthy."""
+    """Proactive WhatsApp health check — alerts via EMAIL if unhealthy.
+
+    Tracks connection state across checks. When a disconnected→connected
+    transition is detected, automatically triggers the assistant's catch-up
+    pipeline to process messages missed during downtime.
+    """
+    global _whatsapp_was_connected, _whatsapp_disconnected_at
+
     try:
         from tools.integrations.whatsapp_sender import check_whatsapp_health, send_email_fallback
         loop = asyncio.get_running_loop()
         health = await loop.run_in_executor(None, check_whatsapp_health)
 
-        if not health.get("connected", False):
+        is_connected = health.get("connected", False)
+
+        if not is_connected:
             state = health.get("state", "unknown")
             logger.error(
                 "[whatsapp-health] WhatsApp NOT CONNECTED (state=%s). QR re-scan needed!", state
             )
+
+            # Record when we first noticed the disconnection
+            if _whatsapp_was_connected:
+                _whatsapp_disconnected_at = int(time.time())
+                logger.info("[whatsapp-health] Disconnection detected at %s",
+                            datetime.now(TBILISI_TZ).strftime("%H:%M"))
+
+            _whatsapp_was_connected = False
+
             # Alert via EMAIL since WhatsApp is the thing that's broken
             send_email_fallback(
                 subject="WhatsApp DISCONNECTED — QR re-scan needed",
@@ -978,9 +1002,148 @@ async def _whatsapp_health_check_job() -> None:
                 ),
             )
         else:
+            # Connected — check if this is a reconnection
+            if not _whatsapp_was_connected:
+                logger.info(
+                    "[whatsapp-health] WhatsApp RECONNECTED! Triggering catch-up..."
+                )
+                # Run catch-up in background (don't block the health check)
+                asyncio.create_task(_run_catch_up(_whatsapp_disconnected_at))
+                _whatsapp_disconnected_at = None
+
+            _whatsapp_was_connected = True
             logger.debug("[whatsapp-health] WhatsApp connected (state=%s)", health.get("state"))
     except Exception as exc:
         logger.error("[whatsapp-health] Health check failed: %s", exc)
+
+
+async def _run_catch_up(disconnected_at: int | None = None) -> None:
+    """Run the assistant's catch-up pipeline after reconnection.
+
+    Args:
+        disconnected_at: Unix epoch when disconnection was first detected.
+            Passed as ``since_timestamp`` to the assistant's ``catch_up()``
+            method so it only processes messages from the downtime window.
+    """
+    try:
+        from tools.app.server import assistant
+        if assistant is None:
+            logger.warning("[catch-up] WhatsApp assistant not initialised — skipping")
+            return
+
+        logger.info("[catch-up] Starting catch-up from %s...",
+                     time.strftime("%H:%M", time.localtime(disconnected_at)) if disconnected_at else "4h ago")
+        stats = await assistant.catch_up(since_timestamp=disconnected_at)
+        logger.info("[catch-up] Complete: %s", stats)
+
+        # Notify operator about catch-up results
+        if stats["responded"] > 0 or stats["errors"] > 0:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(
+                f"Catch-up done: {stats['processed']} messages processed, "
+                f"{stats['responded']} responded, {stats['memorised']} memorised, "
+                f"{stats['errors']} errors"
+            )
+    except Exception as exc:
+        logger.error("[catch-up] Catch-up pipeline failed: %s", exc, exc_info=True)
+
+
+async def _nightly_recording_scan() -> None:
+    """Safety net: scan Zoom for unprocessed recordings from the past 24 hours.
+
+    Catches any lectures that were missed due to server downtime during the
+    meeting window.  Runs at 01:00 Tbilisi time (after all lectures end at ~22:00).
+    """
+    from tools.core.pipeline_state import try_claim_pipeline
+
+    logger.info("[nightly-scan] Checking Zoom for unprocessed recordings…")
+
+    try:
+        zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
+    except ImportError:
+        logger.warning("[nightly-scan] zoom_manager not available — skipping")
+        return
+
+    today = datetime.now(TBILISI_TZ).date()
+    from_date = (today - timedelta(days=1)).isoformat()
+    today_str = today.isoformat()
+
+    try:
+        loop = asyncio.get_running_loop()
+        meetings = await loop.run_in_executor(
+            None, zm.list_user_recordings, from_date, today_str,
+        )
+    except Exception as exc:
+        logger.warning("[nightly-scan] Failed to list recordings: %s", exc)
+        return
+
+    if not meetings:
+        logger.info("[nightly-scan] No recordings in last 24h")
+        return
+
+    logger.info("[nightly-scan] Found %d recording(s) — checking each", len(meetings))
+
+    for meeting in meetings:
+        topic = meeting.get("topic", "")
+        # Extract group number from meeting topic
+        group_number = None
+        if "#1" in topic or "ჯგუფი #1" in topic:
+            group_number = 1
+        elif "#2" in topic or "ჯგუფი #2" in topic:
+            group_number = 2
+        if group_number is None:
+            continue
+
+        start_time_str = meeting.get("start_time", "")
+        try:
+            meeting_date = datetime.fromisoformat(
+                start_time_str.replace("Z", "+00:00")
+            ).date()
+        except (ValueError, AttributeError):
+            meeting_date = today
+
+        lecture_number = get_lecture_number(group_number, for_date=meeting_date)
+        if lecture_number == 0 or lecture_number > TOTAL_LECTURES:
+            continue
+
+        # Check if already indexed in Pinecone
+        already_indexed = False
+        try:
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await loop.run_in_executor(
+                None, lecture_exists_in_index, group_number, lecture_number,
+            )
+        except Exception:
+            pass  # assume not indexed
+
+        if already_indexed:
+            logger.info("[nightly-scan] G%d L%d already indexed — skip", group_number, lecture_number)
+            continue
+
+        # Check if already done in pipeline state
+        if is_pipeline_done(group_number, lecture_number):
+            logger.info("[nightly-scan] G%d L%d pipeline COMPLETE — skip", group_number, lecture_number)
+            continue
+
+        # Try to claim and process
+        meeting_uuid = meeting.get("uuid", "")
+        poll_id = meeting_uuid or str(meeting.get("id", ""))
+        pipeline = try_claim_pipeline(group_number, lecture_number, meeting_id=poll_id)
+        if pipeline is None:
+            logger.info("[nightly-scan] G%d L%d claim rejected — skip", group_number, lecture_number)
+            continue
+
+        logger.info(
+            "[nightly-scan] Starting pipeline for MISSED recording: Group %d, Lecture #%d",
+            group_number, lecture_number,
+        )
+        loop.run_in_executor(
+            None,
+            _run_post_meeting_pipeline,
+            group_number,
+            lecture_number,
+            poll_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1276,17 @@ def start_scheduler() -> AsyncIOScheduler:
         trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
         id="whatsapp_health_check",
         name="WhatsApp: Proactive health check",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Nightly: Scan Zoom for missed recordings (01:00 Tbilisi)          #
+    # ------------------------------------------------------------------ #
+    scheduler.add_job(
+        _nightly_recording_scan,
+        trigger=CronTrigger(hour=1, minute=0, timezone=TBILISI_TZ),
+        id="nightly_recording_scan",
+        name="Nightly: Scan Zoom for missed recordings",
         replace_existing=True,
     )
 

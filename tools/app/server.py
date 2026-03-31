@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
 _processing_lock = threading.Lock()  # Prevent webhook+scheduler race condition
-STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
+STALE_TASK_HOURS = 4  # Recording poll alone can take 3h — don't evict healthy pipelines
 
 
 def _task_key(group: int, lecture: int) -> str:
@@ -324,8 +324,16 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["POST", "GET"])
 
-# Rate limiting
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiting — use real client IP behind Railway's reverse proxy
+def _get_real_ip(request: Request) -> str:
+    """Extract real client IP from X-Forwarded-For (set by Railway proxy)."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_get_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -363,22 +371,50 @@ MAX_BODY_SIZE = 1_048_576  # 1 MB
 
 @app.middleware("http")
 async def limit_request_body(request: Request, call_next):
+    """Enforce body size limit regardless of Content-Length / chunked encoding.
+
+    Reads the actual body (up to MAX_BODY_SIZE + 1 byte) so chunked-encoding
+    requests that omit Content-Length cannot bypass the limit.
+    """
+    # Fast-reject if Content-Length header already exceeds limit
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_BODY_SIZE:
-        return JSONResponse(
-            status_code=413,
-            content={"detail": "Request body too large"},
-        )
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_SIZE:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
+                )
+        except ValueError:
+            pass
+
+    # For requests that may have a body, read and verify actual size
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = await request.body()
+        if len(body) > MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large"},
+            )
+
     return await call_next(request)
 
 
-assistant: WhatsAppAssistant | None = None
-if _assistant_available:
-    try:
-        assistant = WhatsAppAssistant()
-    except (ValueError, RuntimeError) as _init_err:
-        logger.warning("WhatsAppAssistant init failed (non-fatal): %s", _init_err)
-        assistant = None
+_assistant: WhatsAppAssistant | None = None
+_assistant_init_attempted = False
+
+
+def get_assistant() -> WhatsAppAssistant | None:
+    """Lazy-initialize the WhatsApp assistant on first use."""
+    global _assistant, _assistant_init_attempted
+    if not _assistant_init_attempted:
+        _assistant_init_attempted = True
+        if _assistant_available:
+            try:
+                _assistant = WhatsAppAssistant()
+            except (ValueError, RuntimeError) as err:
+                logger.warning("WhatsAppAssistant init failed: %s", err)
+    return _assistant
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +827,7 @@ async def whatsapp_incoming(
     if message_data.get("fromMe", False):
         return {"status": "ignored", "reason": "own message"}
 
-    if not _assistant_available or assistant is None:
+    if not _assistant_available or get_assistant() is None:
         logger.warning("WhatsApp assistant not available — ignoring incoming message")
         return {"status": "ignored", "reason": "assistant not available"}
 
@@ -813,7 +849,7 @@ async def whatsapp_incoming(
 async def _handle_assistant_message(message: IncomingMessage) -> None:
     """Background task: run the assistant pipeline."""
     try:
-        result = await assistant.handle_message(message)
+        result = await get_assistant().handle_message(message)
         if result:
             logger.info("Assistant responded in %s", message.chat_id[:20])
         else:
@@ -827,6 +863,54 @@ async def _handle_assistant_message(message: IncomingMessage) -> None:
             alert_operator(f"WhatsApp assistant crashed: {e}")
         except Exception as alert_err:
             logger.error("alert_operator also failed: %s", alert_err)
+
+
+@app.post("/catch-up")
+@limiter.limit("2/minute")
+async def catch_up_endpoint(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Manually trigger the assistant's catch-up pipeline.
+
+    Reads missed messages from both group chats and processes them.
+    Accepts an optional ``since`` query parameter (Unix timestamp).
+    """
+    verify_webhook_secret(authorization)
+
+    if not _assistant_available or get_assistant() is None:
+        raise HTTPException(status_code=503, detail="Assistant not available")
+
+    # Optional: custom lookback timestamp
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    since_ts: int | None = body.get("since")
+
+    background_tasks.add_task(_run_catch_up, since_ts)
+    return {"status": "catch-up started", "since": since_ts or "4h lookback"}
+
+
+async def _run_catch_up(since_timestamp: int | None = None) -> None:
+    """Background task: run assistant catch-up pipeline."""
+    try:
+        stats = await get_assistant().catch_up(since_timestamp=since_timestamp)
+        logger.info("[catch-up] Complete: %s", stats)
+        if stats["responded"] > 0 or stats["errors"] > 0:
+            alert_operator(
+                f"Catch-up done: {stats['processed']} processed, "
+                f"{stats['responded']} responded, {stats['memorised']} memorised, "
+                f"{stats['errors']} errors"
+            )
+    except Exception as exc:
+        logger.error("[catch-up] Pipeline failed: %s", exc, exc_info=True)
+        try:
+            alert_operator(f"Catch-up pipeline crashed: {exc}")
+        except Exception:
+            pass
 
 
 def _handle_zoom_crc(body: dict) -> dict:
