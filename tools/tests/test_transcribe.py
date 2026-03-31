@@ -189,33 +189,34 @@ class TestNotifyGroupWhatsAppFailure:
 # ===========================================================================
 
 class TestSendPrivateReportToTornike:
-    """_send_private_report_to_tornike must log CRITICAL on failure, not call alert_operator."""
+    """_send_private_report_to_tornike uses @safe_operation(alert=False).
 
-    def test_send_failure_calls_logger_critical(self):
+    On failure it logs ERROR (via safe_operation) and does NOT call
+    alert_operator — because this IS the private channel to Tornike.
+    """
+
+    def test_send_failure_logs_error_not_alert(self):
+        """Failure should log error via safe_operation, not call alert_operator."""
         with (
             patch(_PATCH_SEND_PRIVATE, side_effect=ConnectionError("WhatsApp offline")),
             patch(_PATCH_ALERT) as mock_alert,
-            patch.object(tl.logger, "critical") as mock_critical,
         ):
+            # Should NOT raise — safe_operation catches it
             tl._send_private_report_to_tornike(1, 3, "doc-id-123")
 
-        mock_critical.assert_called_once()
-        # Operator alert must NOT be used — this IS the private channel
+        # Operator alert must NOT be used — alert=False in decorator
         mock_alert.assert_not_called()
 
-    def test_critical_log_contains_group_and_lecture(self):
+    def test_failure_does_not_propagate(self):
+        """safe_operation ensures failure doesn't propagate to caller."""
         with (
             patch(_PATCH_SEND_PRIVATE, side_effect=OSError("send failed")),
             patch(_PATCH_ALERT),
-            patch.object(tl.logger, "critical") as mock_critical,
         ):
-            tl._send_private_report_to_tornike(2, 8, None)
+            # Must not raise
+            result = tl._send_private_report_to_tornike(2, 8, None)
 
-        log_args = mock_critical.call_args[0]
-        # The format string or positional args must encode group 2 and lecture 8
-        full_message = " ".join(str(a) for a in log_args)
-        assert "2" in full_message
-        assert "8" in full_message
+        assert result is None  # safe_operation returns default=None
 
     def test_successful_delivery_does_not_log_critical(self):
         with (

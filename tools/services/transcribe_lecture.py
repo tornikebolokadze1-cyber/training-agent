@@ -182,12 +182,18 @@ def _notify_group_whatsapp(
     logger.info("WhatsApp group notification sent for Group %d, Lecture #%d", group_number, lecture_number)
 
 
+@safe_operation("WhatsApp private report", alert=False, default=None)
 def _send_private_report_to_tornike(
     group_number: int,
     lecture_number: int,
     report_doc_id: str | None,
 ) -> None:
-    """Send WhatsApp notification to Tornike with link to private analysis doc."""
+    """Send WhatsApp notification to Tornike with link to private analysis doc.
+
+    Wrapped in @safe_operation so it never raises or blocks other notifications.
+    alert=False because this IS the private channel to Tornike — no point
+    alerting him about a failure to reach him.
+    """
     group_name = GROUPS.get(group_number, {}).get("name", f"ჯგუფი #{group_number}")
 
     if report_doc_id:
@@ -204,6 +210,7 @@ def _send_private_report_to_tornike(
             f"⚠️ Drive-ზე ატვირთვა ვერ მოხერხდა"
         )
 
+<<<<<<< HEAD
     try:
         send_private_report(message)
         logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
@@ -218,6 +225,10 @@ def _send_private_report_to_tornike(
             logger.info("Private report link sent via email fallback for G%d L#%d", group_number, lecture_number)
         else:
             logger.critical("CRITICAL: Private report delivery failed (WhatsApp + Email) for G%d L#%d: %s", group_number, lecture_number, e)
+=======
+    send_private_report(message)
+    logger.info("Private report link sent to Tornike for Group %d, Lecture #%d", group_number, lecture_number)
+>>>>>>> bbda80d (fix: Training agent changes)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +458,7 @@ def transcribe_and_index(
             if pipeline and report_doc_id:
                 pipeline = transition(pipeline, pipeline.state, report_doc_id=report_doc_id)
 
+<<<<<<< HEAD
         # Step 4: Send WhatsApp notification to group (video + summary are ready)
         if pipeline and pipeline.group_notified:
             logger.info("[%s] Skipping WhatsApp group notification — already sent", trace)
@@ -471,6 +483,20 @@ def transcribe_and_index(
             _stage_times["whatsapp_private"] = _time.monotonic() - _t0
             if pipeline:
                 pipeline = transition(pipeline, pipeline.state, private_notified=True)
+=======
+        # Steps 4-5: Notifications (independent — failure of one does NOT block others)
+        if pipeline:
+            pipeline = transition(pipeline, NOTIFYING)
+
+        # Step 4: Send WhatsApp notification to group (video + summary are ready)
+        logger.info("Step 4: Notifying WhatsApp group...")
+        recording_file_id = _find_recording_in_drive(group_number, lecture_number)
+        _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
+
+        # Step 5: Send private report link to Tornike via WhatsApp (independent)
+        logger.info("Step 5: Sending private report link to Tornike...")
+        _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
+>>>>>>> bbda80d (fix: Training agent changes)
 
         # Step 6: Index all content types into Pinecone
         if pipeline and pipeline.pinecone_indexed:
