@@ -34,6 +34,7 @@ from tools.core.config import (
     TRANSCRIPTION_CONTINUATION_PROMPT,
     TRANSCRIPTION_PROMPT,
 )
+from tools.core.api_resilience import resilient_api_call
 from tools.core.retry import safe_operation
 
 logger = logging.getLogger(__name__)
@@ -507,6 +508,7 @@ def _generate_with_retry(
     raise RuntimeError("Unreachable")
 
 
+@resilient_api_call(service="gemini", operation="transcribe_video", max_attempts=1, gemini_quota_fallback=True)
 def transcribe_video(file_ref: object, use_free: bool = False,
                      chunk_number: int = 0, total_chunks: int = 1) -> str:
     """Transcribe a video chunk using Gemini 2.5 Pro (multimodal — sees slides/demos).
@@ -949,6 +951,7 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
     return sections
 
 
+@resilient_api_call(service="gemini", operation="generate_summary", max_attempts=1, gemini_quota_fallback=True)
 def generate_summary(transcript: str, use_free: bool = False) -> str:
     """Generate lecture summary: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
@@ -968,6 +971,7 @@ def generate_summary(transcript: str, use_free: bool = False) -> str:
     return _gemini_write_georgian(claude_analysis, SUMMARIZATION_PROMPT, "summary", use_free)
 
 
+@resilient_api_call(service="gemini", operation="generate_gap_analysis", max_attempts=1, gemini_quota_fallback=True)
 def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
     """Generate gap analysis: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
@@ -988,6 +992,7 @@ def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
     return _gemini_write_georgian(claude_analysis, GAP_ANALYSIS_PROMPT, "gap analysis", use_free)
 
 
+@resilient_api_call(service="gemini", operation="generate_deep_analysis", max_attempts=1, gemini_quota_fallback=True)
 def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
     """Generate deep analysis with global AI context: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(

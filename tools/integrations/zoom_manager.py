@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from tools.core.api_resilience import resilient_api_call
 from tools.core.config import (
     GROUPS,
     TBILISI_TZ,
@@ -340,6 +341,7 @@ def create_meeting(
     }
 
 
+@resilient_api_call(service="zoom", operation="get_meeting_recordings", max_attempts=3)
 def get_meeting_recordings(meeting_id: str | int) -> dict[str, Any]:
     """Retrieve cloud recording files for a completed Zoom meeting.
 
@@ -396,6 +398,7 @@ def list_user_recordings(
     return meetings
 
 
+@resilient_api_call(service="zoom", operation="download_recording", max_attempts=5)
 def download_recording(
     download_url: str,
     access_token: str,

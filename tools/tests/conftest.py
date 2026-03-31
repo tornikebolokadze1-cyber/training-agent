@@ -254,6 +254,13 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
     _httpx_mod = sys.modules.get("httpx")
     _httpx_client_before = getattr(_httpx_mod, "Client", None) if _httpx_mod else None
     yield
+    # Post-test cleanup: reset ALL circuit breakers to prevent cross-test pollution
+    try:
+        from tools.core.api_resilience import _circuits
+        for circuit in _circuits.values():
+            circuit.reset()
+    except ImportError:
+        pass
     # Post-test cleanup: clear caches that might bleed between tests
     for mod_name, attrs in [
         ("tools.integrations.gdrive_manager", [

@@ -41,6 +41,7 @@ from tools.core.config import (
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
 )
+from tools.core.api_resilience import resilient_api_call
 from tools.core.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
@@ -479,6 +480,7 @@ def check_whatsapp_health() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@resilient_api_call(service="whatsapp", operation="send_message", max_attempts=3)
 def send_message_to_chat(chat_id: str, message: str) -> dict[str, Any]:
     """Send a text message to a WhatsApp chat (individual or group).
 
