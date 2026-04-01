@@ -37,6 +37,7 @@ from tools.core.config import (
     GEMINI_MODEL_ANALYSIS,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
+    WHATSAPP_TORNIKE_PHONE,
 )
 from tools.integrations.whatsapp_sender import send_message_to_chat
 
@@ -57,6 +58,28 @@ def _build_group_chat_map() -> dict[str, int]:
     if WHATSAPP_GROUP2_ID:
         mapping[WHATSAPP_GROUP2_ID] = 2
     return mapping
+
+
+def _build_allowed_chats() -> set[str]:
+    """Build the set of chat IDs where the assistant may send messages.
+
+    Only these chats are allowed (Green API free plan = 3 chats):
+      1. Tornike's private chat
+      2. Group #1
+      3. Group #2
+    Messages from any other chat are silently ignored.
+    """
+    allowed: set[str] = set()
+    if WHATSAPP_TORNIKE_PHONE:
+        allowed.add(f"{WHATSAPP_TORNIKE_PHONE}@c.us")
+    if WHATSAPP_GROUP1_ID:
+        allowed.add(WHATSAPP_GROUP1_ID)
+    if WHATSAPP_GROUP2_ID:
+        allowed.add(WHATSAPP_GROUP2_ID)
+    return allowed
+
+
+_ALLOWED_CHATS: set[str] = set()
 
 
 @dataclass
@@ -121,6 +144,9 @@ class WhatsAppAssistant:
 
         # Lazily populated chat-ID → group-number mapping
         self._group_map: dict[str, int] = _build_group_chat_map()
+
+        # Allowed chats — assistant only sends to these (Green API limit)
+        self._allowed_chats: set[str] = _build_allowed_chats()
 
         # Mem0 personal memory — learns from feedback and conversations.
         # Cloud mode: Qdrant Cloud (vectors) + Neo4j AuraDB (graph).
@@ -682,6 +708,15 @@ class WhatsAppAssistant:
         # 2.5 Record message in history (before any filtering)
         self._record_message(message)
 
+        # 2.6 Allowed-chat filter (Green API free plan: 3 chats only)
+        if self._allowed_chats and message.chat_id not in self._allowed_chats:
+            logger.debug(
+                "Chat %s not in allowed list — ignoring message from %s",
+                message.chat_id,
+                message.sender_name or message.sender_id,
+            )
+            return None
+
         # 3. Check for direct mention
         is_direct = self._is_direct_mention(message.text)
 
@@ -875,6 +910,10 @@ class WhatsAppAssistant:
             or if sending failed.
         """
         if not message.text or not message.text.strip():
+            return None
+
+        # Allowed-chat filter (same as handle_message)
+        if self._allowed_chats and message.chat_id not in self._allowed_chats:
             return None
 
         is_direct = self._is_direct_mention(message.text)
