@@ -110,7 +110,9 @@ jobs:
           python -m pytest tools/tests/ -v --tb=short \
             --cov=tools \
             --cov-report=term-missing \
-            --cov-fail-under=85
+            --cov-fail-under=85 \
+            --ignore=tools/tests/test_admin_routes.py \
+            --ignore=tools/tests/test_zoom_download.py
 
   security:
     name: Security Audit

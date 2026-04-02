@@ -1,0 +1,37 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Claude worktrees (very large)
+.claude/worktrees/
+
+# Git
+.git/
+
+# Obsidian vault
+obsidian-vault/
+
+# Large media
+*.mp4
+*.m4a
+*.m4v
+*.webm
+*.wav
+
+# Temporary files
+.tmp/
+
+# Logs
+logs/
+
+# Data files
+data/
+
+# Credentials
+.env
+credentials.json
+token.json
+token.json.backup
+token_gmail.json
+*.pem
+*.key
