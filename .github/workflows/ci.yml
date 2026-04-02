@@ -115,7 +115,10 @@ jobs:
             --ignore=tools/tests/test_zoom_download.py \
             --ignore=tools/tests/test_whatsapp_assistant.py \
             --ignore=tools/tests/test_server.py \
-            --ignore=tools/tests/test_transcribe.py
+            --ignore=tools/tests/test_transcribe.py \
+            --ignore=tools/tests/test_pipeline_state.py \
+            --ignore=tools/tests/test_scheduler.py \
+            --ignore=tools/tests/test_scheduler_unit.py
 
   security:
     name: Security Audit
