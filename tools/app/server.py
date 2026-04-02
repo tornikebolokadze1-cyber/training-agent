@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
 _processing_lock = threading.Lock()  # Prevent webhook+scheduler race condition
+_server_start_time: float = __import__("time").time()  # For startup grace period
 STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
 
 
@@ -673,7 +674,22 @@ async def health_check(request: Request):
 
     Returns structured JSON from the proactive HealthMonitor, covering
     all external services, disk space, and pipeline state.
+
+    During the first 60 seconds after startup, returns 200 with a
+    simplified response so Railway healthcheck passes while the
+    scheduler and background tasks are still initializing.
     """
+    import time
+
+    uptime = time.time() - _server_start_time
+    if uptime < 60:
+        return JSONResponse(content={
+            "status": "starting",
+            "service": "training-agent",
+            "uptime_seconds": round(uptime, 1),
+            "tasks_in_progress": len(_processing_tasks),
+        }, status_code=200)
+
     from tools.core.health_monitor import check_all
 
     report = check_all()
