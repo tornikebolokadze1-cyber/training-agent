@@ -17,11 +17,9 @@ Run with:
 from __future__ import annotations
 
 import sqlite3
-import types
 from contextlib import contextmanager
 from collections.abc import Generator
-from unittest.mock import MagicMock, patch, call
-from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -734,7 +732,6 @@ class TestSyncFallsBackToScoreBackup:
                 return_value=mock_idx,
             ),
         ):
-            import time
             with patch("tools.services.analytics._last_sync_time", 0):
                 from tools.services.analytics import sync_from_pinecone
                 # Only test group=1, lecture=1 by pre-seeding everything else as "existing"
@@ -745,7 +742,7 @@ class TestSyncFallsBackToScoreBackup:
                     # Patch get_conn to return our in-memory DB with all lectures
                     # pre-existing EXCEPT G1L1, to reduce iteration noise
                     _seed_all_except(in_memory_db, skip_group=1, skip_lecture=1)
-                    result = sync_from_pinecone(force=True)
+                    sync_from_pinecone(force=True)
 
         # At least one restore was attempted for G1L1
         assert mock_restore.called
