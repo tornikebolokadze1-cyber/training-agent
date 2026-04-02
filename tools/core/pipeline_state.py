@@ -921,6 +921,35 @@ def reset_failed(group: int, lecture: int) -> bool:
         return False
 
 
+def cleanup_stale_pending() -> int:
+    """Mark any PENDING pipelines as FAILED on startup.
+
+    After a server crash or restart, PENDING pipelines are stale —
+    no process is actively working on them.  Mark them FAILED so they
+    can be retried cleanly.
+
+    Returns:
+        Number of pipelines marked as FAILED.
+    """
+    marked = 0
+    for state in list_all_pipelines():
+        if state.state != PENDING:
+            continue
+        try:
+            mark_failed(state, "Marked FAILED on startup (was stale PENDING)")
+            marked += 1
+            logger.info(
+                "Startup cleanup: marked stale PENDING pipeline g%d/l%d as FAILED.",
+                state.group, state.lecture,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Startup cleanup: could not mark g%d/l%d as FAILED: %s",
+                state.group, state.lecture, exc,
+            )
+    return marked
+
+
 def cleanup_stale_failed(max_age_hours: int = 12) -> int:
     """Auto-clean FAILED pipeline state files older than max_age_hours.
 
