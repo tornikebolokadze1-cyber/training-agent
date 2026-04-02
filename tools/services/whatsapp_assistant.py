@@ -147,6 +147,10 @@ class WhatsAppAssistant:
 
         # Allowed chats — assistant only sends to these (Green API limit)
         self._allowed_chats: set[str] = _build_allowed_chats()
+        if self._allowed_chats:
+            logger.info("Allowed chats filter active: %s", self._allowed_chats)
+        else:
+            logger.warning("No allowed chats configured — assistant will respond in ALL chats")
 
         # Mem0 personal memory — learns from feedback and conversations.
         # Cloud mode: Qdrant Cloud (vectors) + Neo4j AuraDB (graph).
@@ -710,7 +714,7 @@ class WhatsAppAssistant:
 
         # 2.6 Allowed-chat filter (Green API free plan: 3 chats only)
         if self._allowed_chats and message.chat_id not in self._allowed_chats:
-            logger.debug(
+            logger.info(
                 "Chat %s not in allowed list — ignoring message from %s",
                 message.chat_id,
                 message.sender_name or message.sender_id,
