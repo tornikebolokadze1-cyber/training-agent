@@ -299,6 +299,13 @@ async def _lifespan(application: FastAPI):  # noqa: ARG001
     cleanup_completed(max_age_hours=24)
     cleanup_stale_failed(max_age_hours=12)
 
+    # Push any local-only scores to Pinecone (idempotent — skips duplicates)
+    try:
+        from tools.services.analytics import backup_scores_to_pinecone
+        backup_scores_to_pinecone()
+    except Exception as exc:
+        logger.error("[startup] Pinecone score backup failed: %s", exc, exc_info=True)
+
     try:
         yield
     finally:
@@ -1632,6 +1639,20 @@ async def api_backfill_scores(
     from tools.services.analytics import backfill_from_tmp
     result = await asyncio.to_thread(backfill_from_tmp)
     logger.info("Manual score backfill triggered: %s", result)
+    return {"status": "ok", **result}
+
+
+@app.post("/api/backup-scores", include_in_schema=False)
+@limiter.limit("2/minute")
+async def api_backup_scores(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Trigger manual backup of scores to Pinecone."""
+    verify_webhook_secret(authorization)
+    from tools.services.analytics import backup_scores_to_pinecone
+    result = await asyncio.to_thread(backup_scores_to_pinecone)
+    logger.info("Manual score backup to Pinecone triggered: %s", result)
     return {"status": "ok", **result}
 
 

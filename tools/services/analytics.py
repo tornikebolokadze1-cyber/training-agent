@@ -266,6 +266,11 @@ def save_scores_from_analysis(
     )
     # Also extract and persist qualitative insights
     extract_and_save_insights(group_number, lecture_number, deep_analysis_text)
+    # Backup to Pinecone for Railway persistence (background, non-blocking)
+    import threading
+    threading.Thread(
+        target=_safe_backup_to_pinecone, daemon=True, name="pinecone-backup"
+    ).start()
     return True
 
 
@@ -1078,7 +1083,10 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                 continue
 
             if not all_ids:
-                continue  # No deep analysis for this lecture
+                # Fallback: try score backup vector
+                if _restore_from_score_backup(idx, group, lecture):
+                    synced += 1
+                continue
 
             # Fetch chunks and reconstruct text
             try:
@@ -1168,6 +1176,199 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
         logger.info("Pinecone sync complete: synced=%d skipped=%d failed=%d", synced, skipped, failed)
 
     return {"synced": synced, "skipped": skipped, "failed": failed}
+
+
+# ---------------------------------------------------------------------------
+# Pinecone score backup — persist scores as vectors for Railway recovery
+# ---------------------------------------------------------------------------
+
+_SCORES_BACKUP_PREFIX = "scores_backup_g{group}_l{lecture}"
+
+
+def _safe_backup_to_pinecone() -> None:
+    """Thread-safe wrapper for backup_scores_to_pinecone (fire-and-forget)."""
+    try:
+        backup_scores_to_pinecone()
+    except Exception as e:
+        logger.warning("Background Pinecone backup failed (non-fatal): %s", e)
+
+
+def backup_scores_to_pinecone() -> dict[str, int]:
+    """Backup all local lecture scores + insights to Pinecone as dedicated vectors.
+
+    Each lecture gets one vector with scores/insights stored as metadata.
+    This ensures Railway can recover scores even when deep_analysis text
+    was never indexed (e.g. lectures processed before Pinecone integration).
+
+    Returns:
+        {"backed_up": N, "skipped": M, "failed": K}
+    """
+    try:
+        from tools.integrations.knowledge_indexer import (
+            embed_text,
+            get_pinecone_index,
+        )
+    except ImportError:
+        logger.warning("backup_scores: knowledge_indexer not available")
+        return {"backed_up": 0, "skipped": 0, "failed": 0}
+
+    try:
+        idx = get_pinecone_index()
+    except Exception as e:
+        logger.warning("backup_scores: cannot connect to Pinecone: %s", e)
+        return {"backed_up": 0, "skipped": 0, "failed": 0}
+
+    all_scores = get_all_scores()
+    all_insights = {
+        (ins["group_number"], ins["lecture_number"]): ins
+        for ins in get_all_insights()
+    }
+
+    backed_up = skipped = failed = 0
+
+    for score_row in all_scores:
+        g = score_row["group_number"]
+        lec = score_row["lecture_number"]
+        vector_id = _SCORES_BACKUP_PREFIX.format(group=g, lecture=lec)
+
+        # Check if backup exists and is up-to-date
+        try:
+            existing = idx.fetch(ids=[vector_id])
+            vec_data = existing.vectors.get(vector_id)
+            if vec_data:
+                old_composite = vec_data.metadata.get("composite", 0)
+                new_composite = score_row.get("composite", 0)
+                if abs(old_composite - new_composite) < 0.01:
+                    skipped += 1
+                    continue
+                # Composite changed — will re-upsert below
+        except Exception:
+            pass  # proceed to upsert
+
+        # Build metadata with scores
+        metadata: dict = {
+            "type": "scores_backup",
+            "group_number": g,
+            "lecture_number": lec,
+            "content_depth": score_row.get("content_depth", 0),
+            "practical_value": score_row.get("practical_value", 0),
+            "engagement": score_row.get("engagement", 0),
+            "technical_accuracy": score_row.get("technical_accuracy", 0),
+            "market_relevance": score_row.get("market_relevance", 0),
+            "overall_score": score_row.get("overall_score") if score_row.get("overall_score") is not None else -1,
+            "composite": score_row.get("composite", 0),
+        }
+
+        # Add insights if available
+        ins = all_insights.get((g, lec))
+        if ins:
+            metadata["strengths_count"] = ins.get("strengths_count", 0)
+            metadata["weaknesses_count"] = ins.get("weaknesses_count", 0)
+            metadata["gaps_count"] = ins.get("gaps_count", 0)
+            metadata["top_strength"] = (ins.get("top_strength") or "")[:450]
+            metadata["top_weakness"] = (ins.get("top_weakness") or "")[:450]
+            metadata["key_recommendation"] = (ins.get("key_recommendation") or "")[:450]
+
+        try:
+            # Embed a summary text to create the required vector
+            summary = (
+                f"Lecture scores backup Group {g} Lecture {lec}: "
+                f"composite={metadata['composite']}"
+            )
+            vector = embed_text(summary)
+            idx.upsert(vectors=[(vector_id, vector, metadata)])
+            backed_up += 1
+            logger.info(
+                "backup_scores: backed up G%dL%d (composite=%.1f)",
+                g, lec, metadata["composite"],
+            )
+        except Exception as e:
+            logger.warning("backup_scores: failed for G%dL%d: %s", g, lec, e)
+            failed += 1
+
+    logger.info(
+        "Score backup complete: backed_up=%d skipped=%d failed=%d",
+        backed_up, skipped, failed,
+    )
+    return {"backed_up": backed_up, "skipped": skipped, "failed": failed}
+
+
+def _restore_from_score_backup(
+    idx: object, group: int, lecture: int,
+) -> bool:
+    """Try to restore a lecture's scores from Pinecone backup vector.
+
+    Returns True if scores were restored, False otherwise.
+    """
+    vector_id = _SCORES_BACKUP_PREFIX.format(group=group, lecture=lecture)
+    try:
+        fetched = idx.fetch(ids=[vector_id])
+        vec_data = fetched.vectors.get(vector_id)
+        if not vec_data:
+            return False
+
+        meta = vec_data.metadata
+        if meta.get("type") != "scores_backup":
+            return False
+
+        # Restore scores (with type-safe metadata extraction)
+        raw_overall = meta.get("overall_score")
+        overall = None if (raw_overall is None or raw_overall == -1) else float(raw_overall)
+
+        upsert_scores(
+            group_number=group,
+            lecture_number=lecture,
+            content_depth=float(meta.get("content_depth", 0)),
+            practical_value=float(meta.get("practical_value", 0)),
+            engagement=float(meta.get("engagement", 0)),
+            technical_accuracy=float(meta.get("technical_accuracy", 0)),
+            market_relevance=float(meta.get("market_relevance", 0)),
+            overall_score=overall,
+            raw_score_text=f"Restored from Pinecone score backup (G{group}L{lecture})",
+        )
+
+        # Restore insights if present in metadata
+        if meta.get("strengths_count") is not None or meta.get("top_strength"):
+            try:
+                with _get_conn() as conn:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO lecture_insights
+                           (group_number, lecture_number, strengths_count,
+                            weaknesses_count, gaps_count,
+                            recommendations_count, tech_correct_count,
+                            tech_problematic_count, blind_spots_count,
+                            top_strength, top_weakness, key_recommendation,
+                            score_justifications, extracted_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            group, lecture,
+                            int(meta.get("strengths_count", 0)),
+                            int(meta.get("weaknesses_count", 0)),
+                            int(meta.get("gaps_count", 0)),
+                            0, 0, 0, 0,
+                            (meta.get("top_strength") or "")[:500],
+                            (meta.get("top_weakness") or "")[:500],
+                            (meta.get("key_recommendation") or "")[:500],
+                            None,
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                    conn.commit()
+            except Exception as e:
+                logger.warning(
+                    "restore_backup: insights save failed for G%dL%d: %s",
+                    group, lecture, e,
+                )
+
+        logger.info(
+            "restore_backup: restored G%dL%d from score backup (composite=%.1f)",
+            group, lecture, meta.get("composite", 0),
+        )
+        return True
+
+    except Exception as e:
+        logger.debug("restore_backup: no backup for G%dL%d: %s", group, lecture, e)
+        return False
 
 
 # ---------------------------------------------------------------------------

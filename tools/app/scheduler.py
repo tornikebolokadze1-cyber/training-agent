@@ -953,6 +953,20 @@ def start_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # ------------------------------------------------------------------ #
+    #  Pinecone score backup — every 6 hours (safety net for ephemeral DB) #
+    # ------------------------------------------------------------------ #
+    from tools.services.analytics import backup_scores_to_pinecone
+
+    scheduler.add_job(
+        backup_scores_to_pinecone,
+        trigger="interval",
+        hours=6,
+        id="pinecone_score_backup",
+        name="Pinecone score backup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     _scheduler_ref = scheduler
 
