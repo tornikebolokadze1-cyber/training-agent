@@ -609,8 +609,27 @@ def create_google_doc(title: str, content: str, folder_id: str) -> str:
     If a document with the same title already exists in the folder, it is
     updated in place (idempotent). Otherwise a new document is created.
 
+    Retries up to 3 times on transient network errors (SSL timeout,
+    connection reset, etc.) with exponential backoff.
+
     Returns the document ID (also the Drive file ID).
     """
+    from tools.core.retry import retry_with_backoff
+
+    return retry_with_backoff(
+        _create_google_doc_inner,
+        title,
+        content,
+        folder_id,
+        max_retries=3,
+        backoff_base=3.0,
+        retryable_exceptions=(OSError, ConnectionError, TimeoutError, HttpError),
+        operation_name=f"Drive doc upload '{title}'",
+    )
+
+
+def _create_google_doc_inner(title: str, content: str, folder_id: str) -> str:
+    """Inner implementation of create_google_doc (no retry logic)."""
     service = get_drive_service()
 
     # Check for existing doc with same title (idempotency)

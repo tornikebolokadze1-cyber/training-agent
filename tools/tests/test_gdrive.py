@@ -229,6 +229,25 @@ class TestCreateGoogleDoc:
         assert create_kwargs["body"]["mimeType"] == "application/vnd.google-apps.document"
         assert "folder-id" in create_kwargs["body"]["parents"]
 
+    def test_retries_on_ssl_timeout(self):
+        """create_google_doc retries on transient network errors (SSL timeout)."""
+        svc = _make_drive_service(
+            list_response={"files": []},
+            create_response={"id": "doc-after-retry", "webViewLink": "https://..."},
+        )
+        # First call raises OSError (SSL timeout), second succeeds
+        svc.files.return_value.list.return_value.execute.side_effect = [
+            OSError("_ssl.c:993: The handshake operation timed out"),
+            {"files": []},
+        ]
+
+        with patch("tools.integrations.gdrive_manager.get_drive_service", return_value=svc):
+            with patch("tools.integrations.gdrive_manager.MediaIoBaseUpload"):
+                with patch("tools.core.retry.time.sleep"):  # skip actual sleep
+                    doc_id = gdrive.create_google_doc("Test", "content", "folder-id")
+
+        assert doc_id == "doc-after-retry"
+
     def test_updates_existing_doc_in_place(self):
         svc = _make_drive_service(
             list_response={"files": [{"id": "existing-doc-id"}]},
