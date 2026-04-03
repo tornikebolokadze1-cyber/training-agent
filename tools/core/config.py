@@ -254,6 +254,8 @@ ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 PINECONE_API_KEY = _env("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = "training-course"
 
+OPERATOR_EMAIL = _env("OPERATOR_EMAIL")
+
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
@@ -395,6 +397,8 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
     while current <= for_date:
         if current.weekday() in meeting_days and current not in EXCLUDED_DATES:
             count += 1
+            if count >= TOTAL_LECTURES:
+                break
         current += timedelta(days=1)
 
     return count

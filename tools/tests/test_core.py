@@ -325,7 +325,10 @@ class TestIndexLectureContentValidation:
         assert "summary" in CONTENT_TYPES
         assert "gap_analysis" in CONTENT_TYPES
         assert "deep_analysis" in CONTENT_TYPES
-        assert len(CONTENT_TYPES) == 4
+        assert "whatsapp_chat" in CONTENT_TYPES
+        assert "obsidian_concept" in CONTENT_TYPES
+        assert "obsidian_tool" in CONTENT_TYPES
+        assert len(CONTENT_TYPES) == 7
 
 
 # ===========================================================================
@@ -445,6 +448,13 @@ class TestSplitVideoChunks:
             return_value=seconds,
         )
 
+    def _mock_validate_path(self):
+        """Bypass TMP_DIR path validation so pytest tmp_path works."""
+        return patch(
+            "tools.integrations.gemini_analyzer._validate_media_path",
+            side_effect=lambda p: p.resolve(),
+        )
+
     def _mock_subprocess(self):
         """Prevent any real subprocess.run call."""
         return patch("tools.integrations.gemini_analyzer.subprocess.run")
@@ -453,7 +463,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        with self._mock_duration(20 * 60):  # 20 min — under 45 min
+        with self._mock_validate_path(), self._mock_duration(20 * 60):  # 20 min — under 45 min
             from tools.integrations.gemini_analyzer import split_video_chunks
             result = split_video_chunks(video)
 
@@ -463,7 +473,7 @@ class TestSplitVideoChunks:
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        with self._mock_duration(45 * 60):  # exactly 45 min
+        with self._mock_validate_path(), self._mock_duration(45 * 60):  # exactly 45 min
             from tools.integrations.gemini_analyzer import split_video_chunks
             result = split_video_chunks(video)
 
@@ -489,7 +499,7 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_duration(46 * 60):
+        with self._mock_validate_path(), self._mock_duration(46 * 60):
             with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
                 from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
@@ -512,7 +522,7 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_duration(180 * 60):  # 3 hours
+        with self._mock_validate_path(), self._mock_duration(180 * 60):  # 3 hours
             with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
                 from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
@@ -540,7 +550,7 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_duration(100 * 60):  # 100 min → 3 chunks (0,1,2)
+        with self._mock_validate_path(), self._mock_duration(100 * 60):  # 100 min → 3 chunks (0,1,2)
             # Also pre-create chunk2 so none need creating
             chunk2 = video.with_suffix(".chunk2.mp4")
             chunk2.write_bytes(big_enough)
