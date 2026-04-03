@@ -123,6 +123,11 @@ def check_google_token() -> CheckResult:
 
     Uses gdrive_manager._get_credentials() to load the token from disk
     (or base64 env var on Railway) and inspect its expiry.
+
+    Key insight: if a valid refresh_token is present, the access_token
+    will auto-refresh on demand, so a short-lived access_token is NOT
+    critical — it is normal OAuth2 behaviour (~1 hour lifetime).
+    Only report CRITICAL/WARNING when refresh_token is missing.
     """
     try:
         from tools.integrations.gdrive_manager import _get_credentials
@@ -146,24 +151,51 @@ def check_google_token() -> CheckResult:
         now = datetime.utcnow()
         remaining = creds.expiry - now
         remaining_hours = remaining.total_seconds() / 3600
+        has_refresh = getattr(creds, "refresh_token", None) is not None
 
+        # If refresh_token exists, access_token will auto-refresh — all OK
+        if has_refresh:
+            clear_api_error("google_token")
+            return CheckResult(
+                name="google_token",
+                severity=Severity.OK,
+                message=(
+                    f"Google token OK (auto-refresh enabled, "
+                    f"access token expires in {remaining_hours:.1f}h)."
+                ),
+                details={
+                    "expires_in_hours": round(remaining_hours, 1),
+                    "has_refresh_token": True,
+                },
+            )
+
+        # No refresh_token — access_token expiry is the real deadline
         if remaining_hours < GOOGLE_TOKEN_CRITICAL_HOURS:
             return CheckResult(
                 name="google_token",
                 severity=Severity.CRITICAL,
                 message=(
-                    f"Google token expires in {remaining_hours:.1f}h. "
-                    "Refresh immediately or re-authenticate."
+                    f"Google token expires in {remaining_hours:.1f}h "
+                    "and NO refresh_token. Re-authenticate immediately."
                 ),
-                details={"expires_in_hours": round(remaining_hours, 1)},
+                details={
+                    "expires_in_hours": round(remaining_hours, 1),
+                    "has_refresh_token": False,
+                },
             )
 
         if remaining_hours < GOOGLE_TOKEN_WARNING_HOURS:
             return CheckResult(
                 name="google_token",
                 severity=Severity.WARNING,
-                message=f"Google token expires in {remaining_hours:.1f}h.",
-                details={"expires_in_hours": round(remaining_hours, 1)},
+                message=(
+                    f"Google token expires in {remaining_hours:.1f}h "
+                    "(no refresh_token)."
+                ),
+                details={
+                    "expires_in_hours": round(remaining_hours, 1),
+                    "has_refresh_token": False,
+                },
             )
 
         clear_api_error("google_token")
@@ -171,7 +203,10 @@ def check_google_token() -> CheckResult:
             name="google_token",
             severity=Severity.OK,
             message=f"Google token valid for {remaining_hours:.0f}h.",
-            details={"expires_in_hours": round(remaining_hours, 1)},
+            details={
+                "expires_in_hours": round(remaining_hours, 1),
+                "has_refresh_token": False,
+            },
         )
 
     except Exception as exc:

@@ -147,9 +147,22 @@ class TestCheckGoogleToken:
             assert result.severity == Severity.CRITICAL
             assert "not found" in result.message
 
-    def test_token_valid(self):
+    def test_token_valid_with_refresh(self):
+        """Access token valid with refresh_token → OK."""
         mock_token = MagicMock()
         mock_token.expiry = datetime.utcnow() + timedelta(hours=100)
+        mock_token.refresh_token = "valid-refresh-token"
+        with patch(
+            "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
+        ):
+            result = check_google_token()
+            assert result.severity == Severity.OK
+
+    def test_token_valid_without_refresh(self):
+        """Access token valid but far from expiry, no refresh_token → OK."""
+        mock_token = MagicMock()
+        mock_token.expiry = datetime.utcnow() + timedelta(hours=100)
+        mock_token.refresh_token = None
         with patch(
             "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
         ):
@@ -157,22 +170,60 @@ class TestCheckGoogleToken:
             assert result.severity == Severity.OK
 
     def test_token_warning_threshold(self):
+        """Access token in warning range WITHOUT refresh_token → WARNING."""
         mock_token = MagicMock()
         mock_token.expiry = datetime.utcnow() + timedelta(hours=24)
+        mock_token.refresh_token = None
         with patch(
             "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
         ):
             result = check_google_token()
             assert result.severity == Severity.WARNING
 
-    def test_token_critical_threshold(self):
+    def test_token_critical_threshold_no_refresh_token(self):
+        """Access token expiring soon WITHOUT refresh_token → CRITICAL."""
         mock_token = MagicMock()
         mock_token.expiry = datetime.utcnow() + timedelta(hours=2)
+        mock_token.refresh_token = None
         with patch(
             "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
         ):
             result = check_google_token()
             assert result.severity == Severity.CRITICAL
+
+    def test_token_expiring_with_refresh_token_is_ok(self):
+        """Access token expiring soon WITH valid refresh_token → OK (auto-refreshable)."""
+        mock_token = MagicMock()
+        mock_token.expiry = datetime.utcnow() + timedelta(minutes=30)
+        mock_token.refresh_token = "valid-refresh-token"
+        with patch(
+            "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
+        ):
+            result = check_google_token()
+            assert result.severity == Severity.OK
+            assert "auto-refresh" in result.message.lower()
+
+    def test_token_warning_with_refresh_token_is_ok(self):
+        """Access token in warning range WITH refresh_token → OK."""
+        mock_token = MagicMock()
+        mock_token.expiry = datetime.utcnow() + timedelta(hours=24)
+        mock_token.refresh_token = "valid-refresh-token"
+        with patch(
+            "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
+        ):
+            result = check_google_token()
+            assert result.severity == Severity.OK
+
+    def test_token_warning_without_refresh_token(self):
+        """Access token in warning range WITHOUT refresh_token → WARNING."""
+        mock_token = MagicMock()
+        mock_token.expiry = datetime.utcnow() + timedelta(hours=24)
+        mock_token.refresh_token = None
+        with patch(
+            "tools.integrations.gdrive_manager._get_credentials", return_value=mock_token
+        ):
+            result = check_google_token()
+            assert result.severity == Severity.WARNING
 
     def test_token_no_expiry(self):
         mock_token = MagicMock(spec=[])  # no expiry attr
