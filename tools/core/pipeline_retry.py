@@ -556,7 +556,7 @@ async def _check_zoom_recordings(
     """Phase 2: Find Zoom recordings from last 7 days not yet processed."""
     import asyncio
 
-    from tools.core.pipeline_state import is_pipeline_done, load_state, FAILED, reset_failed
+    from tools.core.pipeline_state import is_pipeline_done, is_pipeline_active, load_state, FAILED, reset_failed
 
     try:
         zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
@@ -602,6 +602,12 @@ async def _check_zoom_recordings(
             actions["already_complete"].append(label)
             continue
 
+        # Skip if pipeline is currently active (PENDING/TRANSCRIBING/UPLOADING etc.)
+        # — don't schedule retry for something already in progress
+        if is_pipeline_active(group_number, lecture_number):
+            logger.info("[nightly] %s is actively processing — skipping retry", label)
+            continue
+
         # Check if permanently failed
         record = retry_orchestrator.get_record(group_number, lecture_number)
         if record and record.status == PERMANENTLY_FAILED:
@@ -637,7 +643,7 @@ async def _check_pinecone_gaps(
     import asyncio
 
     from tools.core.config import get_lecture_number
-    from tools.core.pipeline_state import is_pipeline_done
+    from tools.core.pipeline_state import is_pipeline_active, is_pipeline_done
 
     try:
         from tools.integrations.knowledge_indexer import get_pinecone_index
@@ -658,6 +664,12 @@ async def _check_pinecone_gaps(
             # Already complete per pipeline state?
             if is_pipeline_done(group_number, lecture_number):
                 actions["already_complete"].append(label)
+                continue
+
+            # Skip if pipeline is currently active — it will reach
+            # Pinecone indexing on its own, no retry needed
+            if is_pipeline_active(group_number, lecture_number):
+                logger.info("[nightly] %s is actively processing — skipping Pinecone gap retry", label)
                 continue
 
             # Check Pinecone for vectors
