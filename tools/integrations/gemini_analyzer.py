@@ -63,13 +63,20 @@ FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
 GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
 
-# Gemini pricing (per 1M tokens, as of 2025)
+# Gemini pricing (per 1M tokens) — updated 2026-04 from Google Cloud SKU rates.
+# Video/audio inputs are billed at HIGHER rates than text inputs.
+# Flash "input" uses blended video+audio rate since our main use is transcription.
+# Source: Google Cloud Billing SKU breakdown, April 2026.
 GEMINI_COST_TABLE: dict[str, dict[str, float]] = {
+    # Flash video transcription: video ~$0.30/M + audio ~$1.00/M overhead
+    "gemini-2.5-flash": {"input": 0.42, "output": 2.50},
+    # Pro models — Georgian text generation (text-only, no video)
+    "gemini-3.1-pro": {"input": 1.25, "output": 10.0},
+    "gemini-3-pro": {"input": 1.25, "output": 10.0},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
-    "gemini-2.5-pro-preview-05-06": {"input": 1.25, "output": 10.0},
+    "gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
     "gemini-2.0-pro": {"input": 1.25, "output": 10.0},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
 }
 GEMINI_COST_DEFAULT = {"input": 1.25, "output": 10.0}  # fallback
 
@@ -653,9 +660,9 @@ def transcribe_chunked_video(
             )
 
             # Cost budget check — halt pipeline if exceeding budget
-            # This is approximate — full precision is in the Gemini logs
+            # ~$4 per chunk on Flash (video+audio input + text output at SKU rates)
             chunk_count = len(transcripts)
-            estimated_cost = chunk_count * 1.5  # ~$1.50 per chunk on Flash
+            estimated_cost = chunk_count * 4.0
             if estimated_cost > MAX_COST_PER_LECTURE:
                 full_transcript = "\n\n".join(transcripts)
                 logger.error(
