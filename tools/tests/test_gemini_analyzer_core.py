@@ -246,9 +246,8 @@ class TestSplitVideoChunks:
     # Long video — 3 chunks
     # -----------------------------------------------------------------------
 
-    def test_100_min_video_produces_3_chunks(self, tmp_path: Path) -> None:
-        """A 100-minute video (6000 s) must produce exactly 3 chunks
-        (45 + 45 + 10 minutes)."""
+    def test_100_min_video_smart_merge_produces_2_chunks(self, tmp_path: Path) -> None:
+        """A 100-minute video (45+45+10): 10 min < 15 min threshold → merged → 2 chunks."""
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
@@ -263,10 +262,28 @@ class TestSplitVideoChunks:
         ):
             result = ga.split_video_chunks(video)
 
+        assert len(result) == 2
+
+    def test_120_min_video_no_merge_produces_3_chunks(self, tmp_path: Path) -> None:
+        """A 120-minute video (45+45+30): 30 min >= 15 min → no merge → 3 chunks."""
+        video = tmp_path / "long.mp4"
+        video.write_bytes(b"\x00" * 1000)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "ffprobe":
+                return self._ffprobe_result(120 * 60)
+            return self._ffmpeg_ok(cmd, **kwargs)
+
+        with (
+            patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run),
+            patch.object(ga, "TMP_DIR", tmp_path),
+        ):
+            result = ga.split_video_chunks(video)
+
         assert len(result) == 3
 
     def test_100_min_video_chunk_names_follow_convention(self, tmp_path: Path) -> None:
-        """Chunk files must be named <original>.chunk0.mp4, .chunk1.mp4, .chunk2.mp4."""
+        """Smart-merged 100-min video: chunk0.mp4, chunk1.mp4."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"\x00" * 1000)
 
@@ -284,10 +301,9 @@ class TestSplitVideoChunks:
         names = [p.name for p in result]
         assert "lecture.chunk0.mp4" in names
         assert "lecture.chunk1.mp4" in names
-        assert "lecture.chunk2.mp4" in names
 
-    def test_100_min_video_invokes_ffmpeg_3_times(self, tmp_path: Path) -> None:
-        """The 3-chunk split must call ffmpeg exactly 3 times."""
+    def test_100_min_video_invokes_ffmpeg_2_times(self, tmp_path: Path) -> None:
+        """Smart-merged 100-min: ffmpeg called 2 times (not 3)."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"\x00" * 1000)
 
@@ -303,10 +319,10 @@ class TestSplitVideoChunks:
             ga.split_video_chunks(video)
 
         ffmpeg_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "ffmpeg"]
-        assert len(ffmpeg_calls) == 3
+        assert len(ffmpeg_calls) == 2
 
-    def test_ffmpeg_receives_ss_and_t_flags(self, tmp_path: Path) -> None:
-        """Each ffmpeg call must include -ss (start offset) and -t (duration) flags."""
+    def test_last_chunk_has_no_t_flag(self, tmp_path: Path) -> None:
+        """Last chunk must NOT have -t flag (runs to end of video for smart merge)."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"\x00" * 1000)
         captured_cmds: list[list] = []
@@ -323,9 +339,12 @@ class TestSplitVideoChunks:
         ):
             ga.split_video_chunks(video)
 
+        # First chunk has -t, last chunk does not
+        assert "-t" in captured_cmds[0], "First chunk should have -t flag"
+        assert "-t" not in captured_cmds[-1], "Last chunk should NOT have -t flag (smart merge)"
+        # All chunks must have -ss
         for cmd in captured_cmds:
             assert "-ss" in cmd, f"-ss flag missing from ffmpeg cmd: {cmd}"
-            assert "-t" in cmd, f"-t flag missing from ffmpeg cmd: {cmd}"
 
     def test_chunk_start_offsets_are_multiples_of_chunk_duration(
         self, tmp_path: Path

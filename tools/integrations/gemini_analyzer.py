@@ -208,15 +208,29 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
         return [video_path]
 
     num_chunks = int(duration // chunk_seconds) + (1 if duration % chunk_seconds > 0 else 0)
-    logger.info(
-        "Video is %.0f min — splitting into %d chunks of ~%d min each.",
-        duration / 60, num_chunks, CHUNK_DURATION_MINUTES,
-    )
+
+    # Smart merge: if final chunk is < 15 min, merge with previous chunk
+    # to avoid paying a full API call for a tiny remainder.
+    remainder_seconds = duration % chunk_seconds
+    if num_chunks > 1 and 0 < remainder_seconds < 15 * 60:
+        num_chunks -= 1
+        logger.info(
+            "Video is %.0f min — merging short final chunk (%.0f min) with previous. "
+            "Splitting into %d chunks.",
+            duration / 60, remainder_seconds / 60, num_chunks,
+        )
+    else:
+        logger.info(
+            "Video is %.0f min — splitting into %d chunks of ~%d min each.",
+            duration / 60, num_chunks, CHUNK_DURATION_MINUTES,
+        )
 
     chunk_paths: list[Path] = []
     min_chunk_size = 1024 * 100  # 100 KB minimum for a valid chunk
     for i in range(num_chunks):
         start = i * chunk_seconds
+        # Last chunk gets all remaining duration (handles smart merge)
+        is_last = (i == num_chunks - 1)
         chunk_path = video_path.with_suffix(f".chunk{i}.mp4")
 
         if chunk_path.exists():
@@ -235,7 +249,11 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
             "ffmpeg", "-y",
             "-ss", str(start),
             "-i", str(video_path),
-            "-t", str(chunk_seconds),
+        ]
+        if not is_last:
+            cmd += ["-t", str(chunk_seconds)]
+        # Last chunk: no -t flag → runs to end of video (handles smart merge)
+        cmd += [
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             "--", str(chunk_path),
@@ -545,7 +563,7 @@ def transcribe_video(file_ref: object, use_free: bool = False,
         model=GEMINI_MODEL_TRANSCRIPTION,
         contents=[file_ref, prompt],
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
-        max_output_tokens=65536,
+        max_output_tokens=32768,  # Reduced from 65536 — prevents wasteful max-out
         use_free=use_free,
         disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
     )
