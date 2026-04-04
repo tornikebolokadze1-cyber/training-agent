@@ -783,9 +783,9 @@ def _claude_reason(
                 if usage:
                     input_tokens = getattr(usage, 'input_tokens', 0) or 0
                     output_tokens = getattr(usage, 'output_tokens', 0) or 0
-                    # Opus pricing: $15/M input, $75/M output
-                    input_cost = (input_tokens / 1_000_000) * 15.0
-                    output_cost = (output_tokens / 1_000_000) * 75.0
+                    # Sonnet 4.6 pricing: $3/M input, $15/M output
+                    input_cost = (input_tokens / 1_000_000) * 3.0
+                    output_cost = (output_tokens / 1_000_000) * 15.0
                     total_cost = input_cost + output_cost
                     logger.info(
                         "💰 Claude cost [%s] | input=%d tokens ($%.4f) | "
