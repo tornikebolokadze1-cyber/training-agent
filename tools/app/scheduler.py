@@ -398,6 +398,7 @@ def _run_post_meeting_pipeline(
     from tools.integrations.gdrive_manager import (
         ensure_folder,
         get_drive_service,
+        trash_old_recordings,
         upload_file,
     )
     from tools.services.transcribe_lecture import transcribe_and_index
@@ -518,6 +519,7 @@ def _run_post_meeting_pipeline(
             lecture_folder_name,
             group["drive_folder_id"],
         )
+        trash_old_recordings(lecture_folder_id, group_number, lecture_number)
         upload_file(local_path, lecture_folder_id)
         logger.info("[post] Recording uploaded to Drive")
 
@@ -739,7 +741,7 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
                 return
             # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
             # Atomic check-and-set under lock prevents webhook+scheduler race.
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
         pass  # server module not available (standalone scheduler mode)

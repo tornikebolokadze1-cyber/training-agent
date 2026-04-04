@@ -143,7 +143,7 @@ async def retry_lecture(
 
     loop = asyncio.get_running_loop()
     with _processing_lock:
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
             create_pipeline(group, lecture)
         except ValueError:

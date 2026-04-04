@@ -148,8 +148,12 @@ def check_google_token() -> CheckResult:
                 message="Google credentials loaded (no expiry — likely service account).",
             )
 
-        now = datetime.utcnow()
-        remaining = creds.expiry - now
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
+        expiry = creds.expiry
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=_tz.utc)
+        remaining = expiry - now
         remaining_hours = remaining.total_seconds() / 3600
         has_refresh = getattr(creds, "refresh_token", None) is not None
 

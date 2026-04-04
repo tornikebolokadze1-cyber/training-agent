@@ -2,7 +2,7 @@
 
 Multimodal transcription with Gemini 2.5 Pro (video chunked into ~45min
 segments via ffmpeg to fit within 1M token limit — preserves slides,
-demos, and screen shares), then Claude Opus reasoning + Gemini Georgian
+demos, and screen shares), then Claude Sonnet reasoning + Gemini Georgian
 writing for analysis.
 """
 
