@@ -49,9 +49,12 @@ ENV SERVER_HOST="0.0.0.0" \
 
 EXPOSE 5001
 
-# Health check using curl (lighter than Python)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:5001/health || exit 1
+# Health check — generous timeout to survive long Gemini API calls.
+# Pipeline runs on a separate thread, but under heavy CPU/memory load
+# the event loop can be slow to respond. 30s timeout + 60s start period
+# prevents false-positive restarts during video transcription.
+HEALTHCHECK --interval=60s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -sf --max-time 25 http://localhost:5001/health || exit 1
 
 # Run the unified orchestrator (APScheduler + FastAPI)
 CMD ["python", "-m", "tools.app.orchestrator"]

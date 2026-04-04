@@ -43,6 +43,7 @@ from tools.core.config import (
 from tools.integrations.gdrive_manager import (
     ensure_folder,
     get_drive_service,
+    trash_old_recordings,
     upload_file,
 )
 from tools.integrations.whatsapp_sender import alert_operator
@@ -86,11 +87,20 @@ def _rebuild_task_cache() -> None:
             key = _task_key(pipeline.group, pipeline.lecture)
             if key not in _processing_tasks:
                 try:
-                    _processing_tasks[key] = datetime.fromisoformat(pipeline.started_at)
+                    _processing_tasks[key] = _ensure_tz_aware(
+                        datetime.fromisoformat(pipeline.started_at)
+                    )
                 except (ValueError, TypeError):
-                    _processing_tasks[key] = datetime.now()
+                    _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
     if active:
         logger.info("[dedup] Rebuilt task cache from %d active pipeline state files", len(active))
+
+
+def _ensure_tz_aware(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (default to TBILISI_TZ if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TBILISI_TZ)
+    return dt
 
 
 def _evict_stale_tasks() -> list[str]:
@@ -98,10 +108,10 @@ def _evict_stale_tasks() -> list[str]:
 
     Returns list of evicted task keys (for logging).
     """
-    now = datetime.now()
+    now = datetime.now(tz=TBILISI_TZ)
     stale = [
         key for key, started in _processing_tasks.items()
-        if (now - started).total_seconds() > STALE_TASK_HOURS * 3600
+        if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
     ]
     for key in stale:
         _processing_tasks.pop(key, None)
@@ -521,6 +531,14 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         lecture_folder_id = await asyncio.to_thread(
             ensure_folder, service, lecture_folder_name, payload.drive_folder_id
         )
+        # Clean up any old recording versions before uploading the new one
+        # (prevents duplicate videos from accumulating on retries/re-processing)
+        trashed_count = await asyncio.to_thread(
+            trash_old_recordings, lecture_folder_id, group, lecture,
+        )
+        if trashed_count:
+            logger.info("Trashed %d old recording(s) before upload", trashed_count)
+
         logger.info("Uploading recording to Google Drive...")
         recording_file_id = await asyncio.to_thread(upload_file, local_path, lecture_folder_id)
         drive_recording_url = get_drive_file_url(recording_file_id)

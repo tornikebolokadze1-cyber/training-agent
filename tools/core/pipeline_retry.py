@@ -406,7 +406,7 @@ async def _execute_retry(group: int, lecture: int, meeting_id: str) -> None:
             if key in _processing_tasks:
                 logger.info("[retry] G%d L%d dedup key already claimed — skipping", group, lecture)
                 return
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
     except (ImportError, RuntimeError):
         pass  # Server module not available in standalone mode
 
