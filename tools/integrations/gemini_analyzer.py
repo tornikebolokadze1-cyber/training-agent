@@ -209,15 +209,22 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
 
     num_chunks = int(duration // chunk_seconds) + (1 if duration % chunk_seconds > 0 else 0)
 
-    # Smart merge: if final chunk is < 15 min, merge with previous chunk
-    # to avoid paying a full API call for a tiny remainder.
+    # Smart merge: if final chunk is < 15 min AND merged chunk stays within
+    # token budget, merge with previous chunk to avoid a tiny API call.
+    # Safety: merged chunk must not exceed ~55 min (850K tokens, safe under 1M).
+    max_merged_seconds = 55 * 60  # hard upper bound for merged chunk
     remainder_seconds = duration % chunk_seconds
-    if num_chunks > 1 and 0 < remainder_seconds < 15 * 60:
+    merged_duration = chunk_seconds + remainder_seconds
+    if (
+        num_chunks > 1
+        and 0 < remainder_seconds < 15 * 60
+        and merged_duration <= max_merged_seconds
+    ):
         num_chunks -= 1
         logger.info(
-            "Video is %.0f min — merging short final chunk (%.0f min) with previous. "
-            "Splitting into %d chunks.",
-            duration / 60, remainder_seconds / 60, num_chunks,
+            "Video is %.0f min — merging short final chunk (%.0f min) with previous "
+            "(merged=%.0f min, within budget). Splitting into %d chunks.",
+            duration / 60, remainder_seconds / 60, merged_duration / 60, num_chunks,
         )
     else:
         logger.info(

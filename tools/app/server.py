@@ -268,7 +268,7 @@ async def _check_unprocessed_recordings() -> None:
             # Re-check under lock
             if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
                 create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
             except ValueError:
@@ -969,7 +969,7 @@ def _handle_recording_completed_via_polling(
         key = _task_key(group_number, lecture_number)
         if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
             create_pipeline(group_number, lecture_number, meeting_id=poll_id)
         except ValueError:
@@ -1064,7 +1064,7 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             logger.info("[meeting.ended] %s already processing — skipping", key)
             return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
             create_pipeline(group_number, lecture_number, meeting_id=str(meeting_uuid or meeting_id))
         except ValueError:
@@ -1153,7 +1153,7 @@ async def zoom_webhook(
             key = _task_key(ctx["group_number"], ctx["lecture_number"])
             if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]):
                 return {"status": "duplicate", "message": f"{key} already processing"}
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
                 create_pipeline(ctx["group_number"], ctx["lecture_number"], meeting_id="")
             except ValueError:
@@ -1211,7 +1211,7 @@ async def process_recording(
                 detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
             create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
         except ValueError:
@@ -1408,7 +1408,7 @@ async def retry_latest(
         with _processing_lock:
             if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
                 create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
             except ValueError:
@@ -1534,7 +1534,7 @@ async def manual_trigger(
                 detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
             create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
         except ValueError:
