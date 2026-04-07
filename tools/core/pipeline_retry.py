@@ -648,7 +648,10 @@ async def _check_pinecone_gaps(
 
     try:
         from tools.integrations.knowledge_indexer import get_pinecone_index
-        index = await asyncio.to_thread(get_pinecone_index)
+        # Validate Pinecone is reachable before scanning gaps; the index instance
+        # itself is no longer needed because gap check now uses
+        # lecture_exists_in_index() which manages its own connection.
+        await asyncio.to_thread(get_pinecone_index)
     except Exception as exc:
         logger.warning("[nightly] Pinecone not available — skipping gap check: %s", exc)
         return
