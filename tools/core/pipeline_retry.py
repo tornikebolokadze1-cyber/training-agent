@@ -31,7 +31,31 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 5
 BACKOFF_MINUTES: tuple[int, ...] = (15, 30, 60, 120, 240)  # 15m, 30m, 1h, 2h, 4h
 PERMANENTLY_FAILED = "PERMANENTLY_FAILED"
+BLOCKED_ON_TOKEN = "BLOCKED_ON_TOKEN"  # Halt retries until Google OAuth re-auth
 RETRY_TRACKER_PATH = TMP_DIR / "retry_tracker.json"
+
+# Keywords that indicate Google OAuth refresh_token revocation.
+# When any of these appear in an error message, retrying is pointless
+# until an operator runs `python -m tools.core.token_manager --reauth`.
+_TOKEN_REVOKED_KEYWORDS: tuple[str, ...] = (
+    "invalid_grant",
+    "token has been expired or revoked",
+    "refresh_token is invalid",
+    "refresh_token has been revoked",
+)
+
+
+def _is_token_revoked_error(error_msg: str) -> bool:
+    """Detect Google OAuth refresh_token revocation from an error string.
+
+    These errors cannot be fixed by retrying — they require a human to
+    re-run the OAuth consent flow. Retrying just spams WhatsApp alerts
+    and wastes API budget, so the retry orchestrator must halt instead.
+    """
+    if not error_msg:
+        return False
+    lowered = error_msg.lower()
+    return any(kw in lowered for kw in _TOKEN_REVOKED_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +196,27 @@ class RetryOrchestrator:
             record.errors = record.errors[-10:]
         record.updated_at = now
 
+        # Halt early if the error indicates Google OAuth revocation.
+        # Retrying in this state is pointless — every attempt will fail
+        # with the same invalid_grant until an operator re-authorizes.
+        if _is_token_revoked_error(error_msg):
+            record.status = BLOCKED_ON_TOKEN
+            record.next_retry_at = ""
+            tracker[key] = asdict(record)
+            _save_tracker(tracker)
+
+            logger.critical(
+                "[retry] G%d L%d BLOCKED_ON_TOKEN — Google refresh_token revoked. "
+                "Run `python -m tools.core.token_manager --reauth` to unblock.",
+                group, lecture,
+            )
+            self._alert_token_blocked(record)
+            return {
+                "status": BLOCKED_ON_TOKEN,
+                "attempt": record.attempt,
+                "errors": record.errors,
+            }
+
         if record.attempt > MAX_RETRIES:
             record.status = PERMANENTLY_FAILED
             record.next_retry_at = ""
@@ -237,7 +282,7 @@ class RetryOrchestrator:
                 "last_error": record.errors[-1] if record.errors else "",
                 "updated_at": record.updated_at,
             }
-            if record.status == PERMANENTLY_FAILED:
+            if record.status in (PERMANENTLY_FAILED, BLOCKED_ON_TOKEN):
                 permanently_failed.append(entry)
             else:
                 pending.append(entry)
@@ -344,6 +389,31 @@ class RetryOrchestrator:
         except Exception as exc:
             logger.error(
                 "[retry] Failed to alert operator about permanent failure: %s", exc
+            )
+
+    def _alert_token_blocked(self, record: RetryRecord) -> None:
+        """Send ONE alert when retries are halted due to Google OAuth revocation.
+
+        Unlike permanent failure alerts, this fires immediately on the first
+        invalid_grant so the operator can re-authorize before more lectures
+        get stuck. Once fired, further failures on this lecture stay silent
+        until status transitions away from BLOCKED_ON_TOKEN.
+        """
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+
+            alert_operator(
+                f"🔐 TOKEN REVOKED — Google OAuth refresh_token is invalid.\n\n"
+                f"Pipeline HALTED for Group {record.group}, Lecture #{record.lecture}.\n"
+                f"Retries are PAUSED (not retrying — would just fail again).\n\n"
+                f"Fix in 3 steps:\n"
+                f"1. Run: python -m tools.core.token_manager --reauth\n"
+                f"2. Upload new token.json to Railway (GOOGLE_TOKEN_JSON_B64)\n"
+                f"3. POST /retry-lecture group={record.group} lecture={record.lecture}"
+            )
+        except Exception as exc:
+            logger.error(
+                "[retry] Failed to alert operator about token block: %s", exc
             )
 
 
@@ -539,7 +609,7 @@ def _check_stuck_pipelines(
         # Schedule retry
         if pipeline.meeting_id:
             record = retry_orchestrator.get_record(pipeline.group, pipeline.lecture)
-            if record and record.status == PERMANENTLY_FAILED:
+            if record and record.status in (PERMANENTLY_FAILED, BLOCKED_ON_TOKEN):
                 actions["skipped_max_retries"].append(label)
             else:
                 retry_orchestrator.schedule_retry(
@@ -611,7 +681,7 @@ async def _check_zoom_recordings(
 
         # Check if permanently failed
         record = retry_orchestrator.get_record(group_number, lecture_number)
-        if record and record.status == PERMANENTLY_FAILED:
+        if record and record.status in (PERMANENTLY_FAILED, BLOCKED_ON_TOKEN):
             actions["skipped_max_retries"].append(label)
             continue
 
@@ -696,7 +766,7 @@ async def _check_pinecone_gaps(
 
             # Not indexed — check retry status
             record = retry_orchestrator.get_record(group_number, lecture_number)
-            if record and record.status == PERMANENTLY_FAILED:
+            if record and record.status in (PERMANENTLY_FAILED, BLOCKED_ON_TOKEN):
                 actions["skipped_max_retries"].append(label)
                 continue
 

@@ -398,6 +398,7 @@ def _run_post_meeting_pipeline(
     from tools.integrations.gdrive_manager import (
         ensure_folder,
         get_drive_service,
+        list_files_in_folder,
         trash_old_recordings,
         upload_file,
     )
@@ -519,9 +520,40 @@ def _run_post_meeting_pipeline(
             lecture_folder_name,
             group["drive_folder_id"],
         )
-        trash_old_recordings(lecture_folder_id, group_number, lecture_number)
-        upload_file(local_path, lecture_folder_id)
-        logger.info("[post] Recording uploaded to Drive")
+
+        # Check if video already uploaded (crash recovery — avoid duplicates)
+        video_already_uploaded = False
+        try:
+            existing_files = list_files_in_folder(lecture_folder_id)
+            prefix = f"group{group_number}_lecture{lecture_number}_"
+            existing_video = next(
+                (
+                    f
+                    for f in existing_files
+                    if f.get("name", "").startswith(prefix)
+                    and f.get("name", "").endswith(".mp4")
+                    and not f.get("mimeType", "").startswith("application/vnd.google-apps")
+                ),
+                None,
+            )
+            if existing_video is not None:
+                video_already_uploaded = True
+                logger.info(
+                    "[post] Video already in Drive (crash recovery): %s — skipping upload",
+                    existing_video["name"],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[post] Could not check for existing video in Drive: %s — will upload normally",
+                exc,
+            )
+
+        if video_already_uploaded:
+            logger.info("[post] Skipped duplicate upload to Drive")
+        else:
+            trash_old_recordings(lecture_folder_id, group_number, lecture_number)
+            upload_file(local_path, lecture_folder_id)
+            logger.info("[post] Recording uploaded to Drive")
 
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
@@ -966,6 +998,57 @@ def start_scheduler() -> AsyncIOScheduler:
         hours=6,
         id="pinecone_score_backup",
         name="Pinecone score backup",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Google OAuth token health check — 08:00 Tbilisi time every day     #
+    #  Proactively catches revoked/expiring refresh_tokens BEFORE a       #
+    #  lecture pipeline needs them. Alerts operator with ~12 hours of     #
+    #  lead time (well before the 18:00 pre-meeting job).                 #
+    # ------------------------------------------------------------------ #
+    def _daily_token_health_check() -> None:
+        from tools.core.token_manager import check_token_health
+        from tools.integrations.whatsapp_sender import alert_operator
+
+        health = check_token_health()
+        expires_in = health.get("expires_in_hours")
+        has_refresh = health.get("has_refresh_token")
+        error = health.get("error")
+
+        if error or not has_refresh:
+            logger.critical(
+                "[token_health] CRITICAL — refresh_token missing/invalid: %s", error
+            )
+            alert_operator(
+                "🔐 Google OAuth refresh_token is missing or invalid.\n"
+                f"Details: {error or 'no refresh_token'}\n"
+                "Run `python -m tools.core.token_manager --reauth` BEFORE "
+                "tonight's lecture (18:00)."
+            )
+            return
+
+        if expires_in is not None and expires_in < 48:
+            logger.warning(
+                "[token_health] Token expires in %.1fh — refresh recommended",
+                expires_in,
+            )
+            try:
+                from tools.core.token_manager import refresh_google_token
+                refresh_google_token()
+            except Exception as exc:
+                logger.error("[token_health] Preemptive refresh failed: %s", exc)
+        else:
+            logger.info(
+                "[token_health] OK — %.1fh until expiry, refresh_token present",
+                expires_in or 0.0,
+            )
+
+    scheduler.add_job(
+        _daily_token_health_check,
+        trigger=CronTrigger(hour=8, minute=0, timezone=TBILISI_TZ),
+        id="google_token_health",
+        name="Daily Google OAuth token health check",
         replace_existing=True,
     )
 
