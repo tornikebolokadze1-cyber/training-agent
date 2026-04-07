@@ -559,7 +559,7 @@ def check_stuck_pipelines() -> CheckResult:
                 if elapsed_hours > PIPELINE_STUCK_WARNING_HOURS:
                     stuck.append(
                         f"G{pipeline.group} L{pipeline.lecture} "
-                        f"in '{pipeline.status}' for {elapsed_hours:.1f}h"
+                        f"in '{pipeline.state}' for {elapsed_hours:.1f}h"
                     )
             except (ValueError, TypeError):
                 continue
@@ -759,7 +759,7 @@ def run_daily_morning_report() -> None:
 
         active = list_active_pipelines()
         for p in active:
-            pending_info.append(f"  G{p.group} L{p.lecture}: {p.status}")
+            pending_info.append(f"  G{p.group} L{p.lecture}: {p.state}")
     except Exception:
         pass
 
