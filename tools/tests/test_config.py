@@ -418,8 +418,8 @@ class TestGetLectureNumber:
             result = cfg.get_lecture_number(1, for_date=date(2026, 3, 17))
         assert result == 1
 
-    def test_returns_raw_count_beyond_total_lectures(self):
-        """get_lecture_number no longer caps at TOTAL_LECTURES — callers handle overflow."""
+    def test_caps_at_total_lectures(self):
+        """get_lecture_number caps at TOTAL_LECTURES (commit 9d5de58)."""
         mock_groups = {
             1: {
                 "name": "g1",
@@ -430,7 +430,7 @@ class TestGetLectureNumber:
         with patch.object(cfg, "GROUPS", mock_groups), \
              patch.object(cfg, "TOTAL_LECTURES", 15):
             result = cfg.get_lecture_number(1, for_date=date(2026, 12, 31))
-        assert result > 15  # Raw count, callers check > TOTAL_LECTURES
+        assert result == 15  # Capped at TOTAL_LECTURES
 
     def test_defaults_to_today_when_no_date(self):
         mock_groups = {
