@@ -371,10 +371,18 @@ def get_lecture_vector_count(
         prefix = f"g{group_number}_l{lecture_number}_"
 
     try:
+        # Pinecone's index.list(prefix=...) returns a generator of pages,
+        # where each page is a list of vector IDs. Previous code did
+        # len(list(generator)) which counted PAGES, not vectors — causing
+        # all lectures to appear as "0 vectors" and triggering false retries.
         count = 0
-        page = index.list(prefix=prefix)
-        ids = list(page) if not isinstance(page, dict) else page.get("vectors", [])
-        count += len(ids)
+        for page in index.list(prefix=prefix):
+            if isinstance(page, dict):
+                count += len(page.get("vectors", []))
+            elif hasattr(page, "__len__"):
+                count += len(page)
+            else:
+                count += 1
         return count
     except Exception as exc:
         logger.warning(

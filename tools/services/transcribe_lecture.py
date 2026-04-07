@@ -374,15 +374,20 @@ def transcribe_and_index(
             if count:
                 logger.info("Indexed %d vectors for %s", count, content_type)
 
-        # Quality gate: warn if critical analysis outputs are empty
+        # Quality gate: HARD FAIL if any critical analysis output is empty.
+        # Previously this was warning-only, which let pipelines reach COMPLETE
+        # state with empty Drive docs and no notification — silent data loss.
         empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
         if empty_analyses:
-            warning_msg = (
-                f"Pipeline completed with EMPTY analyses for G{group_number} L#{lecture_number}: "
+            failure_msg = (
+                f"Pipeline FAILED with EMPTY analyses for G{group_number} L#{lecture_number}: "
                 f"{', '.join(empty_analyses)}"
             )
-            logger.warning(warning_msg)
-            _safe_alert(warning_msg)
+            logger.error(failure_msg)
+            _safe_alert(failure_msg)
+            # Raise so the outer except clause marks the pipeline FAILED instead
+            # of falling through to mark_complete() with empty results.
+            raise RuntimeError(failure_msg)
 
         # Clean up checkpoint files now that the full pipeline succeeded
         deleted = cleanup_checkpoints(group_number, lecture_number)

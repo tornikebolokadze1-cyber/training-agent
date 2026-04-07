@@ -507,6 +507,7 @@ def _check_stuck_pipelines(
     from tools.core.pipeline_state import (
         COMPLETE,
         FAILED,
+        get_last_activity_time,
         list_all_pipelines,
         mark_failed,
     )
@@ -515,15 +516,15 @@ def _check_stuck_pipelines(
         if pipeline.state in (COMPLETE, FAILED):
             continue
 
-        # Check if stuck (updated_at > 4 hours ago)
-        try:
-            updated = datetime.fromisoformat(pipeline.updated_at)
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=TBILISI_TZ)
-        except (ValueError, TypeError):
+        # Check if stuck — use last_heartbeat (updated every 5 min during
+        # active transcription) instead of updated_at which only changes on
+        # state transitions.  This prevents marking a legitimately active
+        # pipeline (e.g. transcribing a 2-hour video) as stuck.
+        last_activity = get_last_activity_time(pipeline)
+        if last_activity is None:
             continue
 
-        age_hours = (now - updated).total_seconds() / 3600.0
+        age_hours = (now - last_activity).total_seconds() / 3600.0
         if age_hours < 4.0:
             continue
 
@@ -672,20 +673,16 @@ async def _check_pinecone_gaps(
                 logger.info("[nightly] %s is actively processing — skipping Pinecone gap retry", label)
                 continue
 
-            # Check Pinecone for vectors
+            # Check Pinecone for vectors via ID prefix scan.
+            # Previously used index.query(vector=[0.0]*3072, filter={...}) which
+            # returns 0 matches for zero-vector + cosine metric — causing every
+            # lecture to look "missing" and triggering false retries every night.
             try:
-                dummy_embedding = [0.0] * 3072
-                result = await asyncio.to_thread(
-                    lambda g=group_number, lec=lecture_number: index.query(
-                        vector=dummy_embedding,
-                        top_k=1,
-                        filter={
-                            "group_number": {"$eq": g},
-                            "lecture_number": {"$eq": lec},
-                        },
-                    )
+                from tools.integrations.knowledge_indexer import lecture_exists_in_index
+                exists = await asyncio.to_thread(
+                    lecture_exists_in_index, group_number, lecture_number,
                 )
-                if result.get("matches"):
+                if exists:
                     actions["already_complete"].append(label)
                     continue
             except Exception as exc:
