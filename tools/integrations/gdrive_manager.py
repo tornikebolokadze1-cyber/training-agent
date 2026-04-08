@@ -211,6 +211,62 @@ def create_all_lecture_folders() -> dict[int, dict[int, str]]:
 # File Upload
 # ---------------------------------------------------------------------------
 
+# Match lecture recording filenames produced by the pipeline.
+# Examples:
+#   group1_lecture8_20260408_065110.mp4
+#   group2_lecture6_20260406_000500_seg0.mp4
+# Captures (group, lecture) so dedup can match across timestamp variants.
+_RECORDING_NAME_RE = re.compile(
+    r"^group(?P<group>\d+)_lecture(?P<lecture>\d+)_.*\.mp4$",
+    re.IGNORECASE,
+)
+
+
+def _trash_pattern_matches(
+    service,
+    folder_id: str,
+    group: int,
+    lecture: int,
+    exclude_name: str | None = None,
+) -> int:
+    """Trash any lecture recording files in folder matching this group+lecture.
+
+    Used by upload_file() to clean up older retry artifacts before uploading
+    a fresh copy. The exclude_name argument prevents trashing the file we're
+    about to upload (in case the same name already exists, exact-name dedup
+    handles it earlier in the upload path).
+
+    Returns the number of files trashed.
+    """
+    pattern = re.compile(
+        rf"^group{group}_lecture{lecture}_.*\.mp4$",
+        re.IGNORECASE,
+    )
+    listing = (
+        service.files()
+        .list(
+            q=f"'{folder_id}' in parents and trashed=false and mimeType contains 'video/'",
+            fields="files(id, name, mimeType)",
+            pageSize=100,
+        )
+        .execute()
+        .get("files", [])
+    )
+    trashed = 0
+    for f in listing:
+        name = f.get("name", "")
+        if not pattern.match(name):
+            continue
+        if exclude_name and name == exclude_name:
+            continue
+        try:
+            service.files().update(fileId=f["id"], body={"trashed": True}).execute()
+            trashed += 1
+        except Exception as exc:
+            logger.warning("Failed to trash old recording %s: %s", name, exc)
+    return trashed
+
+
 def _find_existing_file(
     service,
     filename: str,
@@ -394,6 +450,32 @@ def upload_file(
     existing_id = _find_existing_file(service, file_path.name, folder_id, local_size)
     if existing_id:
         return existing_id
+
+    # Pattern-based dedup for lecture recordings: trash older runs of the same
+    # (group, lecture) before uploading the new one. Different pipeline runs
+    # produce different timestamps in the filename, so the exact-name dedup
+    # above misses them. Without this guard, retries leave duplicate videos
+    # in the lecture folder.
+    _recording_match = _RECORDING_NAME_RE.match(file_path.name)
+    if _recording_match:
+        try:
+            _trashed = _trash_pattern_matches(
+                service,
+                folder_id,
+                group=int(_recording_match.group("group")),
+                lecture=int(_recording_match.group("lecture")),
+                exclude_name=file_path.name,
+            )
+            if _trashed:
+                logger.info(
+                    "Pattern dedup: trashed %d older recording(s) for "
+                    "group%s lecture%s before uploading %s",
+                    _trashed, _recording_match.group("group"),
+                    _recording_match.group("lecture"), file_path.name,
+                )
+        except Exception as exc:
+            # Dedup is best-effort — never block the actual upload
+            logger.warning("Pattern dedup skipped (non-fatal): %s", exc)
 
     metadata = {"name": file_path.name, "parents": [folder_id]}
     media = MediaFileUpload(
