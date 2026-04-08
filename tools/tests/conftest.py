@@ -100,7 +100,25 @@ _googleapiclient.http = _googleapiclient_http
 # pinecone
 # ===================================================================
 _pinecone = _stub_module("pinecone")
-_pinecone.Pinecone = MagicMock
+
+def _make_pinecone_client(*args, **kwargs):
+    """Return a mock Pinecone client with JSON-serializable dict returns."""
+    client = MagicMock()
+    # Index().describe_index_stats() must return a real dict, not MagicMock,
+    # so it can be serialized in admin/system-report responses.
+    index = MagicMock()
+    index.describe_index_stats.return_value = {
+        "total_vector_count": 0,
+        "dimension": 3072,
+        "index_fullness": 0.0,
+        "namespaces": {},
+    }
+    index.query.return_value = {"matches": []}
+    index.upsert.return_value = {"upserted_count": 0}
+    client.Index.return_value = index
+    return client
+
+_pinecone.Pinecone = _make_pinecone_client
 _pinecone.ServerlessSpec = MagicMock
 
 # ===================================================================
