@@ -427,6 +427,15 @@ class TestMarkFailedComplete:
 
     def test_mark_complete(self):
         s = create_pipeline(_G, _L)
+        # Populate completion-invariant artifacts so mark_complete actually
+        # transitions to COMPLETE rather than coercing to FAILED.
+        s = transition(
+            s, INDEXING,
+            analysis_done=True,
+            summary_doc_id="doc-summary",
+            report_doc_id="doc-report",
+            pinecone_indexed=True,
+        )
         done = mark_complete(s)
         assert done.state == COMPLETE
 
@@ -438,6 +447,13 @@ class TestMarkFailedComplete:
 
     def test_mark_complete_persists(self):
         s = create_pipeline(_G, _L)
+        s = transition(
+            s, INDEXING,
+            analysis_done=True,
+            summary_doc_id="doc-summary",
+            report_doc_id="doc-report",
+            pinecone_indexed=True,
+        )
         mark_complete(s)
         loaded = load_state(_G, _L)
         assert loaded is not None
@@ -484,6 +500,13 @@ class TestQueryHelpers:
 
     def test_done_for_complete(self):
         s = create_pipeline(_G, _L)
+        s = transition(
+            s, INDEXING,
+            analysis_done=True,
+            summary_doc_id="doc-summary",
+            report_doc_id="doc-report",
+            pinecone_indexed=True,
+        )
         mark_complete(s)
         assert is_pipeline_done(_G, _L) is True
 
@@ -568,6 +591,13 @@ class TestCleanupCompleted:
 
     def test_removes_completed_over_age(self):
         s = create_pipeline(_G, _L)
+        s = transition(
+            s, INDEXING,
+            analysis_done=True,
+            summary_doc_id="doc-summary",
+            report_doc_id="doc-report",
+            pinecone_indexed=True,
+        )
         mark_complete(s)
         # With max_age_hours=0, everything qualifies
         deleted = cleanup_completed(max_age_hours=0)
@@ -701,6 +731,17 @@ class TestTryClaimPipeline:
         from tools.core.pipeline_state import try_claim_pipeline
 
         s = create_pipeline(_G, _L)
+        # Populate all required artifacts so mark_complete actually transitions
+        # to COMPLETE — the new completion-invariant gate refuses to mark COMPLETE
+        # without these (which is the correct production behavior).
+        s = transition(
+            s,
+            INDEXING,
+            analysis_done=True,
+            summary_doc_id="doc-summary-test",
+            report_doc_id="doc-report-test",
+            pinecone_indexed=True,
+        )
         mark_complete(s)
         result = try_claim_pipeline(_G, _L, meeting_id="zoom-redo")
         assert result is None
@@ -755,12 +796,21 @@ class TestForwardOnlyTransitions:
         assert new.state == TRANSCRIBING
 
     def test_backward_transition_blocked(self):
-        """NOTIFYING -> TRANSCRIBING (backward) should return the original state unchanged."""
+        """NOTIFYING -> TRANSCRIBING (backward) should raise ValueError.
+
+        The forward-only invariant is now hard-enforced (was previously
+        a soft-fail that returned the original state). Hard rejection
+        surfaces caller bugs immediately rather than silently swallowing
+        the bad transition.
+        """
         s = PipelineState(group=_G, lecture=_L, state=NOTIFYING)
         save_state(s)
-        result = transition(s, TRANSCRIBING)
-        # Should return the ORIGINAL state, not the requested backward state
-        assert result.state == NOTIFYING
+        with pytest.raises(ValueError, match="Backward transition rejected"):
+            transition(s, TRANSCRIBING)
+        # State on disk must remain unchanged
+        loaded = load_state(_G, _L)
+        assert loaded is not None
+        assert loaded.state == NOTIFYING
 
     def test_failed_transition_allowed_from_any_state(self):
         """NOTIFYING -> FAILED should always be allowed (FAILED is special)."""

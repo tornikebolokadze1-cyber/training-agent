@@ -493,6 +493,80 @@ def create_pipeline(
     return state
 
 
+# In-process lock map for atomic claims. One Lock per (group, lecture)
+# pair so concurrent claims for the SAME pipeline serialize, while
+# concurrent claims for DIFFERENT pipelines run in parallel.
+_claim_locks: dict[tuple[int, int], threading.Lock] = {}
+_claim_locks_guard = threading.Lock()
+
+
+def _get_claim_lock(group: int, lecture: int) -> threading.Lock:
+    """Return (or lazily create) the per-pipeline claim lock."""
+    key = (group, lecture)
+    with _claim_locks_guard:
+        lock = _claim_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _claim_locks[key] = lock
+        return lock
+
+
+def try_claim_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+) -> PipelineState | None:
+    """Atomically check-and-claim a pipeline slot.
+
+    This is the deduplication authority for the pipeline lifecycle.
+    Concurrent callers racing on the same (group, lecture) will produce
+    exactly one winner — the others receive None.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1-15).
+        meeting_id: Zoom meeting UUID for the new claim.
+
+    Returns:
+        - PipelineState in PENDING if the slot was successfully claimed.
+        - None if a non-FAILED pipeline already exists (active or COMPLETE).
+
+    Behavior matrix:
+        | Existing state | Result                    |
+        |----------------|---------------------------|
+        | None           | New PENDING (claimed)     |
+        | FAILED         | New PENDING (retry)       |
+        | COMPLETE       | None (no re-processing)   |
+        | Anything else  | None (active, dedup hit)  |
+    """
+    lock = _get_claim_lock(group, lecture)
+    with lock:
+        existing = load_state(group, lecture)
+        if existing is not None:
+            if existing.state == COMPLETE:
+                return None
+            if existing.state != FAILED:
+                return None
+            # FAILED — fall through and re-claim. We must remove the
+            # FAILED state file first so create_pipeline doesn't see it
+            # via is_pipeline_active (which already returns False for
+            # FAILED, but the file lingers and confuses save_state's
+            # idempotency assumptions).
+            try:
+                state_file_path(group, lecture).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "try_claim_pipeline: failed to remove stale FAILED state for g%d/l%d: %s",
+                    group, lecture, exc,
+                )
+        try:
+            return create_pipeline(group, lecture, meeting_id=meeting_id)
+        except ValueError:
+            # Lost a race against another process (file appeared between
+            # our load_state and create_pipeline). Treat as dedup hit.
+            return None
+
+
 def mark_failed(state: PipelineState, error: str) -> PipelineState:
     """Transition a pipeline to the FAILED state with an error message.
 
@@ -518,15 +592,56 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
     return transition(state, FAILED, error=error, errors=new_errors)
 
 
+#: Post-conditions that MUST be true before a pipeline is allowed to
+#: transition to COMPLETE. Each entry maps a boolean flag name to a
+#: human-readable label used in error messages. If any flag is False at
+#: mark_complete() time, the pipeline is transitioned to FAILED instead,
+#: preserving the invariant that "COMPLETE means every artifact exists".
+#:
+#: This closes the atomicity gap that caused G1 L7's video to go missing
+#: on 2026-04-03: summary+gap were created and indexed, the pipeline was
+#: marked COMPLETE, but the Drive video upload had silently failed. By
+#: enforcing the invariant at the state boundary instead of at every
+#: caller, this gap cannot re-open no matter which pipeline path runs.
+_COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    ("analysis_done", "analysis artifacts written"),
+    ("summary_doc_id", "summary Google Doc uploaded"),
+    ("report_doc_id", "private report Google Doc uploaded"),
+    ("pinecone_indexed", "transcript chunks indexed in Pinecone"),
+)
+
+
 def mark_complete(state: PipelineState) -> PipelineState:
-    """Transition a pipeline to the COMPLETE state.
+    """Transition a pipeline to COMPLETE — only if all artifacts exist.
+
+    Enforces _COMPLETION_INVARIANTS as a gate. A pipeline that calls
+    mark_complete() with missing artifacts is coerced to FAILED with a
+    descriptive error, so downstream retry logic will pick it up.
 
     Args:
         state: The current pipeline state.
 
     Returns:
-        New PipelineState in COMPLETE.
+        New PipelineState in COMPLETE if all invariants hold, else FAILED.
     """
+    missing: list[str] = []
+    for field_name, label in _COMPLETION_INVARIANTS:
+        value = getattr(state, field_name, None)
+        # Empty string, False, None, and 0 all count as "missing".
+        if not value:
+            missing.append(label)
+
+    if missing:
+        error_msg = (
+            f"mark_complete called with missing artifacts: {', '.join(missing)}. "
+            f"Refusing to mark COMPLETE — will be retried by nightly catch-all."
+        )
+        logger.error(
+            "Pipeline g%d/l%d refusing COMPLETE: %s",
+            state.group, state.lecture, error_msg,
+        )
+        return mark_failed(state, error_msg)
+
     logger.info(
         "Pipeline g%d/l%d completed successfully.",
         state.group,
