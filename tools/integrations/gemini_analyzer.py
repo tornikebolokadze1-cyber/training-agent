@@ -185,7 +185,7 @@ def cleanup_orphaned_gemini_files() -> int:
 # Video Chunking (multimodal — keeps video frames for slides/demos)
 # ---------------------------------------------------------------------------
 
-CHUNK_DURATION_MINUTES = 45  # ~697K video tokens per chunk (safe under 1M limit)
+CHUNK_DURATION_MINUTES = 30  # ~465K tokens/chunk; smaller chunks dodge Gemini phantom-hang observed on >200MB inputs (was 45 — produced 280MB chunks for 187min lectures, ~50% timeout rate on largest chunk)
 
 
 def _get_video_duration_seconds(video_path: Path) -> float:

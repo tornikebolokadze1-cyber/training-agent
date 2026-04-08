@@ -210,13 +210,13 @@ class TestSplitVideoChunks:
         assert len(result) == 1
         assert result[0] == video.resolve()
 
-    def test_exactly_45_min_video_is_not_split(self, tmp_path: Path) -> None:
-        """A 45-minute video (exactly the chunk boundary) is a single chunk."""
+    def test_exactly_chunk_boundary_video_is_not_split(self, tmp_path: Path) -> None:
+        """A video exactly equal to CHUNK_DURATION_MINUTES is a single chunk."""
         video = tmp_path / "exact.mp4"
         video.write_bytes(b"\x00" * 1000)
 
         def fake_run(cmd, **kwargs):
-            return self._ffprobe_result(45 * 60)  # exactly 2700 s
+            return self._ffprobe_result(ga.CHUNK_DURATION_MINUTES * 60)
 
         with (
             patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run),
@@ -246,14 +246,18 @@ class TestSplitVideoChunks:
     # Long video — 3 chunks
     # -----------------------------------------------------------------------
 
-    def test_100_min_video_smart_merge_produces_2_chunks(self, tmp_path: Path) -> None:
-        """A 100-minute video (45+45+10): 10 min < 15 min threshold → merged → 2 chunks."""
+    def test_smart_merge_reduces_chunk_count(self, tmp_path: Path) -> None:
+        """Two full chunks + a small remainder (< 15 min) merges into 2 chunks total."""
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
+        # 2 full chunks + 10 min remainder. 10 min < 15 min merge threshold,
+        # so the orchestrator collapses the trailing chunk into the previous one.
+        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (10 * 60)
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return self._ffprobe_result(100 * 60)
+                return self._ffprobe_result(duration_seconds)
             return self._ffmpeg_ok(cmd, **kwargs)
 
         with (
@@ -264,14 +268,16 @@ class TestSplitVideoChunks:
 
         assert len(result) == 2
 
-    def test_120_min_video_no_merge_produces_3_chunks(self, tmp_path: Path) -> None:
-        """A 120-minute video (45+45+30): 30 min >= 15 min → no merge → 3 chunks."""
+    def test_clean_split_no_merge(self, tmp_path: Path) -> None:
+        """Three exact chunk-sized blocks: no remainder → no merge → 3 chunks."""
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
+        duration_seconds = 3 * ga.CHUNK_DURATION_MINUTES * 60  # exact split
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return self._ffprobe_result(120 * 60)
+                return self._ffprobe_result(duration_seconds)
             return self._ffmpeg_ok(cmd, **kwargs)
 
         with (
@@ -302,14 +308,17 @@ class TestSplitVideoChunks:
         assert "lecture.chunk0.mp4" in names
         assert "lecture.chunk1.mp4" in names
 
-    def test_100_min_video_invokes_ffmpeg_2_times(self, tmp_path: Path) -> None:
-        """Smart-merged 100-min: ffmpeg called 2 times (not 3)."""
+    def test_smart_merged_video_invokes_ffmpeg_2_times(self, tmp_path: Path) -> None:
+        """When smart merge collapses to 2 chunks, ffmpeg runs exactly twice."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"\x00" * 1000)
 
+        # Same merge scenario as test_smart_merge_reduces_chunk_count.
+        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (10 * 60)
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return self._ffprobe_result(100 * 60)
+                return self._ffprobe_result(duration_seconds)
             return self._ffmpeg_ok(cmd, **kwargs)
 
         with (

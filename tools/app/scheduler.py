@@ -1087,6 +1087,22 @@ def start_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # ------------------------------------------------------------------ #
+    #  Daily Drive↔Pinecone audit — 09:00 Tbilisi time every day          #
+    #  Detects missing videos, duplicate uploads, missing summaries, and  #
+    #  empty Pinecone indexes BEFORE students notice. Runs after the      #
+    #  token health check so any auth issue is surfaced first.            #
+    # ------------------------------------------------------------------ #
+    from tools.services.drive_audit import daily_audit_job
+
+    scheduler.add_job(
+        daily_audit_job,
+        trigger=CronTrigger(hour=9, minute=0, timezone=TBILISI_TZ),
+        id="drive_pinecone_audit",
+        name="Daily Drive↔Pinecone consistency audit",
+        replace_existing=True,
+    )
+
     scheduler.start()
     _scheduler_ref = scheduler
 
