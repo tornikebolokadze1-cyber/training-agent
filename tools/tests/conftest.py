@@ -179,6 +179,22 @@ class _BaseModel:
 
 _pydantic.BaseModel = _BaseModel
 
+
+def _field_validator(*args, **kwargs):
+    """No-op decorator factory standing in for pydantic.field_validator.
+
+    Real pydantic v2 returns a decorator that registers a validator on the
+    BaseModel. The stub just passes the function through unchanged so any
+    test importing a module that uses @field_validator can collect.
+    """
+    def _decorator(fn):
+        return fn
+    return _decorator
+
+
+_pydantic.field_validator = _field_validator
+_pydantic.ValidationError = type("ValidationError", (Exception,), {})
+
 # ===================================================================
 # dotenv
 # ===================================================================
