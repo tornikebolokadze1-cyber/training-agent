@@ -395,6 +395,11 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
+    from tools.core.pipeline_retry import (
+        classify_error,
+        retry_orchestrator,
+    )
+    from tools.core.pipeline_state import FAILED, load_state, mark_failed
     from tools.integrations.gdrive_manager import (
         ensure_folder,
         get_drive_service,
@@ -403,6 +408,28 @@ def _run_post_meeting_pipeline(
         upload_file,
     )
     from tools.services.transcribe_lecture import transcribe_and_index
+
+    def _durable_abort(reason: str, *, permanent: bool = False) -> None:
+        """Convert an early abort into a durable retry decision.
+
+        Ensures every early-return path leaves a state the retry system
+        can reason about: marks pipeline FAILED and either enqueues a
+        retry (retryable) or alerts for permanent errors.
+        """
+        try:
+            current = load_state(group_number, lecture_number)
+            if current is not None and current.state not in ("COMPLETE", FAILED):
+                mark_failed(current, reason)
+        except Exception as exc:
+            logger.warning("[post] mark_failed during abort failed: %s", exc)
+
+        try:
+            retry_orchestrator.schedule_retry(
+                group_number, lecture_number, meeting_id,
+                f"[abort{'/permanent' if permanent else ''}] {reason}",
+            )
+        except Exception as exc:
+            logger.error("[post] schedule_retry during abort failed: %s", exc)
 
     # Helper to clean up dedup key on ALL exit paths (including early returns)
     def _cleanup_dedup() -> None:
@@ -421,6 +448,7 @@ def _run_post_meeting_pipeline(
     free_gb = disk_usage.free / (1024 ** 3)
     if free_gb < 2.0:
         logger.error("[post] Insufficient disk space: %.1f GB free (need 2+ GB). Aborting.", free_gb)
+        _durable_abort(f"insufficient_disk_space: {free_gb:.1f} GB free")
         _cleanup_dedup()
         try:
             alert_operator(f"Disk space critically low: {free_gb:.1f} GB. Pipeline for G{group_number} L{lecture_number} aborted.")
@@ -447,6 +475,7 @@ def _run_post_meeting_pipeline(
             logger.error(
                 "[post] Aborting: no recording found for meeting %s", meeting_id
             )
+            _durable_abort(f"no_recording_found: meeting={meeting_id}")
             _cleanup_dedup()
             try:
                 alert_operator(
@@ -475,6 +504,11 @@ def _run_post_meeting_pipeline(
                 temp_files.append(seg_path)
             except Exception as exc:
                 logger.error("[post] Download failed for segment %d: %s", i, exc)
+                is_permanent = classify_error(exc) == "permanent"
+                _durable_abort(
+                    f"segment_download_failed seg={i}: {exc}",
+                    permanent=is_permanent,
+                )
                 _cleanup_dedup()
                 alert_operator(
                     f"Recording download FAILED for Group {group_number}, "
@@ -497,6 +531,7 @@ def _run_post_meeting_pipeline(
                 temp_files.append(local_path)
             except Exception as exc:
                 logger.error("[post] Segment concatenation failed: %s", exc)
+                _durable_abort(f"ffmpeg_concat_failed: {exc}")
                 _cleanup_dedup()
                 alert_operator(
                     f"ffmpeg concat FAILED for Group {group_number}, "

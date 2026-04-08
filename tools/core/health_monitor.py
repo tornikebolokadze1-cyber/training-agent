@@ -587,6 +587,46 @@ def check_stuck_pipelines() -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# TTL cache for check_all() — prevents billable API calls on every poll
+# ---------------------------------------------------------------------------
+
+_health_cache: dict[str, Any] = {"timestamp": 0.0, "result": None}
+_HEALTH_CACHE_TTL = 300  # 5 minutes
+
+
+def get_cached_or_run_full_audit(force: bool = False) -> dict[str, Any]:
+    """Return cached health audit result or run a fresh one.
+
+    Without ``force=True`` the expensive dependency checks (Gemini, Claude,
+    Zoom, Pinecone) are skipped if a result was cached within the last
+    ``_HEALTH_CACHE_TTL`` seconds.  Pass ``force=True`` to bypass the cache
+    and always run the full audit (e.g. from the scheduled health-check job
+    or when the caller explicitly requests fresh data).
+
+    This prevents frequent Railway / Docker / GitHub health polls from
+    issuing billable Gemini and Claude API calls.
+    """
+    now = time.time()
+    if (
+        not force
+        and _health_cache["result"] is not None
+        and now - _health_cache["timestamp"] < _HEALTH_CACHE_TTL
+    ):
+        cached = dict(_health_cache["result"])
+        cached["cached"] = True
+        cached["cache_age_s"] = round(now - _health_cache["timestamp"])
+        return cached
+
+    result = check_all()
+    _health_cache["timestamp"] = now
+    _health_cache["result"] = result
+    result = dict(result)
+    result["cached"] = False
+    result["cache_age_s"] = 0
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Aggregate check
 # ---------------------------------------------------------------------------
 
@@ -651,7 +691,8 @@ def run_health_check_job() -> None:
     start = time.monotonic()
 
     try:
-        report = check_all()
+        # force=True: scheduled job always runs fresh (bypasses TTL cache)
+        report = get_cached_or_run_full_audit(force=True)
     except Exception as exc:
         logger.error("[health] Health check failed: %s", exc)
         try:
@@ -713,7 +754,7 @@ def run_daily_morning_report() -> None:
     logger.info("[health] Generating daily morning report...")
 
     try:
-        report = check_all()
+        report = get_cached_or_run_full_audit(force=True)
     except Exception as exc:
         logger.error("[health] Daily report check_all failed: %s", exc)
         return

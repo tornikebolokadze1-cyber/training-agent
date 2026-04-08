@@ -148,3 +148,73 @@ class TestCleanup:
         assert not old_file.exists()
         # Today's file still exists
         assert len(list(tmp_path.glob("daily_costs_*.json"))) == 1
+
+
+class TestConcurrentPipelineKeys:
+    """Verify that concurrent pipelines each see their own pipeline key via ContextVar."""
+
+    def test_concurrent_pipelines_have_separate_cost_keys(self):
+        """Two concurrent threads setting different pipeline keys must not interfere."""
+        import threading
+
+        import tools.integrations.gemini_analyzer as ga
+
+        observed: dict[str, str] = {}
+        barrier = threading.Barrier(2)
+
+        def run_pipeline(thread_name: str, key: str) -> None:
+            token = ga._pipeline_key_var.set(key)
+            try:
+                # Synchronise both threads so they are both "inside" at the same time.
+                barrier.wait(timeout=5)
+                observed[thread_name] = ga._pipeline_key_var.get()
+            finally:
+                ga._pipeline_key_var.reset(token)
+
+        t1 = threading.Thread(target=run_pipeline, args=("g1_l1", "g1_l1"))
+        t2 = threading.Thread(target=run_pipeline, args=("g2_l5", "g2_l5"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Each thread must have seen its own key, not the other thread's.
+        assert observed["g1_l1"] == "g1_l1", (
+            f"Thread for g1_l1 saw key {observed['g1_l1']!r} — ContextVar isolation failed"
+        )
+        assert observed["g2_l5"] == "g2_l5", (
+            f"Thread for g2_l5 saw key {observed['g2_l5']!r} — ContextVar isolation failed"
+        )
+
+    def test_key_resets_after_pipeline_exits(self):
+        """After analyze_lecture returns, the ContextVar must be reset to its default."""
+        import tools.integrations.gemini_analyzer as ga
+
+        # Manually simulate the set/reset that analyze_lecture performs.
+        assert ga._pipeline_key_var.get() == "", "Default should be empty string"
+        token = ga._pipeline_key_var.set("g1_l3")
+        assert ga._pipeline_key_var.get() == "g1_l3"
+        ga._pipeline_key_var.reset(token)
+        assert ga._pipeline_key_var.get() == "", (
+            "Pipeline key must reset to empty after token reset"
+        )
+
+    def test_nested_set_restores_outer_value(self):
+        """Nested ContextVar.set/reset correctly restores the outer caller's key."""
+        import tools.integrations.gemini_analyzer as ga
+
+        outer_token = ga._pipeline_key_var.set("g1_l1")
+        assert ga._pipeline_key_var.get() == "g1_l1"
+
+        # Simulate transcribe_chunked_video being called inside analyze_lecture —
+        # it calls _pipeline_key_var.set() without a token (standalone entry point).
+        # After its call, the outer context should still be intact because
+        # analyze_lecture's finally block resets via its own token.
+        inner_token = ga._pipeline_key_var.set("g1_l1")  # same key, still a new token
+        assert ga._pipeline_key_var.get() == "g1_l1"
+        ga._pipeline_key_var.reset(inner_token)
+
+        assert ga._pipeline_key_var.get() == "g1_l1", (
+            "Outer pipeline key must survive inner set/reset"
+        )
+        ga._pipeline_key_var.reset(outer_token)

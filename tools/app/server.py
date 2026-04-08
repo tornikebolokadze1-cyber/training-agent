@@ -73,6 +73,8 @@ _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> sta
 _processing_lock = threading.Lock()  # Prevent webhook+scheduler race condition
 _server_start_time: float = __import__("time").time()  # For startup grace period
 STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
+_startup_complete: bool = False  # Set to True after lifespan startup finishes
+_APP_VERSION: str = "1.0.0"
 
 
 def _task_key(group: int, lecture: int) -> str:
@@ -154,7 +156,6 @@ async def _check_unprocessed_recordings() -> None:
     with matching group + lecture number). If unprocessed recordings are found,
     starts the pipeline automatically.
     """
-    from tools.app.scheduler import _run_post_meeting_pipeline
 
     try:
         zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
@@ -216,6 +217,17 @@ async def _check_unprocessed_recordings() -> None:
             logger.info("[startup-recovery] G%d L%d already active per state file — resuming handled by orchestrator", group_number, lecture_number)
             continue
 
+        # Skip if retry executor already owns this lecture — prevents
+        # duplicate launches when a scheduled retry is pending from a
+        # previous crash (Phase 2 unified contract).
+        from tools.core.pipeline_retry import retry_orchestrator as _retry_orch
+        if _retry_orch.has_pending_retry(group_number, lecture_number):
+            logger.info(
+                "[startup-recovery] G%d L%d already owned by retry tracker — skipping",
+                group_number, lecture_number,
+            )
+            continue
+
         # Auto-reset FAILED pipelines so they can be retried on startup
         from tools.core.pipeline_state import load_state as _load_state, FAILED as _FAILED
         _existing = _load_state(group_number, lecture_number)
@@ -271,16 +283,26 @@ async def _check_unprocessed_recordings() -> None:
             group_number, lecture_number, poll_id,
         )
 
-        # Run in background thread (non-blocking)
-        # Startup recovery — skip 15-min initial delay since recording is already on Zoom
-        from functools import partial
+        # Run in background thread (non-blocking) via canonical entry point.
+        # Startup recovery — skip 15-min initial delay since recording is already on Zoom.
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
+
+        def _startup_launch(gn: int, ln: int, pid: str) -> None:
+            try:
+                process_lecture_pipeline(
+                    gn, ln, pid,
+                    entry_source="startup_recovery",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[startup-recovery] Claim rejected: %s", exc)
+            finally:
+                _processing_tasks.pop(_task_key(gn, ln), None)
+
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
-            None,
-            partial(_run_post_meeting_pipeline, skip_initial_delay=True),
-            group_number,
-            lecture_number,
-            poll_id,
+            None, _startup_launch, group_number, lecture_number, poll_id,
         )
 
 
@@ -307,6 +329,11 @@ async def _lifespan(application: FastAPI):  # noqa: ARG001
         backup_scores_to_pinecone()
     except Exception as exc:
         logger.error("[startup] Pinecone score backup failed: %s", exc, exc_info=True)
+
+    # Mark startup complete — /ready endpoint will now return 200
+    global _startup_complete
+    _startup_complete = True
+    logger.info("[startup] Startup complete — /ready will return 200")
 
     try:
         yield
@@ -566,6 +593,16 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         except Exception as state_err:
             logger.warning("Failed to mark pipeline state as FAILED: %s", state_err)
 
+        # Enqueue a retry decision via the unified contract. Classifies
+        # the error so permanent failures (403, revoked token, etc.) do
+        # not eat retry budget, while transient errors get exponential
+        # backoff consistent with every other entry path.
+        try:
+            from tools.core.pipeline_retry import retry_orchestrator as _retry_orch
+            _retry_orch.schedule_retry(group, lecture, "", str(e))
+        except Exception as retry_err:
+            logger.warning("Failed to schedule retry for G%d L%d: %s", group, lecture, retry_err)
+
         try:
             await _send_callback(CallbackPayload(
                 status="error",
@@ -676,39 +713,110 @@ async def _send_callback(payload: CallbackPayload) -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/live")
+async def liveness(request: Request):  # noqa: ARG001
+    """Liveness probe — is the process alive and the event loop responsive?
+
+    Designed for Railway healthcheck, Docker HEALTHCHECK, and GitHub deploy
+    verification.  Makes NO external API calls and does NOT touch Gemini,
+    Claude, Zoom, Pinecone, or any other billable dependency.
+
+    Always returns HTTP 200 as long as the process is running.
+    Completes in < 50 ms under normal conditions.
+    Does NOT require authentication — Railway and Docker need anonymous access.
+    """
+    uptime_s = int(time.time() - _server_start_time)
+
+    # Cheap disk write to /tmp — verifies the filesystem is not read-only
+    tmp_ok = True
+    try:
+        _probe = Path("/tmp/.liveness_probe")
+        _probe.write_text("ok")
+        _probe.unlink(missing_ok=True)
+    except OSError:
+        tmp_ok = False
+
+    return JSONResponse(
+        content={
+            "status": "alive",
+            "uptime_s": uptime_s,
+            "version": _APP_VERSION,
+            "tmp_writable": tmp_ok,
+        },
+        status_code=200,
+    )
+
+
+@app.get("/ready")
+async def readiness(request: Request):  # noqa: ARG001
+    """Readiness probe — has the app completed startup initialisation?
+
+    Returns 200 once the lifespan startup hook has finished (scheduler
+    initialised, routes registered, startup recovery complete).
+    Returns 503 while startup is still in progress.
+
+    Makes NO external API calls and does NOT require authentication.
+    """
+    if not _startup_complete:
+        uptime_s = int(time.time() - _server_start_time)
+        return JSONResponse(
+            content={
+                "status": "starting",
+                "uptime_s": uptime_s,
+                "version": _APP_VERSION,
+            },
+            status_code=503,
+        )
+
+    return JSONResponse(
+        content={
+            "status": "ready",
+            "uptime_s": int(time.time() - _server_start_time),
+            "version": _APP_VERSION,
+            "tasks_in_progress": len(_processing_tasks),
+        },
+        status_code=200,
+    )
+
+
 @app.get("/health")
 @limiter.limit("60/minute")
-async def health_check(request: Request):
-    """Health check endpoint with comprehensive dependency verification.
+async def health_check(request: Request, force: str = ""):
+    """Deep observability endpoint — full dependency audit with TTL caching.
 
-    Returns structured JSON from the proactive HealthMonitor, covering
-    all external services, disk space, and pipeline state.
+    Checks all external services: Gemini, Claude, Zoom, Pinecone, WhatsApp,
+    Google Drive, disk space, and pipeline state.
 
-    During the first 60 seconds after startup, returns 200 with a
-    simplified response so Railway healthcheck passes while the
-    scheduler and background tasks are still initializing.
+    Distinction from /live and /ready:
+      - /live  — cheap liveness probe, no external calls (use for Railway/Docker)
+      - /ready — startup completion check, no external calls (use for load balancers)
+      - /health — full dependency audit, may issue billable API calls (use for observability)
+
+    Caching:
+      Results are cached for 5 minutes to prevent frequent polls from issuing
+      billable Gemini/Claude API calls.  Pass ``?force=true`` to bypass the
+      cache and always run a fresh audit.
+
+    HTTP status:
+      - 200 when overall_status is "healthy" or "degraded" (warning-level only)
+      - 503 only when overall_status is "critical" (all or most AI providers down)
+
+    This means warning-level issues (e.g. one dependency slow) do NOT cause
+    Railway/Docker to restart the service.
     """
-    import time
+    from tools.core.health_monitor import get_cached_or_run_full_audit
 
-    uptime = time.time() - _server_start_time
-    if uptime < 60:
-        return JSONResponse(content={
-            "status": "starting",
-            "service": "training-agent",
-            "uptime_seconds": round(uptime, 1),
-            "tasks_in_progress": len(_processing_tasks),
-        }, status_code=200)
-
-    from tools.core.health_monitor import check_all
-
-    report = check_all()
+    force_refresh = force.lower() in ("true", "1", "yes")
+    report = get_cached_or_run_full_audit(force=force_refresh)
 
     # Add legacy fields for backward compatibility
     report["service"] = "training-agent"
     report["status"] = report["overall_status"]
     report["tasks_in_progress"] = len(_processing_tasks)
 
-    status_code = 200 if report["overall_status"] == "healthy" else 503
+    # Only 503 on CRITICAL — warning-level ("degraded") returns 200 so
+    # Railway and Docker do not restart the service for dependency noise.
+    status_code = 503 if report["overall_status"] == "critical" else 200
 
     return JSONResponse(content=report, status_code=status_code)
 
@@ -932,7 +1040,6 @@ def _handle_recording_completed_via_polling(
     Uses the meeting.ended-style polling pipeline to discover and download
     the recording via Zoom API instead of the direct download URL.
     """
-    from tools.app.scheduler import _run_post_meeting_pipeline
 
     group_number = ctx["group_number"]
     lecture_number = ctx["lecture_number"]
@@ -972,8 +1079,15 @@ def _handle_recording_completed_via_polling(
     )
 
     def _run_and_cleanup() -> None:
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
         try:
-            _run_post_meeting_pipeline(group_number, lecture_number, poll_id)
+            process_lecture_pipeline(
+                group_number, lecture_number, poll_id,
+                entry_source="webhook_recording_completed",
+            )
+        except PipelineClaimError as exc:
+            logger.info("[recording.completed fallback] Claim rejected: %s", exc)
         finally:
             _processing_tasks.pop(key, None)
 
@@ -1071,12 +1185,20 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         group_number, lecture_number, poll_id,
     )
 
-    # Run post-meeting pipeline in background, clean up dedup key on completion
-    from tools.app.scheduler import _run_post_meeting_pipeline
-
+    # Run post-meeting pipeline in background, clean up dedup key on completion.
+    # Routed through the canonical process_lecture_pipeline so that retry
+    # semantics, state claiming, and exception classification are unified
+    # with every other entry path (Phase 2 of pipeline stabilisation).
     def _run_and_cleanup() -> None:
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
         try:
-            _run_post_meeting_pipeline(group_number, lecture_number, poll_id)
+            process_lecture_pipeline(
+                group_number, lecture_number, poll_id,
+                entry_source="webhook_meeting_ended",
+            )
+        except PipelineClaimError as exc:
+            logger.info("[meeting.ended] Claim rejected: %s", exc)
         finally:
             _processing_tasks.pop(key, None)
 
@@ -1217,7 +1339,6 @@ async def process_recording(
     # If download_url is empty or "auto", use Zoom polling pipeline instead of direct download
     is_auto = not payload.download_url or payload.download_url.strip().lower() == "auto"
     if is_auto:
-        from tools.app.scheduler import _run_post_meeting_pipeline
 
         # Need a meeting ID to poll Zoom — use the group's configured meeting ID
         group_cfg = GROUPS.get(payload.group_number, {})
@@ -1236,8 +1357,16 @@ async def process_recording(
         )
 
         def _run_auto(gn: int, ln: int, mid: str) -> None:
+            from tools.core.pipeline_retry import process_lecture_pipeline
+            from tools.core.pipeline_state import PipelineClaimError
             try:
-                _run_post_meeting_pipeline(gn, ln, mid, skip_initial_delay=True)
+                process_lecture_pipeline(
+                    gn, ln, mid,
+                    entry_source="admin_process_recording",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[process-recording/auto] Claim rejected: %s", exc)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
@@ -1310,7 +1439,6 @@ async def retry_latest(
     """
     verify_webhook_secret(authorization)
 
-    from tools.app.scheduler import _run_post_meeting_pipeline
 
     try:
         zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
@@ -1404,8 +1532,16 @@ async def retry_latest(
         )
 
         def _run_retry(gn: int, ln: int, pid: str) -> None:
+            from tools.core.pipeline_retry import process_lecture_pipeline
+            from tools.core.pipeline_state import PipelineClaimError
             try:
-                _run_post_meeting_pipeline(gn, ln, pid, skip_initial_delay=True)
+                process_lecture_pipeline(
+                    gn, ln, pid,
+                    entry_source="admin_retry_latest",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[retry-latest] Claim rejected: %s", exc)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 

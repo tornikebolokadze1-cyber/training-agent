@@ -9,6 +9,7 @@ writing for analysis.
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import logging
 import os
 import subprocess
@@ -60,8 +61,12 @@ GEMINI_FALLBACK_TRANSCRIPTION_MODEL = os.environ.get(
     "GEMINI_FALLBACK_TRANSCRIPTION_MODEL", "gemini-2.5-pro"
 )
 
-# Current pipeline key for cost tracking (set by analyze_lecture)
-_current_pipeline_key: str = ""
+# Per-execution pipeline key for cost tracking.
+# Using ContextVar ensures concurrent pipelines (threads or asyncio tasks)
+# each see their own key and cannot overwrite each other's cost attribution.
+_pipeline_key_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "pipeline_key", default=""
+)
 
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
@@ -434,7 +439,7 @@ def _log_gemini_cost(model: str, response: object, purpose: str) -> None:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost_usd=total_cost,
-                pipeline_key=_current_pipeline_key,
+                pipeline_key=_pipeline_key_var.get(),
             )
         except Exception:
             pass  # cost tracking is non-fatal
@@ -471,7 +476,7 @@ def _generate_with_retry(
         if attempt > 1:
             try:
                 from tools.core.cost_tracker import check_lecture_budget
-                _ok, _rem = check_lecture_budget(_current_pipeline_key)
+                _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
                 if not _ok:
                     logger.error("BUDGET EXCEEDED: stopping retries for %s at attempt %d", purpose, attempt)
                     raise RuntimeError(f"Lecture budget exceeded during retry for {purpose}")
@@ -678,8 +683,7 @@ def transcribe_chunked_video(
     Returns:
         Tuple of (full transcript text, whether free tier was used).
     """
-    global _current_pipeline_key
-    _current_pipeline_key = f"g{group}_l{lecture}" if group and lecture else ""
+    _pipeline_key_var.set(f"g{group}_l{lecture}" if group and lecture else "")
 
     chunks = split_video_chunks(video_path)
     total_chunks = len(chunks)
@@ -816,7 +820,7 @@ def transcribe_chunked_video(
             # Use real tracked costs if available, fall back to heuristic
             try:
                 from tools.core.cost_tracker import check_lecture_budget, LECTURE_COST_LIMIT_USD
-                pk = _current_pipeline_key if _current_pipeline_key else ""
+                pk = _pipeline_key_var.get()
                 _budget_ok, _budget_remaining = check_lecture_budget(pk)
                 estimated_cost = LECTURE_COST_LIMIT_USD - _budget_remaining
             except (ImportError, NameError):
@@ -914,7 +918,7 @@ def _claude_reason(
         if attempt > 1:
             try:
                 from tools.core.cost_tracker import check_lecture_budget
-                _ok, _rem = check_lecture_budget(_current_pipeline_key)
+                _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
                 if not _ok:
                     raise RuntimeError(f"Lecture budget exceeded during Claude retry (attempt {attempt})")
             except (ImportError, NameError):
@@ -969,7 +973,7 @@ def _claude_reason(
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             cost_usd=total_cost,
-                            pipeline_key=_current_pipeline_key,
+                            pipeline_key=_pipeline_key_var.get(),
                         )
                     except Exception:
                         pass
@@ -1321,11 +1325,11 @@ def analyze_lecture(
     Returns:
         Dict with keys: 'transcript', 'summary', 'gap_analysis', 'deep_analysis'
     """
-    global _current_pipeline_key
-    _current_pipeline_key = f"g{group}_l{lecture}" if group and lecture else ""
+    _pipeline_key = f"g{group}_l{lecture}" if group and lecture else ""
+    _ctx_token = _pipeline_key_var.set(_pipeline_key)
 
     # Pre-flight budget check (only when pipeline key is set)
-    if _current_pipeline_key:
+    if _pipeline_key:
         try:
             from tools.core.cost_tracker import check_daily_budget, check_lecture_budget
             daily_ok, daily_remaining = check_daily_budget()
@@ -1333,10 +1337,10 @@ def analyze_lecture(
                 raise RuntimeError(
                     f"Daily budget exceeded ($0 remaining). Pipeline for G{group}/L{lecture} refused."
                 )
-            lecture_ok, lecture_remaining = check_lecture_budget(_current_pipeline_key)
+            lecture_ok, lecture_remaining = check_lecture_budget(_pipeline_key)
             if not lecture_ok:
                 raise RuntimeError(
-                    f"Lecture budget exceeded for {_current_pipeline_key}. Pipeline refused."
+                    f"Lecture budget exceeded for {_pipeline_key}. Pipeline refused."
                 )
             logger.info("Budget check passed: daily=$%.2f remaining, lecture=$%.2f remaining",
                          daily_remaining, lecture_remaining)
@@ -1364,105 +1368,109 @@ def analyze_lecture(
         pct = int(completed_steps / total_steps * 100)
         logger.info("Pipeline %d%% — %s complete", pct, step_name)
 
-    # --- Step 1: Transcription ---
-    _t0 = _time.monotonic()
-    if existing_transcript:
-        transcript = existing_transcript
-        logger.info("Using existing transcript (%d chars)", len(transcript))
-        _log_progress("transcription (pre-existing)")
-    elif use_checkpoints and (cached := _load_checkpoint(f"{prefix}_full_transcript.txt")):
-        transcript = cached
-        logger.info("Resuming from checkpoint: full transcript (%d chars)", len(transcript))
-        _log_progress("transcription (from checkpoint)")
-    else:
-        # Step 0+1: Split video into chunks and transcribe multimodally
-        transcript, _use_free = transcribe_chunked_video(
-            file_path, use_free=False, group=group, lecture=lecture,
-        )
-        logger.info("Full transcript length: %d chars", len(transcript))
-        if use_checkpoints:
-            _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
-        _log_progress("transcription")
-
-    _stage_times["transcription"] = _time.monotonic() - _t0
-    results: dict[str, str] = {"transcript": transcript}
-
-    # --- Step 2: Single Claude call for all three analyses ---
-    _t0 = _time.monotonic()
-    claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
-    claude_sections: dict[str, str] = {}
-
-    if use_checkpoints and claude_checkpoint_name:
-        cached_json = _load_checkpoint(claude_checkpoint_name)
-        if cached_json:
-            import json
-            try:
-                claude_sections = json.loads(cached_json)
-                logger.info("Resuming from checkpoint: Claude analysis (%s)",
-                           {k: len(v) for k, v in claude_sections.items()})
-            except json.JSONDecodeError:
-                logger.warning("Corrupt Claude checkpoint — will re-run analysis")
-                claude_sections = {}
-
-    if not claude_sections:
-        claude_sections = _safe_claude_reason_all(transcript)
-        if claude_sections is None:
-            logger.error(
-                "Claude analysis failed completely — proceeding with empty sections "
-                "(quality gate in transcribe_lecture.py will catch this)"
+    try:
+        # --- Step 1: Transcription ---
+        _t0 = _time.monotonic()
+        if existing_transcript:
+            transcript = existing_transcript
+            logger.info("Using existing transcript (%d chars)", len(transcript))
+            _log_progress("transcription (pre-existing)")
+        elif use_checkpoints and (cached := _load_checkpoint(f"{prefix}_full_transcript.txt")):
+            transcript = cached
+            logger.info("Resuming from checkpoint: full transcript (%d chars)", len(transcript))
+            _log_progress("transcription (from checkpoint)")
+        else:
+            # Step 0+1: Split video into chunks and transcribe multimodally
+            transcript, _use_free = transcribe_chunked_video(
+                file_path, use_free=False, group=group, lecture=lecture,
             )
-            claude_sections = {"summary": "", "gap_analysis": "", "deep_analysis": ""}
-        if use_checkpoints and claude_sections:
-            import json
-            _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
+            logger.info("Full transcript length: %d chars", len(transcript))
+            if use_checkpoints:
+                _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
+            _log_progress("transcription")
 
-    _stage_times["claude_reasoning"] = _time.monotonic() - _t0
-    _log_progress("Claude reasoning")
+        _stage_times["transcription"] = _time.monotonic() - _t0
+        results: dict[str, str] = {"transcript": transcript}
 
-    # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
-    analysis_configs = [
-        ("summary", SUMMARIZATION_PROMPT, "summary"),
-        ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
-        ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
-    ]
-    for key, prompt, label in analysis_configs:
-        checkpoint_name = f"{prefix}_{key}.txt" if use_checkpoints else ""
+        # --- Step 2: Single Claude call for all three analyses ---
+        _t0 = _time.monotonic()
+        claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
+        claude_sections: dict[str, str] = {}
 
-        # Try checkpoint first
-        if use_checkpoints and checkpoint_name:
-            cached = _load_checkpoint(checkpoint_name)
-            if cached:
-                logger.info("Resuming from checkpoint: %s (%d chars)", label, len(cached))
-                results[key] = cached
-                _log_progress(label)
+        if use_checkpoints and claude_checkpoint_name:
+            cached_json = _load_checkpoint(claude_checkpoint_name)
+            if cached_json:
+                import json
+                try:
+                    claude_sections = json.loads(cached_json)
+                    logger.info("Resuming from checkpoint: Claude analysis (%s)",
+                               {k: len(v) for k, v in claude_sections.items()})
+                except json.JSONDecodeError:
+                    logger.warning("Corrupt Claude checkpoint — will re-run analysis")
+                    claude_sections = {}
+
+        if not claude_sections:
+            claude_sections = _safe_claude_reason_all(transcript)
+            if claude_sections is None:
+                logger.error(
+                    "Claude analysis failed completely — proceeding with empty sections "
+                    "(quality gate in transcribe_lecture.py will catch this)"
+                )
+                claude_sections = {"summary": "", "gap_analysis": "", "deep_analysis": ""}
+            if use_checkpoints and claude_sections:
+                import json
+                _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
+
+        _stage_times["claude_reasoning"] = _time.monotonic() - _t0
+        _log_progress("Claude reasoning")
+
+        # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
+        analysis_configs = [
+            ("summary", SUMMARIZATION_PROMPT, "summary"),
+            ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
+            ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
+        ]
+        for key, prompt, label in analysis_configs:
+            checkpoint_name = f"{prefix}_{key}.txt" if use_checkpoints else ""
+
+            # Try checkpoint first
+            if use_checkpoints and checkpoint_name:
+                cached = _load_checkpoint(checkpoint_name)
+                if cached:
+                    logger.info("Resuming from checkpoint: %s (%d chars)", label, len(cached))
+                    results[key] = cached
+                    _log_progress(label)
+                    continue
+
+            claude_text = claude_sections.get(key, "")
+            if not claude_text:
+                logger.warning("Skipping %s — no Claude output", label)
+                results[key] = ""
+                _log_progress(f"{label} (skipped)")
                 continue
 
-        claude_text = claude_sections.get(key, "")
-        if not claude_text:
-            logger.warning("Skipping %s — no Claude output", label)
-            results[key] = ""
-            _log_progress(f"{label} (skipped)")
-            continue
+            _t0 = _time.monotonic()
+            georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
+            _stage_times["gemini_writing"] = _stage_times.get("gemini_writing", 0) + (_time.monotonic() - _t0)
+            results[key] = georgian_text
 
-        _t0 = _time.monotonic()
-        georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
-        _stage_times["gemini_writing"] = _stage_times.get("gemini_writing", 0) + (_time.monotonic() - _t0)
-        results[key] = georgian_text
+            if use_checkpoints and georgian_text:
+                _save_checkpoint(checkpoint_name, georgian_text)
 
-        if use_checkpoints and georgian_text:
-            _save_checkpoint(checkpoint_name, georgian_text)
+            _log_progress(label)
 
-        _log_progress(label)
+        total = _time.monotonic() - _pipeline_start
+        logger.info(
+            "⏱️ Analysis timing: total=%.0fs | %s",
+            total,
+            " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items()),
+        )
 
-    total = _time.monotonic() - _pipeline_start
-    logger.info(
-        "⏱️ Analysis timing: total=%.0fs | %s",
-        total,
-        " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items()),
-    )
-
-    _current_pipeline_key = ""
-    return results
+        return results
+    finally:
+        # Reset the pipeline key for this context so it doesn't leak into
+        # any code that runs in the same thread/task after this function returns.
+        _pipeline_key_var.reset(_ctx_token)
 
 
 # ---------------------------------------------------------------------------

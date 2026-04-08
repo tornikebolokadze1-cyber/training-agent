@@ -556,6 +556,38 @@ class TestRunPostMeetingPipeline:
         with patch.object(sched, "check_recording_ready", return_value=[]):
             sched._run_post_meeting_pipeline(1, 3, "mtg-no-rec")
 
+    def test_disk_space_failure_enqueues_retry(self, tmp_path, monkeypatch):
+        """Early disk-space abort must leave a durable retry decision.
+
+        Every early-return abort path in _run_post_meeting_pipeline must
+        call retry_orchestrator.schedule_retry so the lecture is tracked
+        for later recovery instead of silently falling between layers
+        (Phase 2 of the pipeline stabilisation contract).
+        """
+        from tools.core import pipeline_retry
+
+        # Isolate the retry tracker file for this test.
+        tracker_file = tmp_path / "retry_tracker.json"
+        monkeypatch.setattr(pipeline_retry, "RETRY_TRACKER_PATH", tracker_file)
+
+        # Simulate zero free bytes so the disk-space gate trips.
+        fake_usage = type("FakeUsage", (), {"free": 0, "total": 0, "used": 0})()
+        monkeypatch.setattr(sched.shutil, "disk_usage", lambda _path: fake_usage)
+
+        # Prevent the APScheduler lookup from raising noisy RuntimeErrors.
+        monkeypatch.setattr(
+            pipeline_retry.RetryOrchestrator,
+            "_schedule_apscheduler_job",
+            lambda *_a, **_k: None,
+        )
+
+        sched._run_post_meeting_pipeline(1, 7, "mtg-disk-full")
+
+        record = pipeline_retry.retry_orchestrator.get_record(1, 7)
+        assert record is not None, "retry record must be written on disk-space abort"
+        assert record.attempt >= 1
+        assert any("insufficient_disk_space" in e for e in record.errors)
+
     def test_download_failure_alerts_operator(self, tmp_path):
         """If recording download fails, operator is alerted."""
         recordings = [{"download_url": "https://zoom/rec.mp4", "file_type": "MP4"}]

@@ -38,25 +38,36 @@ jobs:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
         run: railway up --service training-agent --detach
 
-      - name: Wait for deployment health
+      - name: Wait for deployment liveness
         env:
           DEPLOY_URL: ${{ secrets.RAILWAY_PUBLIC_URL }}
         run: |
           if [ -z "$DEPLOY_URL" ]; then
-            echo "RAILWAY_PUBLIC_URL secret not set — skipping health verification"
+            echo "RAILWAY_PUBLIC_URL secret not set — skipping liveness verification"
             exit 0
           fi
 
-          echo "Waiting for deployment to become healthy..."
+          echo "Waiting for service to become live (/live probe)..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -sf "$DEPLOY_URL/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Deployment is healthy!"
-              exit 0
+            STATUS=$(curl -sf --max-time 8 "$DEPLOY_URL/live" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "alive" ]; then
+              echo "Service is alive!"
+              break
             fi
             echo "Attempt $i/30: status=$STATUS — waiting 10s..."
             sleep 10
+            if [ "$i" = "30" ]; then
+              echo "Service did not become live within 5 minutes"
+              exit 1
+            fi
           done
 
-          echo "Deployment did not become healthy within 5 minutes"
-          exit 1
+          # Post-deploy smoke test — deep health check (uses cached result, no extra API spend)
+          echo "Running post-deploy smoke test (/health)..."
+          HEALTH=$(curl -sf --max-time 15 "$DEPLOY_URL/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "unreachable")
+          echo "Post-deploy health status: $HEALTH"
+          if [ "$HEALTH" = "critical" ]; then
+            echo "WARNING: post-deploy health is CRITICAL — check dependency status"
+            exit 1
+          fi
+          echo "Deployment verified successfully (status=$HEALTH)"

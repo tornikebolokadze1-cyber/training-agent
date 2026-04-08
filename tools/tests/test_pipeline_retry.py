@@ -27,6 +27,9 @@ from tools.core.pipeline_retry import (
     BACKOFF_MINUTES,
     MAX_RETRIES,
     PERMANENTLY_FAILED,
+    PermanentError,
+    QuotaExhaustedError,
+    RetryableError,
     RetryOrchestrator,
     RetryRecord,
     _execute_retry,
@@ -34,7 +37,9 @@ from tools.core.pipeline_retry import (
     _record_key,
     _save_tracker,
     _to_record,
+    classify_error,
     nightly_catch_all,
+    process_lecture_pipeline,
     retry_orchestrator,
 )
 
@@ -416,3 +421,165 @@ class TestEdgeCases:
         with patch.object(RetryOrchestrator, "_alert_permanent_failure"):
             result = orchestrator.schedule_retry(1, 1, "m", "one more try")
         assert result["status"] == PERMANENTLY_FAILED
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Unified retry contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestExceptionTaxonomy:
+    def test_classify_permanent_error_type(self):
+        assert classify_error(PermanentError("nope")) == "permanent"
+
+    def test_classify_quota_error_type(self):
+        assert classify_error(QuotaExhaustedError("slow down")) == "quota"
+
+    def test_classify_retryable_error_type(self):
+        assert classify_error(RetryableError("network")) == "retryable"
+
+    def test_classify_invalid_grant_string(self):
+        assert classify_error("oauth error: invalid_grant") == "permanent"
+
+    def test_classify_forbidden_string(self):
+        assert classify_error("403 Forbidden: meeting does not exist") == "permanent"
+
+    def test_classify_random_string_is_retryable(self):
+        assert classify_error("connection reset by peer") == "retryable"
+
+
+class TestPermanentErrorShortCircuit:
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    @patch.object(RetryOrchestrator, "_alert_permanent_failure")
+    def test_permanent_error_does_not_retry(
+        self, mock_alert, mock_sched, orchestrator: RetryOrchestrator,
+    ):
+        """A 403/invalid URL error should short-circuit to PERMANENTLY_FAILED."""
+        result = orchestrator.schedule_retry(
+            1, 4, "abc", "403 Forbidden: invalid recording url",
+        )
+        assert result["status"] == PERMANENTLY_FAILED
+        mock_sched.assert_not_called()
+        mock_alert.assert_called_once()
+
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    def test_retryable_error_schedules_backoff(
+        self, mock_sched, orchestrator: RetryOrchestrator,
+    ):
+        """A generic error should schedule an exponential-backoff retry."""
+        result = orchestrator.schedule_retry(1, 4, "abc", "connection timeout")
+        assert result["status"] == "scheduled"
+        assert result["delay_minutes"] == BACKOFF_MINUTES[0]
+        mock_sched.assert_called_once()
+
+
+class TestHasPendingRetry:
+    def test_returns_false_for_unknown_lecture(self, orchestrator: RetryOrchestrator):
+        assert orchestrator.has_pending_retry(9, 9) is False
+
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    def test_returns_true_after_schedule(
+        self, mock_sched, orchestrator: RetryOrchestrator,
+    ):
+        orchestrator.schedule_retry(1, 2, "abc", "network")
+        assert orchestrator.has_pending_retry(1, 2) is True
+
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    @patch.object(RetryOrchestrator, "_alert_permanent_failure")
+    def test_returns_true_for_permanent_failure(
+        self, mock_alert, mock_sched, orchestrator: RetryOrchestrator,
+    ):
+        orchestrator.schedule_retry(1, 2, "abc", "403 forbidden")
+        assert orchestrator.has_pending_retry(1, 2) is True
+
+
+class TestProcessLecturePipelineContract:
+    """The canonical entry point must enforce claim + classification."""
+
+    def test_duplicate_launch_blocked_by_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Second entry path hitting same (group, lecture) raises PipelineClaimError."""
+        from tools.core import pipeline_state
+
+        # Isolate state files in a temp dir so we don't clobber real pipelines.
+        monkeypatch.setattr(pipeline_state, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(
+            "tools.core.pipeline_state.state_file_path",
+            lambda g, lec: tmp_path / f"pipeline_state_g{g}_l{lec}.json",
+        )
+
+        # Create an active (non-failed, non-complete) pipeline under G1 L1.
+        pipeline_state.create_pipeline(1, 1, meeting_id="existing")
+        pipeline_state.transition(
+            pipeline_state.load_state(1, 1), pipeline_state.DOWNLOADING,
+        )
+
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
+
+        with pytest.raises(PipelineClaimError):
+            process_lecture_pipeline(
+                1, 1, "existing",
+                entry_source="scheduler_post_meeting",
+            )
+
+    def test_canonical_entry_runs_pipeline_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Happy path: canonical entry calls into scheduler._run_post_meeting_pipeline."""
+        from tools.core import pipeline_state
+
+        monkeypatch.setattr(pipeline_state, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(
+            "tools.core.pipeline_state.state_file_path",
+            lambda g, lec: tmp_path / f"pipeline_state_g{g}_l{lec}.json",
+        )
+
+        # Stub out the heavy pipeline body.
+        stub = MagicMock()
+        monkeypatch.setattr(
+            "tools.app.scheduler._run_post_meeting_pipeline", stub,
+        )
+
+        result = process_lecture_pipeline(
+            2, 3, "meeting-xyz",
+            entry_source="webhook_meeting_ended",
+        )
+        assert result["status"] == "complete"
+        stub.assert_called_once_with(
+            2, 3, "meeting-xyz", skip_initial_delay=False,
+        )
+
+
+class TestAllEntryPathsUseCanonicalFunction:
+    """Grep-style check: every entry path file delegates to process_lecture_pipeline."""
+
+    def test_server_delegates_to_canonical(self):
+        import inspect
+        import tools.app.server as server
+        src = inspect.getsource(server)
+        assert src.count("process_lecture_pipeline") >= 4, (
+            "server.py must call process_lecture_pipeline from all entry paths "
+            "(meeting.ended, recording.completed, admin retry-latest, "
+            "admin /process-recording auto mode)"
+        )
+
+    def test_startup_recovery_checks_retry_tracker(self):
+        import inspect
+        import tools.app.server as server
+        src = inspect.getsource(server)
+        assert "has_pending_retry" in src, (
+            "startup recovery scan must consult retry_orchestrator.has_pending_retry "
+            "to avoid re-launching lectures already owned by the retry executor"
+        )
+
+
+class TestStartupRecoveryRespectsRetryTracker:
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    def test_startup_skips_pending_retry(
+        self, mock_sched, orchestrator: RetryOrchestrator,
+    ):
+        """If has_pending_retry returns True, startup recovery must skip."""
+        orchestrator.schedule_retry(1, 5, "abc", "network error")
+        assert orchestrator.has_pending_retry(1, 5) is True

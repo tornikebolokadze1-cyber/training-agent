@@ -49,12 +49,12 @@ ENV SERVER_HOST="0.0.0.0" \
 
 EXPOSE 5001
 
-# Health check — generous timeout to survive long Gemini API calls.
-# Pipeline runs on a separate thread, but under heavy CPU/memory load
-# the event loop can be slow to respond. 30s timeout + 60s start period
-# prevents false-positive restarts during video transcription.
-HEALTHCHECK --interval=60s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -sf --max-time 25 http://localhost:5001/health || exit 1
+# Liveness check — uses /live (no external API calls, < 50ms).
+# /health runs a full dependency audit with billable Gemini/Claude calls;
+# using it here caused false-positive restarts and unnecessary API spend.
+# /live only checks that the process is alive and the event loop responds.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -sf --max-time 8 http://localhost:5001/live || exit 1
 
 # Run the unified orchestrator (APScheduler + FastAPI)
 CMD ["python", "-m", "tools.app.orchestrator"]

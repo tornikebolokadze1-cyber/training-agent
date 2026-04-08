@@ -34,6 +34,73 @@ PERMANENTLY_FAILED = "PERMANENTLY_FAILED"
 BLOCKED_ON_TOKEN = "BLOCKED_ON_TOKEN"  # Halt retries until Google OAuth re-auth
 RETRY_TRACKER_PATH = TMP_DIR / "retry_tracker.json"
 
+# Window during which a freshly-scheduled retry suppresses competing launches
+# from startup recovery scans. Keeps phase-2 unification decisions idempotent.
+PENDING_RETRY_WINDOW_MINUTES = 240
+
+
+# ---------------------------------------------------------------------------
+# Exception taxonomy (Phase 2 — unified retry contract)
+# ---------------------------------------------------------------------------
+
+
+class RetryableError(Exception):
+    """Transient failure — safe to retry after a backoff window.
+
+    Examples: network blips, Zoom 5xx, Drive quota, ffmpeg transient crash,
+    insufficient disk (may free up later), segment download stall.
+    """
+
+
+class PermanentError(Exception):
+    """Non-retryable failure — retrying will not change the outcome.
+
+    Examples: Google OAuth refresh_token revoked, Zoom 403/404 on a meeting
+    that no longer exists, invalid recording URL, permanent quota exhaustion.
+    """
+
+
+class QuotaExhaustedError(RetryableError):
+    """API quota exhausted — retry after a longer cooldown window."""
+
+
+# Keyword classification helpers. These patterns mark an error string as
+# permanent even if the caller did not raise the typed exception explicitly
+# (e.g., when the exception bubbles up from a third-party library).
+_PERMANENT_KEYWORDS: tuple[str, ...] = (
+    "invalid_grant",
+    "token has been expired or revoked",
+    "refresh_token is invalid",
+    "refresh_token has been revoked",
+    "403 forbidden",
+    "404 not found",
+    "meeting does not exist",
+    "invalid recording url",
+    "oauth consent",
+)
+
+
+def classify_error(exc: BaseException | str) -> str:
+    """Classify an exception or error string as retryable vs permanent.
+
+    Returns one of: ``"permanent"``, ``"quota"``, ``"retryable"``.
+    Typed subclasses win over keyword matching.
+    """
+    if isinstance(exc, PermanentError):
+        return "permanent"
+    if isinstance(exc, QuotaExhaustedError):
+        return "quota"
+    if isinstance(exc, RetryableError):
+        return "retryable"
+
+    msg = str(exc) if not isinstance(exc, str) else exc
+    if _is_token_revoked_error(msg):
+        return "permanent"
+    lowered = msg.lower()
+    if any(kw in lowered for kw in _PERMANENT_KEYWORDS):
+        return "permanent"
+    return "retryable"
+
 # Keywords that indicate Google OAuth refresh_token revocation.
 # When any of these appear in an error message, retrying is pointless
 # until an operator runs `python -m tools.core.token_manager --reauth`.
@@ -195,6 +262,26 @@ class RetryOrchestrator:
         if len(record.errors) > 10:
             record.errors = record.errors[-10:]
         record.updated_at = now
+
+        # Classify permanent errors up front (Phase 2 unified contract).
+        # Any non-token permanent error (403/404/invalid URL) short-circuits
+        # to PERMANENTLY_FAILED without burning the retry budget.
+        classification = classify_error(error_msg)
+        if classification == "permanent" and not _is_token_revoked_error(error_msg):
+            record.status = PERMANENTLY_FAILED
+            record.next_retry_at = ""
+            tracker[key] = asdict(record)
+            _save_tracker(tracker)
+            logger.error(
+                "[retry] G%d L%d PERMANENT ERROR (not retrying): %s",
+                group, lecture, error_msg,
+            )
+            self._alert_permanent_failure(record)
+            return {
+                "status": PERMANENTLY_FAILED,
+                "attempt": record.attempt,
+                "errors": record.errors,
+            }
 
         # Halt early if the error indicates Google OAuth revocation.
         # Retrying in this state is pointless — every attempt will fail
@@ -417,8 +504,223 @@ class RetryOrchestrator:
             )
 
 
+    def has_pending_retry(
+        self,
+        group: int,
+        lecture: int,
+        within_minutes: int = PENDING_RETRY_WINDOW_MINUTES,
+    ) -> bool:
+        """Return True if a retry is scheduled for this lecture in the near future.
+
+        Used by startup recovery scans to avoid re-launching lectures that
+        are already owned by the retry executor. Permanent/blocked records
+        also count as "owned" — they should not be re-launched on startup
+        until an operator intervenes.
+
+        Args:
+            group: Training group number.
+            lecture: Lecture number.
+            within_minutes: Only consider scheduled retries that fire within
+                this window. Older scheduled times are ignored (treated as
+                stale — the nightly catch-all will re-schedule them).
+
+        Returns:
+            True if a retry is pending (scheduled within window, or the
+            lecture is permanently failed / blocked on token).
+        """
+        record = self.get_record(group, lecture)
+        if record is None:
+            return False
+        if record.status in (PERMANENTLY_FAILED, BLOCKED_ON_TOKEN):
+            return True
+        if record.status != "scheduled" or not record.next_retry_at:
+            return False
+        try:
+            next_time = datetime.fromisoformat(record.next_retry_at)
+        except (ValueError, TypeError):
+            return False
+        now = datetime.now(tz=TBILISI_TZ)
+        if next_time.tzinfo is None:
+            next_time = next_time.replace(tzinfo=TBILISI_TZ)
+        delta = (next_time - now).total_seconds() / 60.0
+        return -60.0 <= delta <= float(within_minutes)
+
+
 # Module-level singleton
 retry_orchestrator = RetryOrchestrator()
+
+
+# ---------------------------------------------------------------------------
+# Canonical lecture processing entry point (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+# Valid entry-source tags — used by logs and tests to distinguish paths.
+ENTRY_SOURCES: frozenset[str] = frozenset({
+    "scheduler_post_meeting",
+    "webhook_meeting_ended",
+    "webhook_recording_completed",
+    "scheduler_fallback",
+    "startup_recovery",
+    "retry_executor",
+    "admin_manual",
+    "admin_retry_latest",
+    "admin_process_recording",
+})
+
+
+def process_lecture_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str,
+    *,
+    entry_source: str,
+    skip_initial_delay: bool = False,
+) -> dict[str, Any]:
+    """Canonical synchronous entry point for lecture processing.
+
+    Every orchestration path in the system (scheduler post-meeting job,
+    Zoom webhook handlers, startup recovery, retry executor, admin
+    triggers) MUST call this function instead of invoking
+    ``_run_post_meeting_pipeline`` directly. Centralising the logic here
+    guarantees:
+
+    1. Atomic claim via ``pipeline_state`` — raises
+       ``PipelineClaimError`` if the same (group, lecture) is already
+       active somewhere else.
+    2. Unified exception classification — retryable errors enqueue a
+       backoff, permanent errors short-circuit with an operator alert.
+    3. Durable state on every exit — early-abort paths inside the
+       pipeline body use :func:`RetryOrchestrator.schedule_retry`, which
+       writes the retry decision to disk before returning.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        meeting_id: Zoom meeting ID used for polling.
+        entry_source: Human-readable source tag (see ``ENTRY_SOURCES``).
+        skip_initial_delay: Forwarded to the underlying pipeline — set
+            True when the recording is already known to be on Zoom
+            (e.g., retry executor, startup recovery).
+
+    Returns:
+        Dict summarising the execution outcome: ``{"status": ..., ...}``.
+
+    Raises:
+        PipelineClaimError: If the pipeline is already active.
+    """
+    from tools.core.pipeline_state import (
+        FAILED,
+        PipelineClaimError,
+        create_pipeline,
+        is_pipeline_active,
+        load_state,
+        mark_failed,
+        reset_failed,
+    )
+
+    if entry_source not in ENTRY_SOURCES:
+        logger.warning(
+            "[pipeline] Unknown entry_source=%r — accepting anyway", entry_source,
+        )
+
+    logger.info(
+        "[pipeline] Canonical entry: G%d L%d meeting=%s source=%s",
+        group, lecture, meeting_id, entry_source,
+    )
+
+    # --- Step 1: Claim ------------------------------------------------------
+    # Tolerate a pre-existing PENDING claim made by the caller (webhook
+    # handlers pre-create the pipeline under _processing_lock to dedup
+    # before handing off here). Any state past PENDING means another
+    # executor is already running — reject.
+    from tools.core.pipeline_state import PENDING
+    existing = load_state(group, lecture)
+    if existing is not None:
+        if existing.state == FAILED:
+            reset_failed(group, lecture)
+            existing = None
+        elif existing.state == PENDING:
+            # Pre-claimed PENDING — acceptable, we'll adopt it.
+            logger.info(
+                "[pipeline] Adopting pre-claimed PENDING state for G%d L%d",
+                group, lecture,
+            )
+        elif is_pipeline_active(group, lecture):
+            raise PipelineClaimError(
+                f"Pipeline already active for G{group} L{lecture} in state "
+                f"{existing.state} — refusing to launch second instance from "
+                f"{entry_source}"
+            )
+
+    if existing is None:
+        try:
+            create_pipeline(group, lecture, meeting_id=meeting_id)
+        except ValueError as exc:
+            raise PipelineClaimError(str(exc)) from exc
+
+    # --- Step 2: Run pipeline body -----------------------------------------
+    try:
+        from tools.app.scheduler import _run_post_meeting_pipeline
+    except ImportError as exc:
+        mark_failed(
+            load_state(group, lecture) or create_pipeline(group, lecture, meeting_id),
+            f"scheduler unavailable: {exc}",
+        )
+        raise
+
+    try:
+        _run_post_meeting_pipeline(
+            group, lecture, meeting_id, skip_initial_delay=skip_initial_delay,
+        )
+    except PermanentError as exc:
+        logger.error(
+            "[pipeline] G%d L%d permanent error from %s: %s",
+            group, lecture, entry_source, exc,
+        )
+        current = load_state(group, lecture)
+        if current and current.state not in ("COMPLETE", "FAILED"):
+            mark_failed(current, f"permanent: {exc}")
+        retry_orchestrator.schedule_retry(group, lecture, meeting_id, str(exc))
+        return {"status": "permanent_error", "error": str(exc)}
+    except QuotaExhaustedError as exc:
+        logger.warning(
+            "[pipeline] G%d L%d quota exhausted from %s: %s",
+            group, lecture, entry_source, exc,
+        )
+        retry_orchestrator.schedule_retry(group, lecture, meeting_id, f"quota: {exc}")
+        return {"status": "quota_exhausted", "error": str(exc)}
+    except RetryableError as exc:
+        logger.warning(
+            "[pipeline] G%d L%d retryable error from %s: %s",
+            group, lecture, entry_source, exc,
+        )
+        retry_orchestrator.schedule_retry(group, lecture, meeting_id, str(exc))
+        return {"status": "retry_scheduled", "error": str(exc)}
+    except Exception as exc:
+        # Unclassified — delegate to classifier. _run_post_meeting_pipeline
+        # already marks FAILED + schedules retry via its own except block,
+        # but that only fires when it's the top-level entry. When called
+        # from here we still need to ensure the contract holds.
+        classification = classify_error(exc)
+        logger.error(
+            "[pipeline] G%d L%d unclassified error (%s) from %s: %s",
+            group, lecture, classification, entry_source, exc,
+        )
+        # _run_post_meeting_pipeline already scheduled a retry in its
+        # except block; avoid double-scheduling here by checking whether
+        # a record was just written.
+        record = retry_orchestrator.get_record(group, lecture)
+        if record is None:
+            retry_orchestrator.schedule_retry(group, lecture, meeting_id, str(exc))
+        return {"status": classification, "error": str(exc)}
+
+    # --- Step 3: Success cleanup -------------------------------------------
+    retry_orchestrator.clear_retry(group, lecture)
+    logger.info(
+        "[pipeline] G%d L%d completed via %s", group, lecture, entry_source,
+    )
+    return {"status": "complete"}
 
 
 # ---------------------------------------------------------------------------

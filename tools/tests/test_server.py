@@ -1928,3 +1928,227 @@ class TestCheckUnprocessedRecordings:
         )
 
 
+# ===========================================================================
+# New Phase-4 tests: /live, /ready, /health cache behaviour
+# ===========================================================================
+
+@pytest.mark.asyncio
+class TestLivenessEndpoint:
+    """Tests for GET /live — cheap liveness probe."""
+
+    async def test_live_returns_200(self):
+        """/live must always return HTTP 200."""
+        async with await _async_client() as client:
+            resp = await client.get("/live")
+        assert resp.status_code == 200
+
+    async def test_live_response_shape(self):
+        """/live response must contain status, uptime_s, and version keys."""
+        async with await _async_client() as client:
+            resp = await client.get("/live")
+        data = resp.json()
+        assert data["status"] == "alive"
+        assert isinstance(data["uptime_s"], int)
+        assert "version" in data
+
+    async def test_live_makes_no_external_calls(self):
+        """/live must not call Gemini, Claude, Zoom, Pinecone, or WhatsApp."""
+        gemini_mock = MagicMock()
+        claude_mock = MagicMock()
+        zoom_mock = MagicMock()
+        pinecone_mock = MagicMock()
+        whatsapp_mock = MagicMock()
+
+        with (
+            patch.dict("sys.modules", {
+                "google.genai": gemini_mock,
+                "anthropic": claude_mock,
+                "tools.integrations.zoom_manager": zoom_mock,
+                "pinecone": pinecone_mock,
+                "tools.integrations.whatsapp_sender": whatsapp_mock,
+            }),
+        ):
+            async with await _async_client() as client:
+                resp = await client.get("/live")
+
+        assert resp.status_code == 200
+        # None of the external service constructors should have been called
+        gemini_mock.Client.assert_not_called()
+        claude_mock.Anthropic.assert_not_called()
+        zoom_mock.get_access_token.assert_not_called()
+        pinecone_mock.Pinecone.assert_not_called()
+
+    async def test_live_is_fast(self):
+        """/live must respond within 100 ms under normal conditions."""
+        import time as _time
+
+        async with await _async_client() as client:
+            t0 = _time.perf_counter()
+            resp = await client.get("/live")
+            elapsed_ms = (_time.perf_counter() - t0) * 1000
+
+        assert resp.status_code == 200
+        assert elapsed_ms < 100, f"/live took {elapsed_ms:.1f} ms — expected < 100 ms"
+
+    async def test_live_does_not_require_auth(self):
+        """/live must be accessible without any Authorization header."""
+        async with await _async_client() as client:
+            resp = await client.get("/live")  # no headers
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+class TestReadinessEndpoint:
+    """Tests for GET /ready — startup completion probe."""
+
+    async def test_ready_returns_503_before_startup_complete(self):
+        """/ready must return 503 when _startup_complete is False."""
+        with patch.object(srv, "_startup_complete", False):
+            async with await _async_client() as client:
+                resp = await client.get("/ready")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["status"] == "starting"
+
+    async def test_ready_returns_200_after_startup_complete(self):
+        """/ready must return 200 once _startup_complete is True."""
+        with patch.object(srv, "_startup_complete", True):
+            async with await _async_client() as client:
+                resp = await client.get("/ready")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ready"
+        assert "tasks_in_progress" in data
+
+
+@pytest.mark.asyncio
+class TestHealthCacheBehaviour:
+    """Tests for /health TTL caching and status-code semantics."""
+
+    async def test_health_cache_prevents_repeat_api_calls(self):
+        """Two /health calls within TTL window must invoke full audit only once."""
+        from tools.core import health_monitor as _hm
+
+        # Reset cache so we start from a clean state
+        _hm._health_cache["timestamp"] = 0.0
+        _hm._health_cache["result"] = None
+
+        call_count = {"n": 0}
+
+        def _mock_check_all():
+            call_count["n"] += 1
+            return {
+                "overall_status": "healthy",
+                "timestamp": "2026-01-01T00:00:00+04:00",
+                "checks": [],
+                "warnings_count": 0,
+                "critical_count": 0,
+            }
+
+        with patch.object(_hm, "check_all", side_effect=_mock_check_all):
+            # First call — should run the full audit
+            async with await _async_client() as client:
+                resp1 = await client.get("/health")
+            # Second call immediately after — should use cache
+            async with await _async_client() as client:
+                resp2 = await client.get("/health")
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert call_count["n"] == 1, (
+            f"Expected check_all() called once (cached), but was called {call_count['n']} times"
+        )
+
+    async def test_health_force_param_bypasses_cache(self):
+        """Passing ?force=true must bypass the TTL cache and run a fresh audit."""
+        from tools.core import health_monitor as _hm
+
+        call_count = {"n": 0}
+
+        def _mock_check_all():
+            call_count["n"] += 1
+            return {
+                "overall_status": "healthy",
+                "timestamp": "2026-01-01T00:00:00+04:00",
+                "checks": [],
+                "warnings_count": 0,
+                "critical_count": 0,
+            }
+
+        # Seed cache so first call would normally be served from cache
+        _hm._health_cache["timestamp"] = __import__("time").time()
+        _hm._health_cache["result"] = {
+            "overall_status": "healthy",
+            "timestamp": "2026-01-01T00:00:00+04:00",
+            "checks": [],
+            "warnings_count": 0,
+            "critical_count": 0,
+        }
+
+        with patch.object(_hm, "check_all", side_effect=_mock_check_all):
+            async with await _async_client() as client:
+                resp = await client.get("/health?force=true")
+
+        assert resp.status_code == 200
+        assert call_count["n"] == 1, "force=true must bypass cache and call check_all()"
+
+    async def test_health_returns_200_for_degraded_state(self):
+        """/health must return 200 (not 503) when overall_status is 'degraded' (warnings only)."""
+        from tools.core import health_monitor as _hm
+
+        degraded_result = {
+            "overall_status": "degraded",
+            "timestamp": "2026-01-01T00:00:00+04:00",
+            "checks": [],
+            "warnings_count": 2,
+            "critical_count": 0,
+        }
+
+        with patch.object(_hm, "get_cached_or_run_full_audit", return_value=degraded_result):
+            async with await _async_client() as client:
+                resp = await client.get("/health")
+
+        assert resp.status_code == 200, (
+            f"Degraded (warning-only) state should return 200, got {resp.status_code}"
+        )
+        assert resp.json()["status"] == "degraded"
+
+    async def test_health_returns_503_only_for_critical_state(self):
+        """/health must return 503 only when overall_status is 'critical'."""
+        from tools.core import health_monitor as _hm
+
+        critical_result = {
+            "overall_status": "critical",
+            "timestamp": "2026-01-01T00:00:00+04:00",
+            "checks": [],
+            "warnings_count": 0,
+            "critical_count": 3,
+        }
+
+        with patch.object(_hm, "get_cached_or_run_full_audit", return_value=critical_result):
+            async with await _async_client() as client:
+                resp = await client.get("/health")
+
+        assert resp.status_code == 503, (
+            f"Critical state must return 503, got {resp.status_code}"
+        )
+
+    async def test_health_returns_200_for_healthy_state(self):
+        """/health returns 200 when overall_status is 'healthy'."""
+        from tools.core import health_monitor as _hm
+
+        healthy_result = {
+            "overall_status": "healthy",
+            "timestamp": "2026-01-01T00:00:00+04:00",
+            "checks": [],
+            "warnings_count": 0,
+            "critical_count": 0,
+        }
+
+        with patch.object(_hm, "get_cached_or_run_full_audit", return_value=healthy_result):
+            async with await _async_client() as client:
+                resp = await client.get("/health")
+
+        assert resp.status_code == 200
+
+
