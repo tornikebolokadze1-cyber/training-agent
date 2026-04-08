@@ -322,7 +322,9 @@ class TestGetLectureVectorCount:
 
     def test_returns_count_of_vectors(self):
         mock_index = MagicMock()
-        mock_index.list.return_value = iter(["g1_l2_summary_0", "g1_l2_summary_1", "g1_l2_summary_2"])
+        # Pinecone list() returns a generator of pages, where each page is a list of IDs.
+        # Return a single page containing 3 vector IDs.
+        mock_index.list.return_value = iter([["g1_l2_summary_0", "g1_l2_summary_1", "g1_l2_summary_2"]])
 
         with patch.object(ki, "get_pinecone_index", return_value=mock_index):
             count = ki.get_lecture_vector_count(1, 2, "summary")
@@ -628,7 +630,7 @@ class TestQueryKnowledge:
         """Direct mode should use PINECONE_SCORE_THRESHOLD_DIRECT (0.3)."""
         low_match = MagicMock()
         low_match.metadata = {"text": "marginal"}
-        low_match.score = 0.35  # above 0.3 (direct) but below 0.4 (passive)
+        low_match.score = 0.42  # above MIN_RELEVANCE_SCORE pre-filter (0.40) and direct threshold (0.3)
 
         mock_response = MagicMock()
         mock_response.matches = [low_match]
@@ -640,7 +642,7 @@ class TestQueryKnowledge:
 
             results = ki.query_knowledge("test", mode="direct")
 
-        assert len(results) == 1  # 0.35 > 0.3 threshold
+        assert len(results) == 1  # 0.42 > 0.3 direct threshold and > 0.40 pre-filter
 
     def test_passive_mode_uses_higher_threshold(self):
         """Passive mode should use PINECONE_SCORE_THRESHOLD_PASSIVE (0.4)."""

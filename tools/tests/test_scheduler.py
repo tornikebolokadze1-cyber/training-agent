@@ -891,14 +891,16 @@ class TestStartScheduler:
         mock_scheduler_instance.start.assert_called_once()
 
     def test_registers_six_jobs(self):
-        """4 pre-meeting cron jobs + health_check + daily_morning_report."""
+        """4 pre-meeting cron jobs + nightly_catch_all + pinecone_score_backup
+        + google_token_health + drive_pinecone_audit + proactive_token_check
+        + nightly_reconciliation = 10 jobs total."""
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
 
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
-        assert mock_scheduler_instance.add_job.call_count == 6
+        assert mock_scheduler_instance.add_job.call_count == 10
 
     def test_sets_module_level_scheduler_ref(self):
         mock_scheduler_instance = MagicMock()
@@ -923,6 +925,8 @@ class TestStartScheduler:
         expected = {
             "pre_group1_tuesday", "pre_group1_friday",
             "pre_group2_monday", "pre_group2_thursday",
-            "health_check", "daily_morning_report",
+            "nightly_catch_all", "pinecone_score_backup",
+            "google_token_health", "drive_pinecone_audit",
+            "proactive_token_check", "nightly_reconciliation",
         }
         assert set(job_ids) == expected

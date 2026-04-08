@@ -1869,6 +1869,16 @@ async def api_backup_scores(
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Admin router — included at the end of the module so admin_routes.py can
+# lazily import server.py internals without triggering a circular import
+# at module load time.
+# ---------------------------------------------------------------------------
+from tools.app.admin_routes import admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
+
 if __name__ == "__main__":
     import uvicorn
 

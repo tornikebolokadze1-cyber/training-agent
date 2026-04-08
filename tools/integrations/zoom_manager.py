@@ -7,9 +7,12 @@ recording file downloads for the Training Agent system.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,12 @@ MEETING_DURATION_MINUTES = 180  # 3 hours — lectures often run 30 min over
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0  # seconds
+
+# Download configuration — tuned for 2-4 GB lecture recordings
+DOWNLOAD_TIMEOUT_SECONDS = 1800  # 30 minutes
+PROGRESS_LOG_INTERVAL_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_DOWNLOAD_RETRIES = 5
+DISK_SPACE_SAFETY_MARGIN = 1.2  # require 1.2x file size free
 
 # In-memory token cache: {"access_token": str, "expires_at": float}
 _token_cache: dict[str, Any] = {}
@@ -398,83 +407,252 @@ def list_user_recordings(
     return meetings
 
 
-@resilient_api_call(service="zoom", operation="download_recording", max_attempts=5)
+# ---------------------------------------------------------------------------
+# Download helpers: checksum, disk space, parallel segments
+# ---------------------------------------------------------------------------
+
+
+def compute_file_checksum(file_path: Path | str) -> str:
+    """Compute SHA-256 checksum of a file (streamed, memory-safe)."""
+    path = Path(file_path)
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _checksum_path_for(file_path: Path) -> Path:
+    """Return the ``.sha256`` sidecar path for a given file."""
+    return file_path.with_name(file_path.name + ".sha256")
+
+
+def save_checksum(file_path: Path | str, checksum: str) -> Path:
+    """Write a checksum sidecar file in standard ``sha256sum`` format."""
+    path = Path(file_path)
+    checksum_path = _checksum_path_for(path)
+    checksum_path.write_text(f"{checksum}  {path.name}\n")
+    return checksum_path
+
+
+def load_checksum(file_path: Path | str) -> str | None:
+    """Read checksum from the ``.sha256`` sidecar, or None if missing."""
+    path = Path(file_path)
+    checksum_path = _checksum_path_for(path)
+    if not checksum_path.exists():
+        return None
+    content = checksum_path.read_text().strip()
+    if not content:
+        return None
+    return content.split()[0]
+
+
+def verify_download_integrity(file_path: Path | str) -> bool:
+    """Verify a file against its stored ``.sha256`` checksum."""
+    stored = load_checksum(file_path)
+    if stored is None:
+        return False
+    return compute_file_checksum(file_path) == stored
+
+
+def check_disk_space(dest_path: Path | str, required_bytes: int) -> None:
+    """Ensure enough free disk space for ``required_bytes`` with safety margin.
+
+    Raises:
+        ZoomDownloadError: If free space is below required * DISK_SPACE_SAFETY_MARGIN.
+    """
+    dest = Path(dest_path)
+    check_dir = dest.parent if dest.parent.exists() else Path.cwd()
+    usage = shutil.disk_usage(check_dir)
+    needed = int(required_bytes * DISK_SPACE_SAFETY_MARGIN)
+    if usage.free < needed:
+        raise ZoomDownloadError(
+            f"Insufficient disk space: need {needed} bytes "
+            f"(including {DISK_SPACE_SAFETY_MARGIN}x safety margin), "
+            f"only {usage.free} bytes free at {check_dir}"
+        )
+
+
 def download_recording(
     download_url: str,
     access_token: str,
     dest_path: Path | str,
+    resume: bool = True,
 ) -> Path:
-    """Download a single Zoom recording file to local storage.
+    """Download a single Zoom recording file with retry, resume, and checksum.
 
-    Uses streaming to avoid loading the entire file into memory, making it
-    suitable for large video files.
-
-    Args:
-        download_url: The ``download_url`` value from a recording file entry.
-            The access token is appended as a query parameter as required by
-            the Zoom API.
-        access_token: A valid Bearer token (obtain via :func:`get_access_token`).
-        dest_path: Destination file path. Parent directories are created if
-            they do not exist. If a string is supplied it is converted to
-            :class:`pathlib.Path`.
-
-    Returns:
-        The resolved :class:`pathlib.Path` of the downloaded file.
+    Features:
+      - Disk space pre-check (1.2x file size).
+      - HTTP Range resume support for partial files.
+      - Retry up to ``MAX_DOWNLOAD_RETRIES`` on network errors.
+      - Content-Length completeness validation.
+      - SHA-256 checksum sidecar written on success.
 
     Raises:
-        ZoomDownloadError: If the download request fails or the server returns
-            a non-2xx status.
+        ZoomDownloadError: On HTTP error, incomplete download, exhausted
+            retries, or insufficient disk space.
     """
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Zoom requires the access token appended as a query parameter for downloads
     separator = "&" if "?" in download_url else "?"
     authenticated_url = f"{download_url}{separator}access_token={access_token}"
 
     logger.info("Downloading recording to %s …", dest)
 
-    try:
-        with httpx.Client(timeout=httpx.Timeout(1800.0, connect=30.0), follow_redirects=True) as client:
-            with client.stream("GET", authenticated_url) as response:
-                if response.status_code not in (200, 206):
+    last_exc: Exception | None = None
+
+    for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
+        # Determine resume offset
+        resume_from = dest.stat().st_size if (resume and dest.exists()) else 0
+        headers: dict[str, str] = {}
+        if resume_from > 0:
+            headers["Range"] = f"bytes={resume_from}-"
+
+        # Pre-flight disk space check — best-effort using HEAD
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(DOWNLOAD_TIMEOUT_SECONDS, connect=30.0),
+                follow_redirects=True,
+            ) as probe_client:
+                head_resp = probe_client.head(authenticated_url)
+                head_size = int(head_resp.headers.get("content-length", 0) or 0)
+                if head_size > 0:
+                    check_disk_space(dest, head_size - resume_from)
+        except ZoomDownloadError:
+            raise
+        except Exception:  # noqa: BLE001 — HEAD is best-effort
+            pass
+
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(DOWNLOAD_TIMEOUT_SECONDS, connect=30.0),
+                follow_redirects=True,
+            ) as client:
+                with client.stream("GET", authenticated_url, headers=headers) as response:
+                    if response.status_code not in (200, 206):
+                        raise ZoomDownloadError(
+                            f"Download failed: HTTP {response.status_code} for {download_url}"
+                        )
+
+                    total_bytes = int(response.headers.get("content-length", 0) or 0)
+
+                    # Disk space check based on actual stream content-length
+                    if total_bytes > 0:
+                        check_disk_space(dest, total_bytes)
+
+                    mode = "ab" if (resume_from > 0 and response.status_code == 206) else "wb"
+                    downloaded = resume_from if mode == "ab" else 0
+                    next_log_at = PROGRESS_LOG_INTERVAL_BYTES
+
+                    with dest.open(mode) as fh:
+                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                            fh.write(chunk)
+                            downloaded += len(chunk)
+                            if downloaded >= next_log_at:
+                                logger.info(
+                                    "Download progress: %.0f MB",
+                                    downloaded / (1024 * 1024),
+                                )
+                                next_log_at += PROGRESS_LOG_INTERVAL_BYTES
+
+            # Completeness check
+            expected_header = response.headers.get("content-length")
+            actual_size = dest.stat().st_size
+            if expected_header:
+                expected = int(expected_header)
+                effective_expected = expected + (resume_from if mode == "ab" else 0)
+                if actual_size < effective_expected:
+                    dest.unlink(missing_ok=True)
                     raise ZoomDownloadError(
-                        f"Download failed: HTTP {response.status_code} for {download_url}"
+                        f"Incomplete download: got {actual_size} bytes, "
+                        f"expected {effective_expected} bytes"
                     )
 
-                total_bytes = int(response.headers.get("content-length", 0))
-                downloaded = 0
+            # Success — write checksum sidecar
+            checksum = compute_file_checksum(dest)
+            save_checksum(dest, checksum)
 
-                with dest.open("wb") as fh:
-                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):  # 1 MB
-                        fh.write(chunk)
-                        downloaded += len(chunk)
-
-                        if total_bytes:
-                            pct = downloaded / total_bytes * 100
-                            logger.debug("Download progress: %.1f%%", pct)
-
-    except httpx.RequestError as exc:
-        raise ZoomDownloadError(
-            f"Network error while downloading {download_url}: {exc}"
-        ) from exc
-
-    # Validate download completeness
-    expected_size = response.headers.get("content-length")
-    actual_size = dest.stat().st_size
-    if expected_size:
-        expected = int(expected_size)
-        if actual_size < expected:
-            dest.unlink(missing_ok=True)
-            raise ZoomDownloadError(
-                f"Incomplete download: got {actual_size} bytes, "
-                f"expected {expected} bytes ({actual_size/expected*100:.0f}%)"
+            logger.info(
+                "Download complete: %s (%.1f MB)",
+                dest.name, actual_size / (1024 * 1024),
             )
-    logger.info(
-        "Download complete: %s (%.1f MB)",
-        dest.name, actual_size / (1024 * 1024),
+            return dest
+
+        except ZoomDownloadError:
+            raise
+        except (httpx.TransportError, AttributeError) as exc:
+            last_exc = exc
+            logger.warning(
+                "Download attempt %d/%d failed: %s",
+                attempt, MAX_DOWNLOAD_RETRIES, exc,
+            )
+            if attempt < MAX_DOWNLOAD_RETRIES:
+                time.sleep(RETRY_BACKOFF_BASE * attempt)
+            continue
+
+    # All retries exhausted
+    dest.unlink(missing_ok=True)
+    raise ZoomDownloadError(
+        f"Network error after {MAX_DOWNLOAD_RETRIES} attempts for {download_url}: {last_exc}"
     )
-    return dest
+
+
+def download_segments_parallel(
+    segments: list[dict[str, Any]],
+    dest_dir: Path | str,
+    max_workers: int = 3,
+) -> list[Path]:
+    """Download multiple recording segments in parallel.
+
+    Args:
+        segments: List of recording file dicts with ``id``, ``file_type``,
+            ``recording_type``, ``download_url``, and optional ``file_size``.
+        dest_dir: Destination directory for downloaded files.
+        max_workers: Maximum concurrent downloads.
+
+    Returns:
+        List of downloaded file paths, in the same order as ``segments``.
+
+    Raises:
+        ZoomDownloadError: If any segment fails to download.
+    """
+    if not segments:
+        return []
+
+    dest_dir_path = Path(dest_dir)
+    dest_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Aggregate disk space check
+    total_size = sum(int(seg.get("file_size", 0) or 0) for seg in segments)
+    if total_size > 0:
+        check_disk_space(dest_dir_path / ".probe", total_size)
+
+    token = get_access_token()
+
+    def _segment_path(seg: dict[str, Any]) -> Path:
+        file_type = str(seg.get("file_type", "MP4")).lower()
+        rec_type = seg.get("recording_type", "unknown")
+        return dest_dir_path / f"{rec_type}_{seg['id']}.{file_type}"
+
+    results: list[Path | None] = [None] * len(segments)
+
+    def _download_one(idx: int, seg: dict[str, Any]) -> tuple[int, Path]:
+        path = download_recording(
+            seg["download_url"], token, _segment_path(seg),
+        )
+        return idx, path
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_download_one, i, seg)
+            for i, seg in enumerate(segments)
+        ]
+        for future in as_completed(futures):
+            idx, path = future.result()  # re-raises ZoomDownloadError
+            results[idx] = path
+
+    return [p for p in results if p is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -508,32 +686,32 @@ def download_all_recordings(
     recordings_data = get_meeting_recordings(meeting_id)
     recording_files: list[dict[str, Any]] = recordings_data.get("recording_files", [])
 
-    downloaded_paths: list[Path] = []
-
+    completed = [r for r in recording_files if r.get("status") == "completed"]
     for rec in recording_files:
         if rec.get("status") != "completed":
             logger.info(
                 "Skipping file %s — status is '%s'.",
-                rec.get("id"),
-                rec.get("status"),
+                rec.get("id"), rec.get("status"),
             )
-            continue
 
-        # Refresh token before each download — large files may take longer
-        # than the token's 1-hour lifetime
-        token = get_access_token()
+    downloaded_paths: list[Path]
 
-        file_type: str = rec.get("file_type", "MP4").upper()
-        rec_type: str = rec.get("recording_type", "unknown")
-        file_name = f"{rec_type}_{rec['id']}.{file_type.lower()}"
-        dest = Path(dest_dir) / file_name
-
-        path = download_recording(
-            download_url=rec["download_url"],
-            access_token=token,
-            dest_path=dest,
-        )
-        downloaded_paths.append(path)
+    if len(completed) > 1:
+        downloaded_paths = download_segments_parallel(completed, Path(dest_dir))
+    else:
+        downloaded_paths = []
+        for rec in completed:
+            token = get_access_token()
+            file_type: str = rec.get("file_type", "MP4").upper()
+            rec_type: str = rec.get("recording_type", "unknown")
+            file_name = f"{rec_type}_{rec['id']}.{file_type.lower()}"
+            dest = Path(dest_dir) / file_name
+            path = download_recording(
+                download_url=rec["download_url"],
+                access_token=token,
+                dest_path=dest,
+            )
+            downloaded_paths.append(path)
 
     logger.info(
         "Downloaded %d/%d recording file(s) for meeting_id=%s.",

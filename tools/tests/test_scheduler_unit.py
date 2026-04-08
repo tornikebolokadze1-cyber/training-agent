@@ -66,16 +66,16 @@ def _make_scheduler_mock() -> MagicMock:
 
 
 class TestRestorePendingJobs24HourBoundary:
-    """The stale-job threshold is exactly 24 hours.
+    """The stale-job threshold is exactly 2 hours.
 
-    Jobs with fire_time < (now - 24 h) are skipped.
-    Jobs with fire_time >= (now - 24 h) are restored.
+    Jobs with fire_time < (now - 2 h) are skipped.
+    Jobs with fire_time >= (now - 2 h) are restored.
     """
 
     def test_job_23_hours_old_is_restored(self, tmp_path: Path) -> None:
-        """fire_time = now - 23 h is inside the 24-hour window — must be restored."""
+        """fire_time = now - 1 h is inside the 2-hour window — must be restored."""
         jobs_file = tmp_path / "pending_post_meeting_jobs.json"
-        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=23)).isoformat()
+        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=1)).isoformat()
         _write_jobs_file(jobs_file, [
             {"group": 1, "lecture": 4, "meeting_id": "mtg-recent", "fire_time": fire_time},
         ])
@@ -91,9 +91,9 @@ class TestRestorePendingJobs24HourBoundary:
         mock_schedule.assert_called_once()
 
     def test_job_25_hours_old_is_not_restored(self, tmp_path: Path) -> None:
-        """fire_time = now - 25 h is outside the 24-hour window — must be skipped."""
+        """fire_time = now - 3 h is outside the 2-hour window — must be skipped."""
         jobs_file = tmp_path / "pending_post_meeting_jobs.json"
-        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=25)).isoformat()
+        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=3)).isoformat()
         _write_jobs_file(jobs_file, [
             {"group": 2, "lecture": 7, "meeting_id": "mtg-stale", "fire_time": fire_time},
         ])
@@ -109,15 +109,14 @@ class TestRestorePendingJobs24HourBoundary:
         mock_schedule.assert_not_called()
 
     def test_job_24_hours_old_is_considered_stale(self, tmp_path: Path) -> None:
-        """fire_time = exactly now - 24 h sits at the boundary.
+        """fire_time = exactly now - 2 h + 1 s sits just past the boundary.
 
-        The code uses strict less-than: ``if fire_time < now - timedelta(hours=24)``.
-        A job that is exactly 24 hours old is NOT skipped (boundary is exclusive).
-        We verify the implementation matches that behaviour.
+        The code uses strict less-than: ``if fire_time < now - timedelta(hours=2)``.
+        A job that is exactly 2 h + 1 s old is skipped.
         """
         jobs_file = tmp_path / "pending_post_meeting_jobs.json"
         # Subtract a tiny extra buffer so we cross the threshold reliably
-        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=24, seconds=1)).isoformat()
+        fire_time = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=2, seconds=1)).isoformat()
         _write_jobs_file(jobs_file, [
             {"group": 1, "lecture": 1, "meeting_id": "mtg-boundary", "fire_time": fire_time},
         ])
@@ -129,16 +128,16 @@ class TestRestorePendingJobs24HourBoundary:
         ):
             count = _restore_pending_jobs(scheduler)
 
-        # A job that is >24 h old must be skipped
+        # A job that is >2 h old must be skipped
         assert count == 0
         mock_schedule.assert_not_called()
 
     def test_mixed_jobs_only_fresh_ones_restored(self, tmp_path: Path) -> None:
-        """With one fresh (23 h) and one stale (25 h) job, only the fresh one
+        """With one fresh (1 h) and one stale (3 h) job, only the fresh one
         must be restored."""
         jobs_file = tmp_path / "pending_post_meeting_jobs.json"
-        fresh = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=23)).isoformat()
-        stale = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=25)).isoformat()
+        fresh = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=1)).isoformat()
+        stale = (datetime.now(sched.TBILISI_TZ) - timedelta(hours=3)).isoformat()
         _write_jobs_file(jobs_file, [
             {"group": 1, "lecture": 2, "meeting_id": "mtg-fresh", "fire_time": fresh},
             {"group": 2, "lecture": 6, "meeting_id": "mtg-old",   "fire_time": stale},

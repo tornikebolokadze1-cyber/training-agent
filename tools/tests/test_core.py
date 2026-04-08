@@ -469,11 +469,11 @@ class TestSplitVideoChunks:
 
         assert result == [video]
 
-    def test_exact_45min_video_returns_original_path(self, tmp_path):
+    def test_exact_30min_video_returns_original_path(self, tmp_path):
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        with self._mock_validate_path(), self._mock_duration(45 * 60):  # exactly 45 min
+        with self._mock_validate_path(), self._mock_duration(30 * 60):  # exactly 30 min (current CHUNK_DURATION_MINUTES)
             from tools.integrations.gemini_analyzer import split_video_chunks
             result = split_video_chunks(video)
 
@@ -506,8 +506,8 @@ class TestSplitVideoChunks:
 
         assert len(result) == 2
 
-    def test_3hr_video_splits_into_four_chunks(self, tmp_path):
-        """180 min / 45 min = exactly 4 chunks."""
+    def test_3hr_video_splits_into_six_chunks(self, tmp_path):
+        """180 min / 30 min = exactly 6 chunks."""
         video = tmp_path / "lecture_long.mp4"
         video.write_bytes(b"fake")
 
@@ -527,7 +527,7 @@ class TestSplitVideoChunks:
                 from tools.integrations.gemini_analyzer import split_video_chunks
                 result = split_video_chunks(video)
 
-        assert len(result) == 4
+        assert len(result) == 6
 
     def test_existing_chunk_not_re_created(self, tmp_path):
         """If a chunk file already exists on disk, ffmpeg must not be called for it."""

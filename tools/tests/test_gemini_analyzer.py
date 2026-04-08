@@ -737,7 +737,8 @@ class TestGenerateWithRetry:
         client.models.generate_content.return_value = resp
 
         with patch("tools.integrations.gemini_analyzer.time.sleep"), \
-             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock), \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test purpose"
@@ -750,7 +751,8 @@ class TestGenerateWithRetry:
         client.models.generate_content.return_value = resp
 
         with patch("tools.integrations.gemini_analyzer.time.sleep"), \
-             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock), \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test purpose"
@@ -779,7 +781,8 @@ class TestGenerateWithRetry:
 
         with patch("tools.integrations.gemini_analyzer.time.sleep"), \
              patch.object(ga, "GEMINI_API_KEY", ""), \
-             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock):
+             patch("tools.integrations.gemini_analyzer.types.GenerateContentConfig", MagicMock), \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             with pytest.raises(RuntimeError, match="failed after"):
                 ga._generate_with_retry(
                     client, "model-x", ["content"], "test",
@@ -858,7 +861,8 @@ class TestClaudeReasonRateLimit:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep:
+             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep, \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             result = ga._claude_reason("transcript", "prompt", "test")
 
         assert result == "analysis result"
@@ -871,7 +875,8 @@ class TestClaudeReasonRateLimit:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.integrations.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"), \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             with pytest.raises(RuntimeError, match="rate limit"):
                 ga._claude_reason("transcript", "prompt", "test")
 
@@ -1054,7 +1059,8 @@ class TestClaudeReasonGenericRetry:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep:
+             patch("tools.integrations.gemini_analyzer.time.sleep") as mock_sleep, \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             result = ga._claude_reason("transcript", "prompt", "test")
 
         assert result == "result"
@@ -1066,7 +1072,8 @@ class TestClaudeReasonGenericRetry:
 
         with patch.object(ga, "ANTHROPIC_API_KEY", "test-key"), \
              patch.object(ga, "_anthropic_client_cache", fake_client), \
-             patch("tools.integrations.gemini_analyzer.time.sleep"):
+             patch("tools.integrations.gemini_analyzer.time.sleep"), \
+             patch("tools.core.cost_tracker.check_lecture_budget", return_value=(True, 100)):
             with pytest.raises(RuntimeError, match="failed after 5 attempts"):
                 ga._claude_reason("transcript", "prompt", "test")
 
@@ -1197,8 +1204,11 @@ class TestAnalyzeLectureAlertImport:
         assert result["deep_analysis"] == ""
 
 
+_real_import = __import__  # captured at module load, before any patching
+
+
 def _selective_import_error(name, *args, **kwargs):
     """Allow all imports except tools.integrations.whatsapp_sender."""
     if name == "tools.integrations.whatsapp_sender":
         raise ImportError("simulated import failure")
-    return __builtins__.__import__(name, *args, **kwargs)  # type: ignore[attr-defined]
+    return _real_import(name, *args, **kwargs)

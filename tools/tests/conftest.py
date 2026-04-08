@@ -123,6 +123,7 @@ _httpx.Timeout = MagicMock
 _httpx.TransportError = type("TransportError", (Exception,), {})
 _httpx.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
 _httpx.TimeoutException = type("TimeoutException", (_httpx.TransportError,), {})
+_httpx.RequestError = type("RequestError", (Exception,), {})
 
 # ===================================================================
 # fastapi — including middleware and responses submodules
@@ -308,3 +309,47 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
         _httpx_now.TransportError = type("TransportError", (Exception,), {})
         _httpx_now.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
         _httpx_now.TimeoutException = type("TimeoutException", (Exception,), {})
+        _httpx_now.RequestError = type("RequestError", (Exception,), {})
+
+
+# ---------------------------------------------------------------------------
+# Budget auto-mock — prevent production scores.db state from breaking tests
+# ---------------------------------------------------------------------------
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _mock_daily_budget(monkeypatch):
+    """Mock cost_tracker budget checks so tests don't depend on real scores.db state.
+
+    Without this, tests that run transcribe_and_index can fail with
+    'Daily cost limit reached' when the real database has accumulated
+    production costs from launchd-driven lecture processing.
+    """
+    try:
+        import tools.core.cost_tracker as _ct
+        monkeypatch.setattr(_ct, "check_daily_budget", lambda: (True, 100.0))
+        monkeypatch.setattr(_ct, "check_lecture_budget", lambda key: (True, 100.0))
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_stale_state_files():
+    """Remove real pipeline_state JSONs before each test.
+
+    Production launchd lectures can leave FAILED state files in .tmp/
+    which break transcribe_and_index tests that assume a clean slate.
+    We delete only pipeline_state_g*_l*.json — other .tmp/ files (checkpoints)
+    are left alone so test_pipeline_state_hardened continues to work.
+    """
+    from pathlib import Path
+    import glob
+    project_tmp = Path(__file__).parent.parent.parent / ".tmp"
+    if project_tmp.exists():
+        for f in glob.glob(str(project_tmp / "pipeline_state_g*_l*.json")):
+            try:
+                Path(f).unlink()
+            except OSError:
+                pass
+    yield

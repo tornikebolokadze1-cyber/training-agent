@@ -259,7 +259,7 @@ class TestLoadCheckpoint:
 
     def test_returns_string_type(self, tmp_path):
         ckpt_file = tmp_path / "g1_l1_deep.txt"
-        ckpt_file.write_text("Some analysis content here.", encoding="utf-8")
+        ckpt_file.write_text("Some analysis content here. " * 5, encoding="utf-8")
 
         with patch.object(ga, "TMP_DIR", tmp_path):
             result = ga._load_checkpoint("g1_l1_deep.txt")

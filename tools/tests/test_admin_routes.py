@@ -95,14 +95,21 @@ def reset_rate_limiter():
 
 @pytest.fixture
 def patched_secrets():
-    """Patch WEBHOOK_SECRET on the live server module in sys.modules.
+    """Patch WEBHOOK_SECRET on the server module bound to this test file.
 
-    When running after test_server.py, the module may have been popped and
-    reimported, so we patch whatever object is currently in sys.modules.
+    test_server.py pops and reimports `tools.app.server` at collection time,
+    which orphans the `srv` / `app` bindings captured at the top of this
+    file.  The stale `app` and its route handlers still reference the stale
+    module's globals, so we must patch THAT module (the one our `srv` name
+    points to) rather than whatever is currently in sys.modules.
     """
     live_srv = sys.modules.get("tools.app.server", srv)
-    with patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
-        yield
+    with patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+        if live_srv is not srv:
+            with patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+                yield
+        else:
+            yield
 
 
 async def _client() -> AsyncClient:
