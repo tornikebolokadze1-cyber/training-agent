@@ -243,7 +243,13 @@ class TestPipelineGuard:
         with pipeline_guard(_G, _L, meeting_id="test-123") as s:
             assert s.state == PENDING
             assert s.meeting_id == "test-123"
-            transition(s, DOWNLOADING)
+            transition(
+                s, DOWNLOADING,
+                analysis_done=True,
+                summary_doc_id="doc-s",
+                report_doc_id="doc-r",
+                pinecone_indexed=True,
+            )
             # Must complete or it'll be marked FAILED in finally
             current = load_state(_G, _L)
             mark_complete(current)
@@ -511,7 +517,13 @@ class TestIntegration:
             s = transition(s, TRANSCRIBING)
             s = transition(s, ANALYZING)
             s = transition(s, NOTIFYING)
-            s = transition(s, INDEXING)
+            s = transition(
+                s, INDEXING,
+                analysis_done=True,
+                summary_doc_id="doc-s",
+                report_doc_id="doc-r",
+                pinecone_indexed=True,
+            )
             mark_complete(s)
 
         loaded = load_state(_G, _L)
