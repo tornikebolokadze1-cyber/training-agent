@@ -223,25 +223,16 @@ async def _check_unprocessed_recordings() -> None:
             logger.info("[startup-recovery] G%d L%d was FAILED — resetting for retry", group_number, lecture_number)
             reset_failed(group_number, lecture_number)
 
-        # Check if already indexed in Pinecone (any vectors for this lecture)
+        # Check if already indexed in Pinecone via ID prefix scan.
+        # Previously used index.query(vector=[0.0]*3072, filter={...}) which
+        # returns 0 matches with cosine metric — caused false negatives and
+        # triggered unnecessary reprocessing on every startup.
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            # Query with a filter — if any vectors exist for this group+lecture, it's done
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning(
                 "[startup-recovery] Pinecone check failed for G%d L%d: %s — assuming not indexed",
@@ -1372,24 +1363,17 @@ async def retry_latest(
         if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
             continue
 
-        # Check Pinecone
+        # Check Pinecone via ID prefix scan.
+        # Previously used index.query(vector=[0.0]*3072, filter={...}) which
+        # returns 0 matches with cosine metric — causing false negatives
+        # (lectures that ARE indexed looking missing). Switched to
+        # lecture_exists_in_index() which uses the correct list-by-prefix API.
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning("[retry-latest] Pinecone check failed: %s", exc)
 

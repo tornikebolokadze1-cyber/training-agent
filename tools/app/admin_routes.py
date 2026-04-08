@@ -354,28 +354,20 @@ async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
     """
     counts: dict[tuple[int, int], int] = {}
 
+    # Use get_lecture_vector_count (ID-prefix scan) instead of
+    # index.query(vector=[0.0]*3072, filter=...) which returns 0 matches
+    # with cosine metric — making the admin dashboard falsely show all
+    # lectures as "missing".
     try:
-        from tools.integrations.knowledge_indexer import get_pinecone_index
-
-        index = await asyncio.to_thread(get_pinecone_index)
-        dummy_embedding = [0.0] * 3072
+        from tools.integrations.knowledge_indexer import get_lecture_vector_count
 
         for group_num in range(1, NUM_GROUPS + 1):
             for lec in range(1, MAX_LECTURES + 1):
-                result = await asyncio.to_thread(
-                    lambda g=group_num, lec_num=lec: index.query(
-                        vector=dummy_embedding,
-                        top_k=1,
-                        filter={
-                            "group_number": {"$eq": g},
-                            "lecture_number": {"$eq": lec_num},
-                        },
-                        include_metadata=False,
-                    )
+                count = await asyncio.to_thread(
+                    get_lecture_vector_count, group_num, lec,
                 )
-                matches = result.get("matches", [])
-                if matches:
-                    counts[(group_num, lec)] = len(matches)
+                if count:
+                    counts[(group_num, lec)] = count
     except Exception as exc:
         logger.warning("Pinecone count query failed: %s", exc)
 
