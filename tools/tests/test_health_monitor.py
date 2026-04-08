@@ -478,6 +478,9 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.check_pinecone")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
+    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_pipeline_state_drift")
+    @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")
     @patch("tools.core.health_monitor.ZOOM_ACCOUNT_ID", "")
     @patch("tools.core.health_monitor.ZOOM_CLIENT_ID", "")
@@ -485,8 +488,11 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.GEMINI_API_KEY", "")
     @patch("tools.core.health_monitor.GEMINI_API_KEY_PAID", "")
     @patch("tools.core.health_monitor.ANTHROPIC_API_KEY", "")
-    def test_all_ok(self, mock_gt, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
+    def test_all_ok(self, mock_gt, mock_otl, mock_psd, mock_psc, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
         ok = CheckResult(name="test", severity=Severity.OK, message="ok")
+        mock_otl.return_value = ok
+        mock_psd.return_value = ok
+        mock_psc.return_value = ok
         mock_ds.return_value = ok
         mock_wa.return_value = ok
         mock_pc.return_value = ok
@@ -504,6 +510,9 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.check_pinecone")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
+    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_pipeline_state_drift")
+    @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")
     @patch("tools.core.health_monitor.ZOOM_ACCOUNT_ID", "")
     @patch("tools.core.health_monitor.ZOOM_CLIENT_ID", "")
@@ -511,8 +520,11 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.GEMINI_API_KEY", "")
     @patch("tools.core.health_monitor.GEMINI_API_KEY_PAID", "")
     @patch("tools.core.health_monitor.ANTHROPIC_API_KEY", "")
-    def test_warning_state(self, mock_gt, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
+    def test_warning_state(self, mock_gt, mock_otl, mock_psd, mock_psc, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
         ok = CheckResult(name="ok", severity=Severity.OK, message="ok")
+        mock_otl.return_value = ok
+        mock_psd.return_value = ok
+        mock_psc.return_value = ok
         warn = CheckResult(name="warn", severity=Severity.WARNING, message="low")
         mock_ds.return_value = warn
         mock_wa.return_value = ok
@@ -530,6 +542,9 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.check_pinecone")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
+    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_pipeline_state_drift")
+    @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")
     @patch("tools.core.health_monitor.ZOOM_ACCOUNT_ID", "")
     @patch("tools.core.health_monitor.ZOOM_CLIENT_ID", "")
@@ -537,8 +552,11 @@ class TestCheckAll:
     @patch("tools.core.health_monitor.GEMINI_API_KEY", "")
     @patch("tools.core.health_monitor.GEMINI_API_KEY_PAID", "")
     @patch("tools.core.health_monitor.ANTHROPIC_API_KEY", "")
-    def test_critical_state(self, mock_gt, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
+    def test_critical_state(self, mock_gt, mock_otl, mock_psd, mock_psc, mock_sp, mock_pl, mock_pc, mock_wa, mock_ds):
         ok = CheckResult(name="ok", severity=Severity.OK, message="ok")
+        mock_otl.return_value = ok
+        mock_psd.return_value = ok
+        mock_psc.return_value = ok
         crit = CheckResult(name="crit", severity=Severity.CRITICAL, message="bad")
         mock_ds.return_value = crit
         mock_wa.return_value = ok
