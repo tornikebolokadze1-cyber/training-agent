@@ -400,6 +400,61 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+# Maximum request body size for POST endpoints (1 MiB). Webhook payloads
+# are small JSON documents; anything larger is rejected to prevent abuse.
+MAX_BODY_SIZE = 1_048_576  # 1 MB
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """Enforce a hard cap on POST request body size.
+
+    Runs BEFORE any endpoint handler reads ``request.json()``.  Two paths:
+
+    1. Fast reject: an honest ``Content-Length`` header larger than the limit
+       is rejected immediately with HTTP 413, without touching the body.
+    2. Streaming enforcement: when Content-Length is missing (chunked transfer)
+       or dishonest, we wrap ``receive`` so that accumulated bytes exceeding
+       the limit abort the request with HTTP 413 before the handler sees it.
+    """
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > MAX_BODY_SIZE:
+            return JSONResponse(
+                {"error": "request body too large"},
+                status_code=413,
+            )
+
+        # Wrap receive to enforce streaming limit for chunked / dishonest requests.
+        received = 0
+        original_receive = request._receive
+
+        async def limited_receive():
+            nonlocal received
+            message = await original_receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_BODY_SIZE:
+                    # Signal too-large by raising; caught below to return 413.
+                    raise _BodyTooLargeError()
+            return message
+
+        request._receive = limited_receive
+        try:
+            return await call_next(request)
+        except _BodyTooLargeError:
+            return JSONResponse(
+                {"error": "request body too large"},
+                status_code=413,
+            )
+
+    return await call_next(request)
+
+
+class _BodyTooLargeError(Exception):
+    """Internal sentinel raised by the body-size limiter."""
+
+
 # Security + correlation ID headers middleware — must be defined before routes
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next) -> JSONResponse:
