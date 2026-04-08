@@ -55,22 +55,51 @@ class LectureAudit:
         }
 
 
-def _list_pinecone_vectors_for_lecture(group: int, lecture: int) -> int:
-    """Count vectors in Pinecone whose IDs start with g{group}_l{lecture}_."""
+#: Every completed lecture must have vectors from all four pipeline stages.
+#: Missing any one of these means the pipeline silently dropped that step
+#: and the "მრჩეველო" AI will give weaker answers for that lecture.
+EXPECTED_CONTENT_TYPES: frozenset[str] = frozenset(
+    {"transcript", "summary", "gap_analysis", "deep_analysis"}
+)
+
+#: Lectures completed before deep_analysis was added to the pipeline
+#: (commit ae94a6c, 2026-03-28). The audit treats missing deep_analysis
+#: for these as a known historical gap rather than a bug. Backfilling
+#: requires rerunning the Claude deep-analysis prompt per lecture (~$0.30
+#: each) — tracked separately, not a daily-alert concern.
+_HISTORICAL_DEEP_ANALYSIS_GAP: frozenset[tuple[int, int]] = frozenset({
+    (1, 1), (1, 2), (1, 3), (1, 4),
+    (2, 1), (2, 2), (2, 3), (2, 4), (2, 5),
+})
+
+
+def _list_pinecone_vectors_for_lecture(group: int, lecture: int) -> tuple[int, set[str]]:
+    """Count vectors and their distinct content types for one lecture.
+
+    Returns (total_count, content_types_present). Returns (-1, set()) on error.
+    """
     try:
         from tools.integrations.knowledge_indexer import get_pinecone_index
 
         index = get_pinecone_index()
         prefix = f"g{group}_l{lecture}_"
-        # describe_index_stats does NOT support prefix filtering, so we use
-        # list() which yields IDs in pages. We just count.
         count = 0
+        types: set[str] = set()
         for page in index.list(prefix=prefix):
             count += len(page)
-        return count
+            for id_ in page:
+                # ID shape: g{G}_l{L}_{content_type}_{chunk_index}
+                parts = id_.split("_", 2)
+                if len(parts) < 3:
+                    continue
+                tail = parts[2]
+                # Strip the trailing "_N" chunk index to isolate the type.
+                type_name = tail.rsplit("_", 1)[0] if tail.rsplit("_", 1)[-1].isdigit() else tail
+                types.add(type_name)
+        return count, types
     except Exception as exc:
         logger.warning("[audit] Pinecone count failed for g%d/l%d: %s", group, lecture, exc)
-        return -1  # sentinel: unknown
+        return -1, set()  # sentinel: unknown
 
 
 def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
@@ -138,13 +167,26 @@ def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
         if audit.drive_doc_count == 0:
             audit.issues.append("MISSING_SUMMARY")
 
-        # Pinecone cross-check
-        vec_count = _list_pinecone_vectors_for_lecture(group, lecture_num)
+        # Pinecone cross-check — count + content-type completeness
+        vec_count, content_types = _list_pinecone_vectors_for_lecture(group, lecture_num)
         audit.pinecone_vector_count = vec_count
         if vec_count == 0:
             audit.issues.append("PINECONE_EMPTY")
         elif vec_count == -1:
             audit.issues.append("PINECONE_QUERY_FAILED")
+        else:
+            missing_types = EXPECTED_CONTENT_TYPES - content_types
+            # Suppress the known historical gap: deep_analysis was added to
+            # the pipeline after these lectures had already been processed.
+            if (
+                missing_types == {"deep_analysis"}
+                and (group, lecture_num) in _HISTORICAL_DEEP_ANALYSIS_GAP
+            ):
+                missing_types = set()
+            if missing_types:
+                audit.issues.append(
+                    f"MISSING_CONTENT_TYPES({','.join(sorted(missing_types))})"
+                )
 
         results.append(audit)
 

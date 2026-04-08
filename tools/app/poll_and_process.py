@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(env_path)
 
-from tools.core.config import GROUPS, TMP_DIR, get_lecture_folder_name
-from tools.integrations.zoom_manager import (
+from tools.core.config import GROUPS, TMP_DIR, get_lecture_folder_name  # noqa: E402
+from tools.integrations.zoom_manager import (  # noqa: E402
     ZoomAPIError,
     download_recording,
     get_access_token,

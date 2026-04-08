@@ -1486,7 +1486,7 @@ class TestEvictStaleTasksWithStateFiles:
         Marking state files as FAILED is handled by the retry orchestrator's
         nightly cleanup (pipeline_retry.py), not by this function.
         """
-        from tools.core.pipeline_state import create_pipeline, load_state, PENDING
+        from tools.core.pipeline_state import create_pipeline, load_state
         from tools.core.config import TBILISI_TZ as _TZ
 
         # Create a real pipeline state file and back-date it
