@@ -353,3 +353,19 @@ def _cleanup_stale_state_files():
             except OSError:
                 pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_zoom_token(monkeypatch):
+    """Prevent test_server's real httpx from hitting real Zoom OAuth.
+
+    When test_server.py pops httpx stubs to use TestClient, any code path
+    that calls zoom_manager.get_access_token() with fake credentials
+    (ZOOM_CLIENT_ID=test in CI) produces HTTP 400 warnings and can cause
+    MagicMock leaks into JSON bodies.
+    """
+    try:
+        import tools.integrations.zoom_manager as _zm
+        monkeypatch.setattr(_zm, "get_access_token", lambda: "fake-test-token")
+    except ImportError:
+        pass
