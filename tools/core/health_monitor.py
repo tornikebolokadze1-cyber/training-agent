@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -586,6 +587,185 @@ def check_stuck_pipelines() -> CheckResult:
         )
 
 
+def check_oauth_token_lifetime() -> CheckResult:
+    """Proactively warn about Google OAuth token lifetime.
+
+    Unlike ``check_google_token`` which only fires when the access_token
+    is about to expire, this check inspects the overall token health and
+    raises WARNING/CRITICAL ahead of time so the operator can refresh
+    before anything breaks.
+    """
+    try:
+        from tools.core.token_manager import check_token_health
+
+        health = check_token_health()
+        if not health.get("valid") or health.get("error"):
+            return CheckResult(
+                name="oauth_token_lifetime",
+                severity=Severity.CRITICAL,
+                message=f"Token revoked or invalid: {health.get('error') or 'unknown'}",
+                details=health,
+            )
+
+        hours = health.get("expires_in_hours")
+        if hours is None:
+            return CheckResult(
+                name="oauth_token_lifetime",
+                severity=Severity.OK,
+                message="Token valid (no expiry info).",
+                details=health,
+            )
+
+        if hours <= 24:
+            return CheckResult(
+                name="oauth_token_lifetime",
+                severity=Severity.CRITICAL,
+                message=f"Token expires in {hours:.1f} hours, refresh required",
+                details=health,
+            )
+        if hours <= 168:
+            days = hours / 24
+            return CheckResult(
+                name="oauth_token_lifetime",
+                severity=Severity.WARNING,
+                message=f"Token expires in {days:.1f} days",
+                details=health,
+            )
+        return CheckResult(
+            name="oauth_token_lifetime",
+            severity=Severity.OK,
+            message=f"Token lifetime healthy ({hours / 24:.1f} days remaining).",
+            details=health,
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="oauth_token_lifetime",
+            severity=Severity.WARNING,
+            message=f"Cannot check OAuth token lifetime: {exc}",
+        )
+
+
+def check_pipeline_state_drift() -> CheckResult:
+    """Detect pipeline state files that exist but are not progressing.
+
+    Any active pipeline whose ``last_heartbeat`` (or ``updated_at`` as a
+    fallback) has not advanced in over 4 hours is surfaced as WARNING;
+    over 12 hours escalates to CRITICAL.
+    """
+    try:
+        from tools.core.pipeline_state import list_active_pipelines
+
+        active = list_active_pipelines()
+        now = datetime.now(TBILISI_TZ)
+        warnings: list[str] = []
+        criticals: list[str] = []
+
+        for pipeline in active:
+            ts_raw = pipeline.last_heartbeat or pipeline.updated_at
+            if not ts_raw:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_raw)
+            except (ValueError, TypeError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=TBILISI_TZ)
+            age_hours = (now - ts).total_seconds() / 3600
+            label = (
+                f"G{pipeline.group} L{pipeline.lecture} "
+                f"({pipeline.state}) stale for {age_hours:.1f}h"
+            )
+            if age_hours > 12:
+                criticals.append(label)
+            elif age_hours > 4:
+                warnings.append(label)
+
+        if criticals:
+            return CheckResult(
+                name="pipeline_state_drift",
+                severity=Severity.CRITICAL,
+                message=(
+                    f"{len(criticals)} pipeline(s) critically drifted: "
+                    f"{'; '.join(criticals)}"
+                ),
+                details={"critical": criticals, "warning": warnings},
+            )
+        if warnings:
+            return CheckResult(
+                name="pipeline_state_drift",
+                severity=Severity.WARNING,
+                message=(
+                    f"{len(warnings)} pipeline(s) drifted (>4h without "
+                    f"heartbeat): {'; '.join(warnings)}"
+                ),
+                details={"warning": warnings},
+            )
+        return CheckResult(
+            name="pipeline_state_drift",
+            severity=Severity.OK,
+            message=f"No pipeline drift ({len(active)} active).",
+            details={"active_count": len(active)},
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="pipeline_state_drift",
+            severity=Severity.WARNING,
+            message=f"Cannot check pipeline state drift: {exc}",
+        )
+
+
+def check_pinecone_scores_consistency() -> CheckResult:
+    """Detect drift between the scores DB and Pinecone vector index.
+
+    Iterates every (group, lecture) scored in ``data/scores.db`` and
+    verifies that Pinecone contains vectors for it. Any lecture present
+    in the scores DB but missing from Pinecone is a symptom of the
+    false-retry bug that previously burned $25-35 of compute.
+    """
+    try:
+        from tools.integrations.knowledge_indexer import lecture_exists_in_index
+
+        missing: list[str] = []
+        conn = sqlite3.connect("data/scores.db")
+        try:
+            cursor = conn.execute(
+                "SELECT group_number, lecture_number FROM lecture_scores"
+            )
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+        for group_num, lecture_num in rows:
+            try:
+                if not lecture_exists_in_index(int(group_num), int(lecture_num)):
+                    missing.append(f"G{group_num} L{lecture_num}")
+            except Exception as exc:  # noqa: BLE001 — per-lecture resilience
+                missing.append(f"G{group_num} L{lecture_num} (check failed: {exc})")
+
+        if missing:
+            return CheckResult(
+                name="pinecone_scores_consistency",
+                severity=Severity.WARNING,
+                message=(
+                    f"{len(missing)} lecture(s) in scores DB missing from "
+                    f"Pinecone: {', '.join(missing)}"
+                ),
+                details={"missing": missing},
+            )
+        return CheckResult(
+            name="pinecone_scores_consistency",
+            severity=Severity.OK,
+            message=f"Pinecone and scores DB consistent ({len(rows)} lectures).",
+            details={"checked": len(rows)},
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="pinecone_scores_consistency",
+            severity=Severity.WARNING,
+            message=f"Cannot check Pinecone/scores consistency: {exc}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # TTL cache for check_all() — prevents billable API calls on every poll
 # ---------------------------------------------------------------------------
@@ -657,6 +837,9 @@ def check_all() -> dict[str, Any]:
         checks.append(check_claude_api())
 
     checks.append(check_google_token())
+    checks.append(check_oauth_token_lifetime())
+    checks.append(check_pipeline_state_drift())
+    checks.append(check_pinecone_scores_consistency())
 
     warnings = sum(1 for c in checks if c.severity == Severity.WARNING)
     criticals = sum(1 for c in checks if c.severity == Severity.CRITICAL)

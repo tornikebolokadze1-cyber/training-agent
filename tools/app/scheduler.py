@@ -1103,6 +1103,30 @@ def start_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # ------------------------------------------------------------------ #
+    #  Proactive token health monitor — 06:00 Tbilisi time every day      #
+    #  Redundant safety net BEFORE the existing 08:00 inline check, so    #
+    #  any token issue is caught with maximum lead time. Uses the new     #
+    #  tools.services.token_health_monitor module which has unit tests.   #
+    # ------------------------------------------------------------------ #
+    try:
+        from tools.services.token_health_monitor import register_proactive_token_jobs
+        register_proactive_token_jobs(scheduler)
+    except Exception as exc:
+        logger.error("Failed to register proactive token health jobs: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    #  Nightly data reconciliation — 03:30 Tbilisi time every day         #
+    #  Detects drift between Pinecone, scores DB, and pipeline state      #
+    #  files. Runs after the 02:00 nightly catch-all so it sees a stable  #
+    #  state. Catches the same class of bug that wasted ~$25-35/10 days.  #
+    # ------------------------------------------------------------------ #
+    try:
+        from tools.services.data_reconciliation import register_reconciliation_jobs
+        register_reconciliation_jobs(scheduler)
+    except Exception as exc:
+        logger.error("Failed to register reconciliation jobs: %s", exc)
+
     scheduler.start()
     _scheduler_ref = scheduler
 
