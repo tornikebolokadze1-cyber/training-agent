@@ -291,6 +291,29 @@ def transcribe_and_index(
             )
 
     try:
+        # Pre-flight: check daily cost budget before expensive analysis
+        try:
+            from tools.core.cost_tracker import check_daily_budget
+
+            budget_ok, remaining = check_daily_budget()
+            if not budget_ok:
+                msg = (
+                    f"Daily cost limit reached. Pipeline for G{group_number}/L{lecture_number} "
+                    f"refused to prevent overspend."
+                )
+                logger.error(msg)
+                try:
+                    from tools.integrations.whatsapp_sender import alert_operator
+                    alert_operator(msg)
+                except Exception:
+                    pass
+                if pipeline:
+                    mark_failed(pipeline, msg)
+                raise RuntimeError(msg)
+            logger.info("Budget check passed: $%.2f remaining of daily limit", remaining)
+        except ImportError:
+            pass  # cost_tracker not available
+
         # Step 1: Analysis pipeline (transcribe if needed + Claude reasoning + Gemini writing)
         if pipeline:
             pipeline = transition(pipeline, TRANSCRIBING)

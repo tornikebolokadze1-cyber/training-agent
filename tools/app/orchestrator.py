@@ -354,14 +354,30 @@ async def _async_start() -> None:
     # ---- DLQ handlers -------------------------------------------------------
     _register_dlq_handlers()
 
-    # ---- Cleanup stale PENDING pipelines from prior crash/restart ----------
+    # ---- Cleanup stale pipelines from prior crash/restart ------------------
     from tools.core.pipeline_state import cleanup_stale_pending
 
     stale_count = cleanup_stale_pending()
     if stale_count:
         logger.info(
-            "Startup: marked %d stale PENDING pipeline(s) as FAILED.", stale_count
+            "Startup: marked %d stale pipeline(s) as FAILED.", stale_count
         )
+
+    # ---- Cleanup orphaned Gemini files from prior crash/restart ----
+    try:
+        from tools.integrations.gemini_analyzer import cleanup_orphaned_gemini_files
+        orphaned = cleanup_orphaned_gemini_files()
+        if orphaned:
+            logger.info("Startup: deleted %d orphaned Gemini file(s)", orphaned)
+    except Exception as exc:
+        logger.debug("Gemini file cleanup skipped: %s", exc)
+
+    # ---- Cleanup old daily cost files (>30 days) -------------------------
+    try:
+        from tools.core.cost_tracker import cleanup_old_cost_files
+        cleanup_old_cost_files(max_age_days=30)
+    except Exception as exc:
+        logger.debug("Cost file cleanup skipped: %s", exc)
 
     # ---- APScheduler --------------------------------------------------------
     from tools.app.scheduler import (
