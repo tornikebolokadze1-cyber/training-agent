@@ -52,9 +52,12 @@ RETRY_EMPTY_RESPONSE_DELAY = 45  # seconds — Gemini may still be processing
 MIN_MEANINGFUL_RESPONSE_CHARS = 100  # minimum chars for a valid response
 
 # Enhanced retry for empty responses (Gemini returns 200 OK with 0 output tokens)
-MAX_RETRIES_EMPTY = 3  # Fewer retries — each bills full input tokens for 0 output
+MAX_RETRIES_EMPTY = 1  # Each 0-token retry wastes ~$0.20 with no benefit
 RETRY_EMPTY_RESPONSE_DELAY_LONG = 60  # 1 minute for truly empty (0 token) responses
-MAX_COST_PER_LECTURE = float(os.environ.get("MAX_COST_PER_LECTURE", "12.0"))
+try:
+    from tools.core.cost_tracker import LECTURE_COST_LIMIT_USD as MAX_COST_PER_LECTURE
+except ImportError:
+    MAX_COST_PER_LECTURE = float(os.environ.get("LECTURE_COST_LIMIT_USD", "5.0"))
 
 # Fallback model when primary transcription model fails repeatedly
 GEMINI_FALLBACK_TRANSCRIPTION_MODEL = os.environ.get(
@@ -472,16 +475,15 @@ def _generate_with_retry(
     Returns the generated text.
     """
     for attempt in range(1, MAX_RETRIES_EMPTY + 1):
-        # Budget check before retry (skip first attempt)
-        if attempt > 1:
-            try:
-                from tools.core.cost_tracker import check_lecture_budget
-                _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
-                if not _ok:
-                    logger.error("BUDGET EXCEEDED: stopping retries for %s at attempt %d", purpose, attempt)
-                    raise RuntimeError(f"Lecture budget exceeded during retry for {purpose}")
-            except (ImportError, NameError):
-                pass
+        # Budget check before every attempt (including first)
+        try:
+            from tools.core.cost_tracker import check_lecture_budget
+            _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
+            if not _ok:
+                logger.error("BUDGET EXCEEDED: stopping retries for %s at attempt %d", purpose, attempt)
+                raise RuntimeError(f"Lecture budget exceeded during retry for {purpose}")
+        except (ImportError, NameError):
+            pass
         try:
             tier = "free" if use_free else "paid"
             effective_max = MAX_RETRIES_EMPTY  # 0-token errors get all attempts
@@ -713,6 +715,30 @@ def transcribe_chunked_video(
                     )
                     continue
 
+            # Pre-chunk budget check — stop before spending, not after
+            if i > 0:  # Skip check on first chunk (pre-flight already checked)
+                try:
+                    from tools.core.cost_tracker import check_lecture_budget, LECTURE_COST_LIMIT_USD
+                    pk = _pipeline_key_var.get()
+                    _budget_ok, _budget_remaining = check_lecture_budget(pk)
+                    estimated_cost = LECTURE_COST_LIMIT_USD - _budget_remaining
+                    if estimated_cost > MAX_COST_PER_LECTURE:
+                        full_transcript = "\n\n".join(transcripts)
+                        logger.error(
+                            "Cost budget EXCEEDED before chunk %d/%d: $%.2f > $%.2f limit. "
+                            "Stopping to prevent further spend. Partial transcript saved.",
+                            i + 1, total_chunks, estimated_cost, MAX_COST_PER_LECTURE,
+                        )
+                        if full_transcript:
+                            partial_path = TMP_DIR / f"{Path(video_path).stem}_partial_transcript.txt"
+                            partial_path.write_text(full_transcript, encoding="utf-8")
+                            logger.info("Partial transcript saved to %s", partial_path)
+                        raise RuntimeError(
+                            f"Gemini cost budget exceeded: ${estimated_cost:.2f} > ${MAX_COST_PER_LECTURE:.2f}"
+                        )
+                except (ImportError, NameError):
+                    pass
+
             logger.info(
                 "Processing chunk %d/%d: %s", i + 1, total_chunks, chunk_path.name,
             )
@@ -816,30 +842,7 @@ def transcribe_chunked_video(
                 pct, i + 1, total_chunks, len(transcript),
             )
 
-            # Cost budget check — halt pipeline if exceeding budget
-            # Use real tracked costs if available, fall back to heuristic
-            try:
-                from tools.core.cost_tracker import check_lecture_budget, LECTURE_COST_LIMIT_USD
-                pk = _pipeline_key_var.get()
-                _budget_ok, _budget_remaining = check_lecture_budget(pk)
-                estimated_cost = LECTURE_COST_LIMIT_USD - _budget_remaining
-            except (ImportError, NameError):
-                estimated_cost = len(transcripts) * 4.0  # fallback heuristic
-            if estimated_cost > MAX_COST_PER_LECTURE:
-                full_transcript = "\n\n".join(transcripts)
-                logger.error(
-                    "Cost budget EXCEEDED: $%.2f > $%.2f limit for this lecture. "
-                    "Stopping to prevent runaway spend. Partial transcript saved.",
-                    estimated_cost, MAX_COST_PER_LECTURE,
-                )
-                # Save partial transcript before aborting
-                if full_transcript:
-                    partial_path = TMP_DIR / f"{Path(video_path).stem}_partial_transcript.txt"
-                    partial_path.write_text(full_transcript, encoding="utf-8")
-                    logger.info("Partial transcript saved to %s", partial_path)
-                raise RuntimeError(
-                    f"Gemini cost budget exceeded: ${estimated_cost:.2f} > ${MAX_COST_PER_LECTURE:.2f}"
-                )
+            # Budget check moved to top of loop (pre-chunk, not post-chunk)
 
             # Clean up Gemini file immediately (success path)
             try:
@@ -914,15 +917,14 @@ def _claude_reason(
 
     max_attempts = 5  # More attempts for rate limits
     for attempt in range(1, max_attempts + 1):
-        # Budget check before retry
-        if attempt > 1:
-            try:
-                from tools.core.cost_tracker import check_lecture_budget
-                _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
-                if not _ok:
-                    raise RuntimeError(f"Lecture budget exceeded during Claude retry (attempt {attempt})")
-            except (ImportError, NameError):
-                pass
+        # Budget check before every attempt (including first)
+        try:
+            from tools.core.cost_tracker import check_lecture_budget
+            _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
+            if not _ok:
+                raise RuntimeError(f"Lecture budget exceeded during Claude retry (attempt {attempt})")
+        except (ImportError, NameError):
+            pass
         try:
             response = client.messages.create(
                 model=ASSISTANT_CLAUDE_MODEL,
@@ -1218,23 +1220,59 @@ def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
 # Safe wrappers (used inside analyze_lecture to avoid try/except boilerplate)
 # ---------------------------------------------------------------------------
 
-@safe_operation("Combined Claude analysis", alert=True, default=None)
 def _safe_claude_reason_all(transcript: str) -> dict[str, str] | None:
     """Run combined Claude reasoning, returning None on failure (not empty dict)."""
-    sections = _claude_reason_all(transcript)
-    logger.info(
-        "Combined Claude analysis complete: %s",
-        {k: len(v) for k, v in sections.items()},
-    )
-    return sections
+    try:
+        sections = _claude_reason_all(transcript)
+        logger.info(
+            "Combined Claude analysis complete: %s",
+            {k: len(v) for k, v in sections.items()},
+        )
+        return sections
+    except RuntimeError as e:
+        if "budget" in str(e).lower():
+            raise  # Budget errors must propagate — do not swallow
+        logger.error("Combined Claude analysis failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Combined Claude analysis FAILED: {e}")
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        logger.error("Combined Claude analysis failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Combined Claude analysis FAILED: {e}")
+        except Exception:
+            pass
+        return None
 
 
-@safe_operation("Georgian writing", alert=True, default="")
 def _safe_gemini_write_georgian(
     claude_text: str, prompt: str, label: str, *, use_free: bool = False,
 ) -> str:
     """Write Georgian text from Claude's English analysis, returning '' on failure."""
-    return _gemini_write_georgian(claude_text, prompt, label, use_free=use_free)
+    try:
+        return _gemini_write_georgian(claude_text, prompt, label, use_free=use_free)
+    except RuntimeError as e:
+        if "budget" in str(e).lower():
+            raise  # Budget errors must propagate — do not swallow
+        logger.error("Georgian writing failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Georgian writing FAILED: {e}")
+        except Exception:
+            pass
+        return ""
+    except Exception as e:
+        logger.error("Georgian writing failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Georgian writing FAILED: {e}")
+        except Exception:
+            pass
+        return ""
 
 
 # ---------------------------------------------------------------------------
