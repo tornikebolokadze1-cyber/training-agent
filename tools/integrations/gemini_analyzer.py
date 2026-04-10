@@ -37,7 +37,6 @@ from tools.core.config import (
     TRANSCRIPTION_PROMPT,
 )
 from tools.core.api_resilience import resilient_api_call
-from tools.core.retry import safe_operation
 
 logger = logging.getLogger(__name__)
 
