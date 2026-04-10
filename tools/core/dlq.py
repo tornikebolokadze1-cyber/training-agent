@@ -47,7 +47,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DLQ_DIR: Path = TMP_DIR / "dlq"
-DLQ_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DLQ_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    # Railway volume mount may be owned by root; retry after chown in entrypoint
+    import logging as _dlq_log
+    _dlq_log.getLogger(__name__).warning(
+        "Cannot create %s (permission denied) — will retry on first use", DLQ_DIR
+    )
 
 # Default max retries before an entry is marked as permanently failed.
 DEFAULT_MAX_RETRIES: int = 5
@@ -99,6 +106,7 @@ def enqueue(
     Returns:
         Path to the created DLQ entry file.
     """
+    DLQ_DIR.mkdir(parents=True, exist_ok=True)  # Ensure dir exists (may not at import time)
     timestamp = datetime.now(tz=TBILISI_TZ).strftime("%Y%m%d_%H%M%S_%f")
     seq = next(_seq_counter)
     entry = {
