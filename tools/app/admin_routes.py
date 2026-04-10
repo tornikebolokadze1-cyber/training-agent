@@ -518,3 +518,506 @@ async def system_report(
             "recent_errors": len(recent_errors),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/backfill-deep-analysis
+# ---------------------------------------------------------------------------
+
+
+class BackfillRequest(BaseModel):
+    """Optional request body for the backfill endpoint.
+
+    lectures  — list of keys like ["g1_l1", "g2_l5"] to deep-analyse only
+                (skipped if deep_analysis already indexed).  Omit for auto-detect.
+    reprocess — list of keys like ["g2_l9"] to run FULL analysis on
+                (summary + gap + deep), overwriting whatever is already indexed.
+    """
+
+    lectures: list[str] = []
+    reprocess: list[str] = []
+
+
+def _parse_lecture_key(key: str) -> tuple[int, int]:
+    """Parse 'g1_l3' into (group=1, lecture=3).
+
+    Raises:
+        ValueError: If the format is not 'g{int}_l{int}'.
+    """
+    try:
+        parts = key.split("_")
+        group = int(parts[0][1:])
+        lecture = int(parts[1][1:])
+        if group not in (1, 2) or not (1 <= lecture <= MAX_LECTURES):
+            raise ValueError
+        return group, lecture
+    except (IndexError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid lecture key '{key}'. Expected format: g1_l3 (group 1-2, lecture 1-15)"
+        ) from exc
+
+
+def _reconstruct_from_pinecone(
+    idx: Any,
+    group: int,
+    lecture: int,
+    content_type: str,
+) -> str:
+    """Fetch all chunks for a lecture+content_type from Pinecone and join them.
+
+    Args:
+        idx: A live Pinecone Index object.
+        group: Group number (1 or 2).
+        lecture: Lecture number (1-15).
+        content_type: One of 'transcript', 'summary', 'gap_analysis', 'deep_analysis'.
+
+    Returns:
+        Reconstructed full text, or empty string if no chunks found.
+    """
+    prefix = f"g{group}_l{lecture}_{content_type}_"
+    all_ids: list[str] = []
+    try:
+        for page in idx.list(prefix=prefix, limit=1000):
+            if isinstance(page, dict):
+                all_ids.extend(page.get("vectors", []))
+            elif isinstance(page, list):
+                all_ids.extend(page)
+            else:
+                # Some SDK versions yield individual ID strings
+                all_ids.append(str(page))
+    except Exception as exc:
+        logger.warning(
+            "_reconstruct_from_pinecone: list() failed for %s: %s", prefix, exc
+        )
+        return ""
+
+    if not all_ids:
+        logger.debug("No vectors found for prefix '%s'", prefix)
+        return ""
+
+    try:
+        fetched = idx.fetch(ids=all_ids)
+        raw_vectors = (
+            fetched.get("vectors", {}) if isinstance(fetched, dict)
+            else getattr(fetched, "vectors", {})
+        )
+    except Exception as exc:
+        logger.warning(
+            "_reconstruct_from_pinecone: fetch() failed for %s: %s", prefix, exc
+        )
+        return ""
+
+    chunks: list[tuple[int, str]] = []
+    for _vid, vec in raw_vectors.items():
+        meta = (
+            vec.get("metadata", {}) if isinstance(vec, dict)
+            else getattr(vec, "metadata", {})
+        )
+        chunk_index = meta.get("chunk_index", 0)
+        text = meta.get("text", "")
+        chunks.append((chunk_index, text))
+
+    chunks.sort(key=lambda x: x[0])
+    return "\n".join(t for _, t in chunks if t)
+
+
+def _run_backfill_sync(
+    lectures_to_deep: list[str],
+    lectures_to_reprocess: list[str],
+) -> dict[str, Any]:
+    """Execute backfill operations (synchronous — call via asyncio.to_thread).
+
+    deep-only path  : reconstruct transcript → Claude deep_analysis only →
+                      Gemini Georgian writing → Drive private report → Pinecone index.
+    reprocess path  : reconstruct transcript → full Claude (summary+gap+deep) →
+                      Gemini Georgian for all 3 → Drive report → Pinecone index.
+
+    NEVER sends WhatsApp messages.
+
+    Args:
+        lectures_to_deep: Keys like ['g1_l1'] that need deep_analysis only.
+        lectures_to_reprocess: Keys like ['g2_l9'] that need full re-analysis.
+
+    Returns:
+        Dict with 'results' list and summary counts.
+    """
+    from tools.integrations.knowledge_indexer import (
+        get_pinecone_index,
+        index_lecture_content,
+        lecture_exists_in_index,
+    )
+    from tools.integrations.gemini_analyzer import (
+        _claude_reason_all,
+        _safe_gemini_write_georgian,
+        _pipeline_key_var,
+    )
+    from tools.core.config import (
+        DEEP_ANALYSIS_PROMPT,
+        GAP_ANALYSIS_PROMPT,
+        SUMMARIZATION_PROMPT,
+    )
+    from tools.services.transcribe_lecture import _upload_private_report_to_drive
+
+    results: list[dict[str, Any]] = []
+    ok_count = 0
+    skip_count = 0
+    fail_count = 0
+
+    try:
+        idx = get_pinecone_index()
+    except Exception as exc:
+        logger.error("[backfill] Cannot connect to Pinecone: %s", exc)
+        return {
+            "results": [{"status": "FATAL", "reason": f"Pinecone unavailable: {exc}"}],
+            "ok": 0,
+            "skipped": 0,
+            "failed": 1,
+        }
+
+    # ------------------------------------------------------------------ #
+    # 1. Deep-analysis-only path
+    # ------------------------------------------------------------------ #
+    for key in lectures_to_deep:
+        try:
+            group, lecture = _parse_lecture_key(key)
+        except ValueError as exc:
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+            continue
+
+        logger.info("[backfill] deep-only: %s", key)
+
+        # Skip if already indexed (use force=True in reprocess path instead)
+        if lecture_exists_in_index(group, lecture, "deep_analysis"):
+            logger.info("[backfill] %s already has deep_analysis — skipping", key)
+            results.append({"lecture": key, "status": "SKIP", "reason": "already indexed"})
+            skip_count += 1
+            continue
+
+        # Reconstruct transcript from Pinecone
+        transcript = _reconstruct_from_pinecone(idx, group, lecture, "transcript")
+        if not transcript or len(transcript) < 500:
+            reason = (
+                "transcript too short or missing in Pinecone "
+                f"({len(transcript)} chars)"
+            )
+            logger.warning("[backfill] %s: %s", key, reason)
+            results.append({"lecture": key, "status": "SKIP", "reason": reason})
+            skip_count += 1
+            continue
+
+        try:
+            _pipeline_key_var.set(f"g{group}_l{lecture}")
+
+            claude_sections = _claude_reason_all(transcript)
+            deep_text_en = claude_sections.get("deep_analysis", "")
+            if not deep_text_en:
+                results.append({
+                    "lecture": key,
+                    "status": "FAIL",
+                    "reason": "Claude returned empty deep_analysis section",
+                })
+                fail_count += 1
+                continue
+
+            georgian_deep = _safe_gemini_write_georgian(
+                deep_text_en, DEEP_ANALYSIS_PROMPT, "deep analysis"
+            )
+            if not georgian_deep:
+                results.append({
+                    "lecture": key,
+                    "status": "FAIL",
+                    "reason": "Gemini Georgian writing returned empty string for deep_analysis",
+                })
+                fail_count += 1
+                continue
+
+            # Fetch existing gap analysis text for the private Drive report
+            gap_text_existing = _reconstruct_from_pinecone(
+                idx, group, lecture, "gap_analysis"
+            )
+
+            # Upload combined gap+deep report to private Drive folder (no WhatsApp)
+            try:
+                _upload_private_report_to_drive(
+                    group_number=group,
+                    lecture_number=lecture,
+                    gap_analysis=gap_text_existing or "(gap analysis not available)",
+                    deep_analysis=georgian_deep,
+                )
+            except Exception as drive_exc:
+                logger.warning(
+                    "[backfill] %s: Drive upload failed (non-fatal): %s", key, drive_exc
+                )
+
+            # Index in Pinecone (force=True to overwrite any partial stale vectors)
+            vec_count = index_lecture_content(
+                group_number=group,
+                lecture_number=lecture,
+                content=georgian_deep,
+                content_type="deep_analysis",
+                force=True,
+            )
+
+            results.append({
+                "lecture": key,
+                "status": "OK",
+                "mode": "deep_only",
+                "vectors_indexed": vec_count,
+            })
+            ok_count += 1
+            logger.info("[backfill] %s: deep_analysis done (%d vectors)", key, vec_count)
+
+        except RuntimeError as exc:
+            if "budget" in str(exc).lower():
+                logger.error("[backfill] %s: budget exceeded — stopping", key)
+                results.append({"lecture": key, "status": "FAIL", "reason": f"budget exceeded: {exc}"})
+                fail_count += 1
+                break  # Stop further processing — budget is shared
+            logger.error("[backfill] %s: runtime error: %s", key, exc, exc_info=True)
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+        except Exception as exc:
+            logger.error("[backfill] %s: unexpected error: %s", key, exc, exc_info=True)
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+
+    # ------------------------------------------------------------------ #
+    # 2. Full reprocess path
+    # ------------------------------------------------------------------ #
+    for key in lectures_to_reprocess:
+        try:
+            group, lecture = _parse_lecture_key(key)
+        except ValueError as exc:
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+            continue
+
+        logger.info("[backfill] full-reprocess: %s", key)
+
+        # Reconstruct transcript from Pinecone
+        transcript = _reconstruct_from_pinecone(idx, group, lecture, "transcript")
+        if not transcript or len(transcript) < 500:
+            reason = (
+                "transcript too short or missing in Pinecone "
+                f"({len(transcript)} chars)"
+            )
+            logger.warning("[backfill] %s: %s", key, reason)
+            results.append({"lecture": key, "status": "SKIP", "reason": reason})
+            skip_count += 1
+            continue
+
+        try:
+            _pipeline_key_var.set(f"g{group}_l{lecture}")
+
+            claude_sections = _claude_reason_all(transcript)
+
+            analysis_configs = [
+                ("summary", SUMMARIZATION_PROMPT, "summary"),
+                ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
+                ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
+            ]
+
+            georgian_texts: dict[str, str] = {}
+            for section_key, prompt, label in analysis_configs:
+                en_text = claude_sections.get(section_key, "")
+                if not en_text:
+                    logger.warning(
+                        "[backfill] %s: Claude returned empty section '%s'",
+                        key, section_key,
+                    )
+                    georgian_texts[section_key] = ""
+                    continue
+
+                geo_text = _safe_gemini_write_georgian(en_text, prompt, label)
+                georgian_texts[section_key] = geo_text
+
+            vec_counts: dict[str, int] = {}
+            for content_type, text in georgian_texts.items():
+                if not text:
+                    vec_counts[content_type] = 0
+                    continue
+                count = index_lecture_content(
+                    group_number=group,
+                    lecture_number=lecture,
+                    content=text,
+                    content_type=content_type,
+                    force=True,
+                )
+                vec_counts[content_type] = count
+
+            # Upload private report (gap + deep) to Drive — no WhatsApp
+            gap_geo = georgian_texts.get("gap_analysis", "")
+            deep_geo = georgian_texts.get("deep_analysis", "")
+            if gap_geo or deep_geo:
+                try:
+                    _upload_private_report_to_drive(
+                        group_number=group,
+                        lecture_number=lecture,
+                        gap_analysis=gap_geo or "(gap analysis generation failed)",
+                        deep_analysis=deep_geo or "(deep analysis generation failed)",
+                    )
+                except Exception as drive_exc:
+                    logger.warning(
+                        "[backfill] %s: Drive upload failed (non-fatal): %s",
+                        key, drive_exc,
+                    )
+
+            results.append({
+                "lecture": key,
+                "status": "OK",
+                "mode": "full_reprocess",
+                "vectors_indexed": vec_counts,
+            })
+            ok_count += 1
+            logger.info(
+                "[backfill] %s: full reprocess done — vectors: %s", key, vec_counts
+            )
+
+        except RuntimeError as exc:
+            if "budget" in str(exc).lower():
+                logger.error("[backfill] %s: budget exceeded — stopping", key)
+                results.append({"lecture": key, "status": "FAIL", "reason": f"budget exceeded: {exc}"})
+                fail_count += 1
+                break
+            logger.error("[backfill] %s: runtime error: %s", key, exc, exc_info=True)
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+        except Exception as exc:
+            logger.error("[backfill] %s: unexpected error: %s", key, exc, exc_info=True)
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+
+    return {
+        "results": results,
+        "ok": ok_count,
+        "skipped": skip_count,
+        "failed": fail_count,
+    }
+
+
+def _auto_detect_missing_deep_analysis() -> list[str]:
+    """Scan all group×lecture combinations and return keys missing deep_analysis.
+
+    Uses lecture_exists_in_index() to check Pinecone.  Only checks lectures
+    that have a transcript indexed (so we know there is something to analyse).
+
+    Returns:
+        List of keys like ['g1_l3', 'g2_l7'] that have a transcript but no
+        deep_analysis vector in Pinecone.
+    """
+    from tools.integrations.knowledge_indexer import lecture_exists_in_index
+
+    missing: list[str] = []
+    for group in (1, 2):
+        for lecture in range(1, MAX_LECTURES + 1):
+            has_transcript = lecture_exists_in_index(group, lecture, "transcript")
+            if not has_transcript:
+                continue  # No transcript → nothing to analyse
+            has_deep = lecture_exists_in_index(group, lecture, "deep_analysis")
+            if not has_deep:
+                missing.append(f"g{group}_l{lecture}")
+    return missing
+
+
+@admin_router.post("/backfill-deep-analysis")
+async def backfill_deep_analysis(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> JSONResponse:
+    """Reconstruct transcripts from Pinecone and run deep analysis for missing lectures.
+
+    Authentication: same WEBHOOK_SECRET Bearer token as all other admin endpoints.
+
+    Request body (optional JSON):
+        {
+            "lectures":   ["g1_l1", "g2_l5"],   // deep_analysis only (auto-detect if omitted)
+            "reprocess":  ["g2_l9"]              // full re-analysis (summary + gap + deep)
+        }
+
+    Behaviour:
+    - ``lectures``  path: fetches transcript chunks from Pinecone, runs Claude
+      deep_analysis only, writes Georgian via Gemini, uploads to Drive private
+      folder, indexes in Pinecone.  Skips lectures already indexed.
+    - ``reprocess`` path: same but runs all three analyses (summary + gap + deep)
+      and force-overwrites Pinecone vectors.
+    - NEVER sends WhatsApp notifications.
+
+    The work runs as a FastAPI BackgroundTask; the endpoint returns 202 immediately
+    with the list of queued lectures.
+    """
+    verify_webhook_secret, _, _, _ = _server_internals()
+    verify_webhook_secret(authorization)
+
+    body_bytes = await request.body()
+    req_body = BackfillRequest()
+    if body_bytes:
+        try:
+            import json as _json
+            parsed = _json.loads(body_bytes)
+            req_body = BackfillRequest(**parsed)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid request body: {exc}"
+            ) from exc
+
+    # Validate all keys before starting background work
+    all_keys = req_body.lectures + req_body.reprocess
+    for key in all_keys:
+        try:
+            _parse_lecture_key(key)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Auto-detect if no explicit list provided
+    lectures_to_deep = req_body.lectures
+    if not lectures_to_deep and not req_body.reprocess:
+        try:
+            lectures_to_deep = await asyncio.to_thread(_auto_detect_missing_deep_analysis)
+        except Exception as exc:
+            logger.error("[backfill] Auto-detect failed: %s", exc)
+            raise HTTPException(
+                status_code=503, detail=f"Pinecone auto-detect failed: {exc}"
+            ) from exc
+
+    lectures_to_reprocess = req_body.reprocess
+
+    total_queued = len(lectures_to_deep) + len(lectures_to_reprocess)
+    if total_queued == 0:
+        return JSONResponse(
+            content={
+                "status": "nothing_to_do",
+                "message": "No lectures need deep_analysis — all indexed or no transcripts found.",
+                "queued": [],
+            },
+            status_code=200,
+        )
+
+    logger.info(
+        "[backfill] Queuing: %d deep-only + %d reprocess",
+        len(lectures_to_deep),
+        len(lectures_to_reprocess),
+    )
+
+    # Schedule as an asyncio task so this endpoint returns 202 immediately.
+    # _run_backfill_sync is a synchronous function (blocking Claude/Gemini/Pinecone
+    # calls), so we run it in a thread pool via asyncio.to_thread to avoid
+    # blocking the event loop.
+    asyncio.create_task(
+        asyncio.to_thread(_run_backfill_sync, lectures_to_deep, lectures_to_reprocess),
+        name=f"backfill_{datetime.now(timezone.utc).strftime('%H%M%S')}",
+    )
+
+    return JSONResponse(
+        content={
+            "status": "accepted",
+            "queued_deep_only": lectures_to_deep,
+            "queued_reprocess": lectures_to_reprocess,
+            "total_queued": total_queued,
+            "message": (
+                "Backfill running in background. "
+                "Check server logs for progress and per-lecture results."
+            ),
+        },
+        status_code=202,
+    )
