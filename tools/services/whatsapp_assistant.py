@@ -533,6 +533,25 @@ class WhatsAppAssistant:
             reasoning = response.content[0].text.strip()
             logger.debug("Claude reasoning output: %s", reasoning)
 
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _in = response.usage.input_tokens
+                _out = response.usage.output_tokens
+                _cost = (_in * 3.0 + _out * 15.0) / 1_000_000
+                _record_cost(
+                    service="claude",
+                    model=ASSISTANT_CLAUDE_MODEL,
+                    purpose="whatsapp_decision",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             if reasoning.upper() == "SILENT":
                 logger.info(
                     "Claude decided to stay silent for message from %s in %s",
@@ -618,6 +637,27 @@ class WhatsAppAssistant:
             )
             text = gemini_response.text.strip()
             logger.debug("Gemini response (%d chars): %s…", len(text), text[:80])
+
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _meta = getattr(gemini_response, "usage_metadata", None)
+                _in = getattr(_meta, "prompt_token_count", 0) or 0
+                _out = getattr(_meta, "candidates_token_count", 0) or 0
+                _cost = (_in * 1.25 + _out * 10.0) / 1_000_000
+                _record_cost(
+                    service="gemini",
+                    model=self._gemini_model,
+                    purpose="whatsapp_response",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             return text
 
         except Exception as exc:
@@ -654,6 +694,27 @@ class WhatsAppAssistant:
             result = response.text.strip() if response.text else ""
             if result:
                 logger.info("Web search returned %d chars for: %s…", len(result), query[:50])
+
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _meta = getattr(response, "usage_metadata", None)
+                _in = getattr(_meta, "prompt_token_count", 0) or 0
+                _out = getattr(_meta, "candidates_token_count", 0) or 0
+                _cost = (_in * 0.42 + _out * 2.50) / 1_000_000
+                _record_cost(
+                    service="gemini",
+                    model="gemini-2.5-flash",
+                    purpose="whatsapp_web_search",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             return result[:2000]  # Cap to avoid huge context
         except Exception as exc:
             logger.warning("Web search failed: %s", exc)
@@ -731,6 +792,30 @@ class WhatsAppAssistant:
                 message.chat_id,
             )
             return None
+
+        # 4.5 Daily budget check — refuse API calls if budget exhausted
+        try:
+            from tools.core.cost_tracker import check_daily_budget
+
+            _ok, _remaining = check_daily_budget()
+            if not _ok:
+                logger.warning("Daily budget exceeded — assistant refusing API calls")
+                if is_direct:
+                    # Only notify the user for direct mentions, not passive triggers
+                    loop = asyncio.get_running_loop()
+                    try:
+                        await loop.run_in_executor(
+                            None,
+                            send_message_to_chat,
+                            message.chat_id,
+                            "🤖 " + ASSISTANT_SIGNATURE + "\n---\n"
+                            "დღევანდელი ბიუჯეტი ამოიწურა. ხვალ ისევ შეგიძლიათ შეკითხვების დასმა.",
+                        )
+                    except Exception:
+                        pass
+                return None
+        except Exception:
+            pass  # cost_tracker not available — proceed normally
 
         logger.info(
             "Processing message from %s in chat %s (direct=%s)",

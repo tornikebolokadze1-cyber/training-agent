@@ -467,6 +467,7 @@ def _generate_with_retry(
     max_output_tokens: int = 8192,
     use_free: bool = False,
     disable_thinking: bool = False,
+    _recursion_depth: int = 0,
 ) -> str:
     """Call generate_content with retry logic and free-tier fallback.
 
@@ -511,6 +512,25 @@ def _generate_with_retry(
                     "Input tokens already sent will be charged.",
                     purpose, GEMINI_GENERATE_TIMEOUT // 60,
                 )
+                # Record estimated phantom cost (Google bills input even on timeout)
+                try:
+                    from tools.core.cost_tracker import record_cost
+                    phantom_cost = 0.50  # Conservative estimate for a timed-out video chunk
+                    record_cost(
+                        service="gemini",
+                        model=model,
+                        purpose=f"PHANTOM_TIMEOUT {purpose}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        cost_usd=phantom_cost,
+                        pipeline_key=_pipeline_key_var.get(),
+                    )
+                    logger.warning(
+                        "Recorded $%.2f phantom billing estimate for timed-out call",
+                        phantom_cost,
+                    )
+                except Exception:
+                    pass
                 raise TimeoutError(
                     f"Gemini generate_content timed out after "
                     f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
@@ -583,6 +603,11 @@ def _generate_with_retry(
         except Exception as e:
             # If quota error on paid tier and free key exists — switch immediately
             if not use_free and _is_quota_error(e) and GEMINI_API_KEY:
+                if _recursion_depth >= 1:
+                    raise RuntimeError(
+                        f"Quota fallback exhausted for {purpose} "
+                        f"(depth={_recursion_depth})"
+                    ) from e
                 logger.warning(
                     "Paid tier quota hit for %s: %s — switching to free tier",
                     purpose, e,
@@ -591,6 +616,7 @@ def _generate_with_retry(
                 return _generate_with_retry(
                     free_client, model, contents, purpose,
                     max_output_tokens=max_output_tokens, use_free=True,
+                    _recursion_depth=_recursion_depth + 1,
                 )
 
             # For non-empty-response errors, give up after MAX_RETRIES attempts
@@ -845,6 +871,36 @@ def transcribe_chunked_video(
                 "Transcription %d%% — chunk %d/%d transcribed: %d chars",
                 pct, i + 1, total_chunks, len(transcript),
             )
+
+            # Duration-based cost adjustment for video chunks.
+            # Google bills video input by duration (minutes), not tokens.
+            # Token-based estimates can undercount by 10-50x for video.
+            try:
+                chunk_duration = _get_video_duration_seconds(chunk_path)
+                if chunk_duration and chunk_duration > 0:
+                    duration_cost = chunk_duration * 0.002  # ~$0.002/sec for Flash video
+                    # Subtract a conservative token-based estimate already recorded
+                    # (avoids double-counting; $0.25 is a typical token-based estimate per chunk)
+                    adjustment = max(0.0, duration_cost - 0.25)
+                    if adjustment > 0:
+                        from tools.core.cost_tracker import record_cost
+                        pk = _pipeline_key_var.get()
+                        record_cost(
+                            service="gemini",
+                            model=GEMINI_MODEL_TRANSCRIPTION,
+                            purpose=f"video_duration_adjustment chunk {i + 1}/{total_chunks}",
+                            input_tokens=0,
+                            output_tokens=0,
+                            cost_usd=adjustment,
+                            pipeline_key=pk,
+                        )
+                        logger.info(
+                            "Duration cost adjustment: chunk %d is %.0fs → "
+                            "duration-based=$%.4f, adjustment recorded=$%.4f",
+                            i + 1, chunk_duration, duration_cost, adjustment,
+                        )
+            except Exception as _dur_err:
+                logger.debug("Duration cost adjustment skipped: %s", _dur_err)
 
             # Budget check moved to top of loop (pre-chunk, not post-chunk)
 

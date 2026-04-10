@@ -308,10 +308,59 @@ async def _on_startup() -> None:
     app.state.started_at = datetime.now(timezone.utc)
     app.state.last_execution_results = []
 
+    # Detect whether .tmp/ survived the deploy (Railway persistent volume check)
+    _check_tmp_persistence()
+
     # Clean up stale .tmp/ files from crashed/restarted pipelines
     _cleanup_stale_tmp_files()
 
     logger.info("FastAPI application started.")
+
+
+def _check_tmp_persistence() -> None:
+    """Warn if .tmp/ is ephemeral (Railway volume not configured).
+
+    Writes a marker file on every startup.  If the marker already exists on
+    the next startup it proves the directory survived the redeploy (i.e. a
+    persistent volume is mounted).  If it is missing the budget counter and
+    all pipeline state have been reset — which means daily budget limits are
+    ineffective.
+    """
+    from datetime import datetime
+
+    from tools.core.config import TMP_DIR
+
+    marker = TMP_DIR / ".persistence_marker"
+    if marker.exists():
+        try:
+            ts = marker.read_text(encoding="utf-8").strip()
+            logger.info(
+                "Persistent volume detected — .tmp/ survived since %s", ts
+            )
+        except Exception:
+            pass
+    else:
+        logger.warning(
+            ".tmp/ persistence marker not found — cost tracking and pipeline "
+            "state may be LOST on redeploy. Configure a Railway volume mounted "
+            "at /app/.tmp in Railway dashboard."
+        )
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+
+            alert_operator(
+                "\u26a0\ufe0f Railway .tmp/ volume not detected! Cost tracking resets "
+                "on every deploy, making budget limits ineffective. "
+                "Configure a persistent volume at /app/.tmp in Railway dashboard."
+            )
+        except Exception:
+            pass
+
+    # Always write/update the marker so the next startup can detect survival.
+    try:
+        marker.write_text(datetime.now().isoformat(), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not write .tmp/ persistence marker: %s", exc)
 
 
 def _cleanup_stale_tmp_files() -> None:
