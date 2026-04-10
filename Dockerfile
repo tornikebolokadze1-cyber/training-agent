@@ -3,9 +3,9 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# Install build-only system deps
+# Install build-only system deps (git needed for commit hash extraction)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libffi-dev && \
+    apt-get install -y --no-install-recommends gcc libffi-dev git && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -25,7 +25,7 @@ FROM python:3.12-slim AS runtime
 
 # Install runtime system deps (ffmpeg for video chunking, curl for healthcheck)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg curl git && \
+    apt-get install -y --no-install-recommends ffmpeg curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy Python venv from builder
@@ -44,7 +44,6 @@ WORKDIR /app
 # Copy application code
 COPY tools/ ./tools/
 COPY workflows/ ./workflows/
-COPY .git .git/
 
 # Create writable directories and set ownership
 RUN mkdir -p .tmp logs data && chown -R agent:agent /app && \
