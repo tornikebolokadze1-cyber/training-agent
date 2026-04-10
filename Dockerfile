@@ -17,9 +17,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ---- Stage 2: Runtime ----
 FROM python:3.12-slim AS runtime
 
-# Install runtime system deps (ffmpeg for video chunking, curl for healthcheck)
+# Install runtime system deps (ffmpeg for video chunking, curl for healthcheck, gosu for entrypoint)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg curl && \
+    apt-get install -y --no-install-recommends ffmpeg curl gosu && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy Python venv from builder
@@ -35,11 +35,11 @@ WORKDIR /app
 # Copy application code
 COPY tools/ ./tools/
 COPY workflows/ ./workflows/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Create writable directories and set ownership
+# Create writable directories (volume mount overrides .tmp at runtime)
 RUN mkdir -p .tmp logs data && chown -R agent:agent /app
-
-USER agent
 
 # Railway injects PORT; default to 5001
 ENV SERVER_HOST="0.0.0.0" \
@@ -53,5 +53,5 @@ EXPOSE 5001
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -sf --max-time 8 http://localhost:5001/live || exit 1
 
-# Run the unified orchestrator (APScheduler + FastAPI)
-CMD ["python", "-m", "tools.app.orchestrator"]
+# Entrypoint fixes volume permissions, then runs as agent user
+ENTRYPOINT ["/entrypoint.sh"]
