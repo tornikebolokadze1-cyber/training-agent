@@ -37,7 +37,7 @@ tools/tests/
 conftest.py
 
 # Git & CI
-.git/
+# .git/ is INTENTIONALLY INCLUDED — needed to capture commit hash at build time
 .github/
 .gitignore
 

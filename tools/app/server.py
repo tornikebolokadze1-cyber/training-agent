@@ -77,6 +77,36 @@ _startup_complete: bool = False  # Set to True after lifespan startup finishes
 _APP_VERSION: str = "1.0.0"
 
 
+def _get_git_commit() -> str:
+    """Get the git commit hash from build artifact or live git repo."""
+    # Try to read from Docker build artifact
+    commit_file = Path("/etc/app/git_commit")
+    if commit_file.exists():
+        try:
+            return commit_file.read_text().strip()
+        except Exception:
+            pass
+
+    # Fallback: try to read from live .git directory
+    try:
+        git_head = Path(".git/HEAD")
+        if git_head.exists():
+            head_content = git_head.read_text().strip()
+            if head_content.startswith("ref:"):
+                # e.g. "ref: refs/heads/main"
+                ref_path = Path(".git") / head_content.split(": ", 1)[1]
+                if ref_path.exists():
+                    return ref_path.read_text().strip()[:8]
+            return head_content[:8]
+    except Exception:
+        pass
+
+    return "unknown"
+
+
+_GIT_COMMIT: str = _get_git_commit()
+
+
 def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
 
@@ -796,6 +826,7 @@ async def liveness(request: Request):  # noqa: ARG001
             "status": "alive",
             "uptime_s": uptime_s,
             "version": _APP_VERSION,
+            "commit": _GIT_COMMIT,
             "tmp_writable": tmp_ok,
         },
         status_code=200,
@@ -867,6 +898,8 @@ async def health_check(request: Request, force: str = ""):
     # Add legacy fields for backward compatibility
     report["service"] = "training-agent"
     report["status"] = report["overall_status"]
+    report["version"] = _APP_VERSION
+    report["commit"] = _GIT_COMMIT
     report["tasks_in_progress"] = len(_processing_tasks)
 
     # Only 503 on CRITICAL — warning-level ("degraded") returns 200 so
