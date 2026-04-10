@@ -224,6 +224,46 @@ def _validate_media_path(video_path: Path) -> Path:
     return resolved
 
 
+def _extract_audio(video_path: str | Path, output_path: str | Path | None = None) -> Path:
+    """Extract audio track from video using ffmpeg.
+
+    Produces a small Opus audio file (~5MB for 30 min vs ~200MB for video).
+    Gemini processes audio at ~32 tokens/sec vs ~258 tokens/sec for video,
+    reducing transcription cost by ~90%.
+    """
+    video_path = Path(video_path)
+    if output_path is None:
+        output_path = video_path.with_suffix(".ogg")
+    else:
+        output_path = Path(output_path)
+
+    if output_path.exists():
+        output_path.unlink()
+
+    cmd = [
+        "ffmpeg", "-i", str(video_path),
+        "-vn",           # no video
+        "-ac", "1",      # mono
+        "-ar", "16000",  # 16kHz (sufficient for speech recognition)
+        "-c:a", "libopus",  # Opus codec (very efficient)
+        "-b:a", "32k",   # 32kbps bitrate
+        "-y",            # overwrite
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        logger.error("ffmpeg audio extraction failed: %s", result.stderr[-500:])
+        raise RuntimeError(f"Audio extraction failed for {video_path.name}: {result.stderr[-200:]}")
+
+    logger.info(
+        "Extracted audio: %s -> %s (%.1f MB -> %.1f MB)",
+        video_path.name, output_path.name,
+        video_path.stat().st_size / 1_000_000,
+        output_path.stat().st_size / 1_000_000,
+    )
+    return output_path
+
+
 def split_video_chunks(video_path: str | Path) -> list[Path]:
     """Split a long video into ~45-minute chunks using ffmpeg.
 
@@ -809,8 +849,17 @@ def transcribe_chunked_video(
                             )
 
             if not _reused_upload:
-                # Upload chunk to Gemini (only once — cache for retries)
-                file_ref, use_free = upload_video(chunk_path, use_free=use_free)
+                # Extract audio from video chunk (90% cost reduction)
+                try:
+                    audio_path = _extract_audio(chunk_path)
+                    upload_path = audio_path
+                    logger.info("Using audio-only for chunk %d/%d (cost saving)", i + 1, total_chunks)
+                except Exception as e:
+                    logger.warning("Audio extraction failed, falling back to video: %s", e)
+                    upload_path = chunk_path
+
+                # Upload to Gemini (only once — cache for retries)
+                file_ref, use_free = upload_video(upload_path, use_free=use_free)
                 uploaded_gemini_files.append((file_ref.name, use_free))
 
                 # Save Gemini file ref for crash recovery (avoid re-upload)
@@ -878,7 +927,9 @@ def transcribe_chunked_video(
             try:
                 chunk_duration = _get_video_duration_seconds(chunk_path)
                 if chunk_duration and chunk_duration > 0:
-                    duration_cost = chunk_duration * 0.002  # ~$0.002/sec for Flash video
+                    # Audio-only: ~$0.00003/sec (32 tokens/sec × $1.00/M)
+                    # Video: ~$0.002/sec — but we extract audio now
+                    duration_cost = chunk_duration * 0.00003  # audio rate
                     # Subtract a conservative token-based estimate already recorded
                     # (avoids double-counting; $0.25 is a typical token-based estimate per chunk)
                     adjustment = max(0.0, duration_cost - 0.25)
@@ -913,10 +964,14 @@ def transcribe_chunked_video(
             except Exception as e:
                 logger.warning("Failed to delete Gemini file %s: %s", file_ref.name, e)
 
-            # Clean up local chunk file (but not the original video)
+            # Clean up local chunk and audio files
             if chunk_path != Path(video_path) and chunk_path.exists():
                 chunk_path.unlink()
                 logger.info("Cleaned up local chunk: %s", chunk_path.name)
+            audio_candidate = chunk_path.with_suffix(".ogg")
+            if audio_candidate.exists():
+                audio_candidate.unlink()
+                logger.info("Cleaned up extracted audio: %s", audio_candidate.name)
 
     finally:
         # Clean up any remaining Gemini uploads on failure
