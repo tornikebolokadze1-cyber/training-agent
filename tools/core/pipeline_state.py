@@ -183,9 +183,9 @@ def atomic_write(path: Path, content: str) -> None:
     """Write *content* to *path* atomically via a sibling temp file.
 
     Creates a temporary file in the same directory as *path*, writes the
-    content, then performs an ``os.rename`` which is atomic on POSIX
-    systems.  This prevents partial writes from leaving a corrupt state
-    file on disk.
+    content, then performs an ``os.replace`` which is atomic on POSIX
+    systems and also works on Windows (unlike ``os.rename`` which raises
+    FileExistsError when the destination already exists on Windows).
 
     Args:
         path: Destination file path.
@@ -194,7 +194,7 @@ def atomic_write(path: Path, content: str) -> None:
     tmp_path = path.with_suffix(".tmp")
     try:
         tmp_path.write_text(content, encoding="utf-8")
-        os.rename(tmp_path, path)
+        os.replace(tmp_path, path)
     except OSError:
         # Clean up orphaned temp file if rename failed.
         try:

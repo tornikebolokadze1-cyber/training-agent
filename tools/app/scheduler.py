@@ -88,8 +88,8 @@ def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
         "fire_time": fire_time_iso,
     })
     tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(jobs, indent=2))
-    tmp_path.rename(_PENDING_JOBS_FILE)
+    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    tmp_path.replace(_PENDING_JOBS_FILE)
     logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
                 group_number, lecture_number, fire_time_iso)
 

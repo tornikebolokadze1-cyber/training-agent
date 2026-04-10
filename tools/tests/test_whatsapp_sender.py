@@ -367,7 +367,7 @@ class TestAlertOperator:
             ws.alert_operator("Test alert message")
 
         assert alerts_file.exists()
-        data = json.loads(alerts_file.read_text())
+        data = json.loads(alerts_file.read_text(encoding="utf-8"))
         assert len(data) == 1
         assert "Test alert message" in data[0]["message"]
         assert data[0]["priority"] == "alert"
@@ -711,7 +711,7 @@ class TestSaveMissedAlert:
             ws._save_missed_alert(entry)
 
         assert alerts_file.exists()
-        data = json.loads(alerts_file.read_text())
+        data = json.loads(alerts_file.read_text(encoding="utf-8"))
         assert len(data) == 1
         assert data[0]["message"] == "test"
 
@@ -723,7 +723,7 @@ class TestSaveMissedAlert:
         with patch.object(ws, "MISSED_ALERTS_PATH", alerts_file):
             ws._save_missed_alert(entry)
 
-        data = json.loads(alerts_file.read_text())
+        data = json.loads(alerts_file.read_text(encoding="utf-8"))
         assert len(data) == 2
         assert data[1]["message"] == "new"
 
@@ -735,7 +735,7 @@ class TestSaveMissedAlert:
         with patch.object(ws, "MISSED_ALERTS_PATH", alerts_file):
             ws._save_missed_alert(entry)
 
-        data = json.loads(alerts_file.read_text())
+        data = json.loads(alerts_file.read_text(encoding="utf-8"))
         assert len(data) == 1
         assert data[0]["message"] == "recover"
 

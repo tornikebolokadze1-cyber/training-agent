@@ -374,14 +374,20 @@ def _cleanup_stale_state_files():
 
 
 @pytest.fixture(autouse=True)
-def _mock_zoom_token(monkeypatch):
+def _mock_zoom_token(request, monkeypatch):
     """Prevent test_server's real httpx from hitting real Zoom OAuth.
 
     When test_server.py pops httpx stubs to use TestClient, any code path
     that calls zoom_manager.get_access_token() with fake credentials
     (ZOOM_CLIENT_ID=test in CI) produces HTTP 400 warnings and can cause
     MagicMock leaks into JSON bodies.
+
+    Skipped for TestGetAccessToken which tests the real function directly.
     """
+    # TestGetAccessToken tests the real get_access_token — don't mock it there.
+    cls = request.node.cls
+    if cls is not None and cls.__name__ == "TestGetAccessToken":
+        return
     try:
         import tools.integrations.zoom_manager as _zm
         monkeypatch.setattr(_zm, "get_access_token", lambda: "fake-test-token")

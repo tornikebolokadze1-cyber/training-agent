@@ -180,7 +180,7 @@ def _save_tracker(data: dict[str, dict[str, Any]]) -> None:
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        tmp.rename(RETRY_TRACKER_PATH)
+        tmp.replace(RETRY_TRACKER_PATH)
     except OSError as exc:
         logger.error("Failed to save retry tracker: %s", exc)
         try:

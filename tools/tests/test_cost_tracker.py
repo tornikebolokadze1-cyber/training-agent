@@ -84,10 +84,11 @@ class TestBudgetChecks:
         assert remaining == 0.0
 
     def test_lecture_budget_ok(self):
-        record_cost("gemini", "flash", "chunk1", 100, 50, 5.0, "g1_l7")
+        cost = LECTURE_COST_LIMIT_USD / 2  # Use half the limit so it's always under budget
+        record_cost("gemini", "flash", "chunk1", 100, 50, cost, "g1_l7")
         ok, remaining = check_lecture_budget("g1_l7")
         assert ok is True
-        assert remaining == pytest.approx(LECTURE_COST_LIMIT_USD - 5.0)
+        assert remaining == pytest.approx(LECTURE_COST_LIMIT_USD - cost)
 
     def test_lecture_budget_exceeded(self):
         record_cost("gemini", "flash", "chunk1", 100, 50, LECTURE_COST_LIMIT_USD + 1, "g1_l7")

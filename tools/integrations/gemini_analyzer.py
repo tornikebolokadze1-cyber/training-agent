@@ -602,6 +602,11 @@ def _generate_with_retry(
             if is_empty and attempt >= MAX_RETRIES_EMPTY:
                 raise RuntimeError(f"{purpose} failed after {MAX_RETRIES_EMPTY} attempts (empty responses): {e}") from e
 
+            # If MAX_RETRIES_EMPTY < MAX_RETRIES and this is a non-empty error on
+            # the last iteration, there are no more attempts — raise immediately.
+            if not is_empty and attempt >= MAX_RETRIES_EMPTY:
+                raise RuntimeError(f"{purpose} failed after {attempt} attempts: {e}") from e
+
             # Use longer delay for empty responses (Gemini may still be processing)
             # vs short exponential backoff for actual API errors
             if is_empty:
@@ -619,7 +624,7 @@ def _generate_with_retry(
                 )
             time.sleep(delay)
 
-    raise RuntimeError("Unreachable")
+    raise RuntimeError(f"{purpose} failed after {MAX_RETRIES_EMPTY} attempts (loop exhausted)")
 
 
 @resilient_api_call(service="gemini", operation="transcribe_video", max_attempts=1, gemini_quota_fallback=True)
@@ -1310,7 +1315,7 @@ def _save_checkpoint(name: str, content: str) -> None:
     path = TMP_DIR / name
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.rename(path)  # Atomic on POSIX
+    tmp_path.replace(path)  # Atomic on POSIX; replace() also works on Windows
     logger.info("Checkpoint saved: %s (%d chars)", name, len(content))
 
 

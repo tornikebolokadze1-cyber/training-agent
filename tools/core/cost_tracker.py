@@ -94,7 +94,7 @@ def _save_entries(entries: list[dict], date_str: str | None = None) -> None:
             json.dumps(entries, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        os.rename(tmp_path, path)
+        os.replace(tmp_path, path)
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)

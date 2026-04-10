@@ -29,6 +29,7 @@ Usage::
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -50,6 +51,10 @@ DLQ_DIR.mkdir(parents=True, exist_ok=True)
 
 # Default max retries before an entry is marked as permanently failed.
 DEFAULT_MAX_RETRIES: int = 5
+
+# Monotonic counter to guarantee unique filenames even when two enqueue()
+# calls happen within the same microsecond (common in rapid sequential calls).
+_seq_counter: itertools.count[int] = itertools.count()
 
 # ---------------------------------------------------------------------------
 # Handler registry
@@ -95,6 +100,7 @@ def enqueue(
         Path to the created DLQ entry file.
     """
     timestamp = datetime.now(tz=TBILISI_TZ).strftime("%Y%m%d_%H%M%S_%f")
+    seq = next(_seq_counter)
     entry = {
         "operation": operation,
         "payload": payload,
@@ -104,7 +110,7 @@ def enqueue(
         "max_retries": max_retries,
     }
 
-    filename = f"{operation}_{timestamp}.json"
+    filename = f"{operation}_{timestamp}_{seq:04d}.json"
     path = DLQ_DIR / filename
 
     # Atomic write
@@ -114,7 +120,7 @@ def enqueue(
             json.dumps(entry, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        os.rename(tmp_path, path)
+        os.replace(tmp_path, path)
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -152,7 +158,7 @@ def _save_entry(path: Path, entry: dict[str, Any]) -> None:
             json.dumps(entry, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        os.rename(tmp_path, path)
+        os.replace(tmp_path, path)
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)
