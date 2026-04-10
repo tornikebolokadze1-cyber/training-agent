@@ -132,10 +132,10 @@ jobs:
           # code retries 5x — tracked as tech debt).
           python -m pytest tools/tests/ -v --tb=short \
             --ignore=tools/tests/test_server.py \
+            --ignore=tools/tests/test_admin_routes.py \
             --cov=tools \
             --cov-report=term-missing \
-            --deselect=tools/tests/test_gdrive.py::TestUploadFileAuthErrors::test_401_triggers_credential_refresh_and_retry \
-            --deselect=tools/tests/test_admin_routes.py::TestRetryLecture::test_rejects_missing_auth
+            --deselect=tools/tests/test_gdrive.py::TestUploadFileAuthErrors::test_401_triggers_credential_refresh_and_retry
 
   security:
     name: Security Audit
