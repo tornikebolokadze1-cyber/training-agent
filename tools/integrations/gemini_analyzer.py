@@ -379,8 +379,26 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
     file_size_mb = file_path.stat().st_size / (1024 * 1024)
     logger.info("Uploading video '%s' (%.1f MB) to Gemini (%s tier)...", file_path.name, file_size_mb, tier)
 
+    # Explicit mime type (Gemini can't auto-detect .ogg/.m4a)
+    suffix = file_path.suffix.lower()
+    mime_map = {
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+    }
+    mime_type = mime_map.get(suffix, "video/mp4")
+
     try:
-        uploaded_file = client.files.upload(file=str(file_path))
+        from google.genai import types as genai_types
+        uploaded_file = client.files.upload(
+            file=str(file_path),
+            config=genai_types.UploadFileConfig(mime_type=mime_type),
+        )
     except Exception as e:
         if not use_free and _is_quota_error(e) and GEMINI_API_KEY:
             logger.warning("Paid tier quota hit during upload: %s — switching to free tier", e)
