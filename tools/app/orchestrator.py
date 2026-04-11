@@ -314,7 +314,59 @@ async def _on_startup() -> None:
     # Clean up stale .tmp/ files from crashed/restarted pipelines
     _cleanup_stale_tmp_files()
 
+    # One-time backfill for missing deep_analysis (runs once then self-disables)
+    asyncio.create_task(_run_one_time_backfill())
+
     logger.info("FastAPI application started.")
+
+
+async def _run_one_time_backfill() -> None:
+    """Run backfill once after startup, then create marker to prevent re-runs.
+
+    Processes all lectures missing deep_analysis (backfill from Pinecone
+    transcripts) + reprocesses g2_l9 which had the budget incident.
+    Does NOT send WhatsApp messages.
+    """
+    from tools.core.config import TMP_DIR
+
+    marker = TMP_DIR / ".backfill_done_2026_04_11"
+    if marker.exists():
+        logger.info("One-time backfill already completed, skipping")
+        return
+
+    # Wait 30s after startup so the server is fully ready
+    await asyncio.sleep(30)
+
+    try:
+        logger.info("[backfill] Starting one-time deep_analysis backfill...")
+        from tools.app.admin_routes import (
+            _auto_detect_missing_deep_analysis,
+            _run_backfill_sync,
+        )
+
+        missing = _auto_detect_missing_deep_analysis()
+        logger.info("[backfill] Detected %d lectures missing deep_analysis: %s",
+                    len(missing), missing)
+
+        reprocess = [(2, 9)]  # G2 L9 — budget incident, needs full reprocess
+        lectures_to_deep = [(int(k.split("_l")[0][1:]), int(k.split("_l")[1]))
+                            for k in missing]
+
+        logger.info("[backfill] Running: %d deep + %d reprocess",
+                    len(lectures_to_deep), len(reprocess))
+
+        # Run in thread to avoid blocking event loop
+        await asyncio.to_thread(
+            _run_backfill_sync, lectures_to_deep, reprocess
+        )
+
+        # Create marker to prevent future runs
+        marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+        logger.info("[backfill] ✅ Completed — marker created at %s", marker)
+
+    except Exception as exc:
+        logger.error("[backfill] Failed: %s", exc, exc_info=True)
+        # Don't create marker — allow retry on next deploy
 
 
 def _check_tmp_persistence() -> None:
