@@ -621,6 +621,124 @@ def _reconstruct_from_pinecone(
     return "\n".join(t for _, t in chunks if t)
 
 
+def _read_lecture_context_from_drive(group: int, lecture: int) -> tuple[str, str]:
+    """Read existing summary + gap_analysis from Google Drive for a lecture.
+
+    Falls back to Drive-stored docs when a lecture was indexed before the
+    ``"text"`` metadata field was added to Pinecone (G1 L1-4, G2 L1-5).
+
+    Args:
+        group: Group number (1 or 2).
+        lecture: Lecture number (1-15).
+
+    Returns:
+        (summary_text, gap_analysis_text) — either may be empty if not found.
+    """
+    try:
+        from tools.integrations.gdrive_manager import get_drive_service
+        from tools.core.config import GROUPS
+
+        svc = get_drive_service()
+
+        # Locate the ლექცია #N subfolder inside the shared group folder
+        group_folder_id = GROUPS[group]["drive_folder_id"]
+        lecture_query = (
+            f"'{group_folder_id}' in parents "
+            f"and name contains 'ლექცია #{lecture}' "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false"
+        )
+        folders = (
+            svc.files()
+            .list(q=lecture_query, fields="files(id, name)")
+            .execute()
+            .get("files", [])
+        )
+
+        if not folders:
+            logger.warning(
+                "[backfill] No lecture folder found for G%d L%d in Drive", group, lecture
+            )
+            return ("", "")
+
+        lecture_folder_id = folders[0]["id"]
+
+        # Find the summary Google Doc inside the lecture folder
+        doc_query = (
+            f"'{lecture_folder_id}' in parents "
+            f"and mimeType='application/vnd.google-apps.document' "
+            f"and trashed=false"
+        )
+        docs = (
+            svc.files()
+            .list(q=doc_query, fields="files(id, name)")
+            .execute()
+            .get("files", [])
+        )
+
+        summary_text = ""
+        for doc in docs:
+            doc_name = doc["name"].lower()
+            if "შეჯამება" in doc["name"] or "summary" in doc_name:
+                content = svc.files().export(
+                    fileId=doc["id"], mimeType="text/plain"
+                ).execute()
+                if isinstance(content, bytes):
+                    summary_text = content.decode("utf-8", errors="replace")
+                else:
+                    summary_text = str(content)
+                logger.info(
+                    "[backfill] Read summary doc '%s' for G%d L%d (%d chars)",
+                    doc["name"], group, lecture, len(summary_text),
+                )
+                break
+
+        # Gap analysis lives in the private analysis folder
+        gap_text = ""
+        private_folder_id = GROUPS[group]["analysis_folder_id"]
+        if private_folder_id:
+            gap_query = (
+                f"'{private_folder_id}' in parents "
+                f"and mimeType='application/vnd.google-apps.document' "
+                f"and name contains 'ლექცია #{lecture}' "
+                f"and trashed=false"
+            )
+            analysis_docs = (
+                svc.files()
+                .list(q=gap_query, fields="files(id, name)")
+                .execute()
+                .get("files", [])
+            )
+            for doc in analysis_docs:
+                try:
+                    content = svc.files().export(
+                        fileId=doc["id"], mimeType="text/plain"
+                    ).execute()
+                    if isinstance(content, bytes):
+                        gap_text = content.decode("utf-8", errors="replace")
+                    else:
+                        gap_text = str(content)
+                    logger.info(
+                        "[backfill] Read analysis doc '%s' for G%d L%d (%d chars)",
+                        doc["name"], group, lecture, len(gap_text),
+                    )
+                    break
+                except Exception as doc_exc:
+                    logger.warning(
+                        "[backfill] Could not export analysis doc '%s': %s",
+                        doc["name"], doc_exc,
+                    )
+                    continue
+
+        return (summary_text, gap_text)
+
+    except Exception as exc:
+        logger.warning(
+            "[backfill] Failed to read Drive context for G%d L%d: %s", group, lecture, exc
+        )
+        return ("", "")
+
+
 def _run_backfill_sync(
     lectures_to_deep: list[str],
     lectures_to_reprocess: list[str],
@@ -694,17 +812,40 @@ def _run_backfill_sync(
             skip_count += 1
             continue
 
-        # Reconstruct transcript from Pinecone
+        # Try Pinecone first (works for lectures with text metadata)
         transcript = _reconstruct_from_pinecone(idx, group, lecture, "transcript")
+
+        # If transcript unavailable, fall back to Drive-based context
+        use_drive_context = False
         if not transcript or len(transcript) < 500:
-            reason = (
-                "transcript too short or missing in Pinecone "
-                f"({len(transcript)} chars)"
+            logger.info(
+                "[backfill] %s: transcript unavailable in Pinecone (%d chars), "
+                "trying Drive context...",
+                key, len(transcript),
             )
-            logger.warning("[backfill] %s: %s", key, reason)
-            results.append({"lecture": key, "status": "SKIP", "reason": reason})
-            skip_count += 1
-            continue
+            summary_text, gap_text = _read_lecture_context_from_drive(group, lecture)
+            if summary_text or gap_text:
+                # Use summary + gap as context instead of full transcript
+                transcript = (
+                    f"[შეჯამება]\n{summary_text}\n\n[ხარვეზების ანალიზი]\n{gap_text}"
+                )
+                use_drive_context = True
+                logger.info(
+                    "[backfill] %s: using Drive context "
+                    "(summary=%d chars, gap=%d chars, combined=%d chars)",
+                    key, len(summary_text), len(gap_text), len(transcript),
+                )
+            else:
+                reason = "Neither Pinecone transcript nor Drive context available"
+                logger.warning("[backfill] %s: %s", key, reason)
+                results.append({"lecture": key, "status": "SKIP", "reason": reason})
+                skip_count += 1
+                continue
+
+        if use_drive_context:
+            logger.info(
+                "[backfill] %s: generating deep_analysis from Drive context", key
+            )
 
         try:
             _pipeline_key_var.set(f"g{group}_l{lecture}")
@@ -732,10 +873,24 @@ def _run_backfill_sync(
                 fail_count += 1
                 continue
 
-            # Fetch existing gap analysis text for the private Drive report
-            gap_text_existing = _reconstruct_from_pinecone(
-                idx, group, lecture, "gap_analysis"
-            )
+            # Fetch existing gap analysis for the private Drive report.
+            # When Drive context was used, the gap text was already read from
+            # Drive; extract it from the combined transcript string to avoid a
+            # redundant API call.  For Pinecone-sourced lectures, query Pinecone.
+            if use_drive_context:
+                # Extract gap portion from the Drive context we built earlier.
+                # Format: "[შეჯამება]\n<summary>\n\n[ხარვეზების ანალიზი]\n<gap>"
+                gap_marker = "[ხარვეზების ანალიზი]\n"
+                gap_marker_pos = transcript.find(gap_marker)
+                gap_text_existing = (
+                    transcript[gap_marker_pos + len(gap_marker):]
+                    if gap_marker_pos != -1
+                    else ""
+                )
+            else:
+                gap_text_existing = _reconstruct_from_pinecone(
+                    idx, group, lecture, "gap_analysis"
+                )
 
             # Upload combined gap+deep report to private Drive folder (no WhatsApp)
             try:
