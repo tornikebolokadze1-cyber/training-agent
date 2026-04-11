@@ -315,7 +315,9 @@ async def _on_startup() -> None:
     _cleanup_stale_tmp_files()
 
     # One-time backfill for missing deep_analysis (runs once then self-disables)
+    logger.info("[backfill] Scheduling one-time backfill task...")
     asyncio.create_task(_run_one_time_backfill())
+    logger.info("[backfill] Task scheduled, will run after 30s delay")
 
     logger.info("FastAPI application started.")
 
@@ -327,15 +329,17 @@ async def _run_one_time_backfill() -> None:
     transcripts) + reprocesses g2_l9 which had the budget incident.
     Does NOT send WhatsApp messages.
     """
+    logger.info("[backfill] Task started, checking marker...")
     from tools.core.config import TMP_DIR
 
     marker = TMP_DIR / ".backfill_done_2026_04_11"
     if marker.exists():
-        logger.info("One-time backfill already completed, skipping")
+        logger.info("[backfill] Already completed, skipping")
         return
 
-    # Wait 30s after startup so the server is fully ready
+    logger.info("[backfill] Waiting 30s for server to be ready...")
     await asyncio.sleep(30)
+    logger.info("[backfill] Wait complete, starting now")
 
     try:
         logger.info("[backfill] Starting one-time deep_analysis backfill...")
