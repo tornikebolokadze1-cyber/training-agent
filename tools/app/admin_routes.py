@@ -528,14 +528,18 @@ async def system_report(
 class BackfillRequest(BaseModel):
     """Optional request body for the backfill endpoint.
 
-    lectures  — list of keys like ["g1_l1", "g2_l5"] to deep-analyse only
-                (skipped if deep_analysis already indexed).  Omit for auto-detect.
-    reprocess — list of keys like ["g2_l9"] to run FULL analysis on
-                (summary + gap + deep), overwriting whatever is already indexed.
+    lectures      — list of keys like ["g1_l1", "g2_l5"] to deep-analyse only
+                    (skipped if deep_analysis already indexed).  Omit for auto-detect.
+    reprocess     — list of keys like ["g2_l9"] to run FULL analysis on
+                    (summary + gap + deep), overwriting whatever is already indexed.
+    full_rebuild  — list of keys like ["g1_l3"] to download from Zoom, re-transcribe,
+                    and regenerate ALL analysis (summary + gap + deep) without WhatsApp.
+                    Use when Pinecone transcript is missing/empty (e.g. old lectures).
     """
 
     lectures: list[str] = []
     reprocess: list[str] = []
+    full_rebuild: list[str] = []
 
 
 def _parse_lecture_key(key: str) -> tuple[int, int]:
@@ -739,22 +743,153 @@ def _read_lecture_context_from_drive(group: int, lecture: int) -> tuple[str, str
         return ("", "")
 
 
+def _calculate_lecture_date(group: int, lecture: int):  # -> date | None
+    """Calculate the calendar date when a lecture happened.
+
+    Group 1: Tuesdays and Fridays, started 2026-03-13 (Friday).
+    Group 2: Thursdays and Mondays, started 2026-03-12 (Thursday).
+
+    Args:
+        group: Group number (1 or 2).
+        lecture: Lecture number (1-15).
+
+    Returns:
+        The date on which that lecture occurred, or None for invalid inputs.
+    """
+    from datetime import date, timedelta
+
+    if group == 1:
+        start = date(2026, 3, 13)  # First lecture: Friday
+        weekdays = {4, 1}          # Fri=4, Tue=1
+    elif group == 2:
+        start = date(2026, 3, 12)  # First lecture: Thursday
+        weekdays = {3, 0}          # Thu=3, Mon=0
+    else:
+        return None
+
+    count = 0
+    d = start
+    while count < 15:
+        if d.weekday() in weekdays:
+            count += 1
+            if count == lecture:
+                return d
+        d = d + timedelta(days=1)
+    return None
+
+
+def _download_zoom_recording_for_lecture(group: int, lecture: int):  # -> Path | None
+    """Find and download the Zoom recording for a specific lecture.
+
+    Queries Zoom recordings within ±1 day of the calculated lecture date, finds
+    the MP4 file, and downloads it to the .tmp/ directory.
+
+    Args:
+        group: Group number (1 or 2).
+        lecture: Lecture number (1-15).
+
+    Returns:
+        Path to the downloaded MP4 file, or None if the recording is not available.
+    """
+    from datetime import timedelta
+
+    from tools.integrations.zoom_manager import (
+        download_recording,
+        get_access_token,
+        list_user_recordings,
+    )
+    from tools.core.config import TMP_DIR
+
+    try:
+        lecture_date = _calculate_lecture_date(group, lecture)
+        if not lecture_date:
+            logger.warning(
+                "[backfill] Could not calculate date for G%d L%d", group, lecture
+            )
+            return None
+
+        from_date = (lecture_date - timedelta(days=1)).strftime("%Y-%m-%d")
+        to_date = (lecture_date + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        recordings = list_user_recordings(from_date=from_date, to_date=to_date)
+        if not recordings:
+            logger.warning(
+                "[backfill] No Zoom recordings found for G%d L%d (%s to %s)",
+                group, lecture, from_date, to_date,
+            )
+            return None
+
+        # Find a recording whose start date matches the lecture date
+        lecture_date_str = lecture_date.strftime("%Y-%m-%d")
+        for meeting in recordings:
+            start_time = meeting.get("start_time", "")
+            if lecture_date_str not in start_time:
+                continue
+
+            files = meeting.get("recording_files", [])
+            mp4_file = next(
+                (f for f in files if f.get("file_type") == "MP4"),
+                None,
+            )
+            if not mp4_file:
+                logger.debug(
+                    "[backfill] Meeting %s has no MP4 file — skipping",
+                    meeting.get("id"),
+                )
+                continue
+
+            output_path = TMP_DIR / f"g{group}_l{lecture}_backfill.mp4"
+            logger.info(
+                "[backfill] Downloading Zoom recording for G%d L%d (meeting %s)...",
+                group, lecture, meeting.get("id"),
+            )
+            token = get_access_token()
+            download_recording(
+                download_url=mp4_file["download_url"],
+                access_token=token,
+                dest_path=output_path,
+            )
+            size_mb = output_path.stat().st_size // (1024 * 1024)
+            logger.info(
+                "[backfill] Downloaded %d MB for G%d L%d", size_mb, group, lecture
+            )
+            return output_path
+
+        logger.warning(
+            "[backfill] No matching Zoom recording for G%d L%d on %s",
+            group, lecture, lecture_date_str,
+        )
+        return None
+
+    except Exception as exc:
+        logger.error(
+            "[backfill] Zoom download failed for G%d L%d: %s",
+            group, lecture, exc, exc_info=True,
+        )
+        return None
+
+
 def _run_backfill_sync(
     lectures_to_deep: list[str],
     lectures_to_reprocess: list[str],
+    lectures_to_full_rebuild: list[str] | None = None,
 ) -> dict[str, Any]:
     """Execute backfill operations (synchronous — call via asyncio.to_thread).
 
-    deep-only path  : reconstruct transcript → Claude deep_analysis only →
-                      Gemini Georgian writing → Drive private report → Pinecone index.
-    reprocess path  : reconstruct transcript → full Claude (summary+gap+deep) →
-                      Gemini Georgian for all 3 → Drive report → Pinecone index.
+    deep-only path   : reconstruct transcript → Claude deep_analysis only →
+                       Gemini Georgian writing → Drive private report → Pinecone index.
+    reprocess path   : reconstruct transcript → full Claude (summary+gap+deep) →
+                       Gemini Georgian for all 3 → Drive report → Pinecone index.
+    full-rebuild path: download recording from Zoom → run full transcribe_and_index
+                       pipeline with silent=True (no WhatsApp) → clean up video file.
 
     NEVER sends WhatsApp messages.
 
     Args:
         lectures_to_deep: Keys like ['g1_l1'] that need deep_analysis only.
         lectures_to_reprocess: Keys like ['g2_l9'] that need full re-analysis.
+        lectures_to_full_rebuild: Keys like ['g1_l3'] that require a full Zoom
+            download + re-transcription + full analysis regeneration.
 
     Returns:
         Dict with 'results' list and summary counts.
@@ -1043,6 +1178,81 @@ def _run_backfill_sync(
             results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
             fail_count += 1
 
+    # ------------------------------------------------------------------ #
+    # 3. Full-rebuild path (download from Zoom + full pipeline, no WhatsApp)
+    # ------------------------------------------------------------------ #
+    for key in (lectures_to_full_rebuild or []):
+        try:
+            group, lecture = _parse_lecture_key(key)
+        except ValueError as exc:
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+            continue
+
+        logger.info("[backfill] full-rebuild: %s", key)
+
+        # Download recording from Zoom
+        video_path = _download_zoom_recording_for_lecture(group, lecture)
+        if not video_path:
+            reason = "Zoom recording not found or no longer available"
+            logger.warning("[backfill] %s: %s", key, reason)
+            results.append({"lecture": key, "status": "SKIP", "reason": reason})
+            skip_count += 1
+            continue
+
+        try:
+            from tools.services.transcribe_lecture import transcribe_and_index
+
+            counts = transcribe_and_index(
+                group_number=group,
+                lecture_number=lecture,
+                video_path=str(video_path),
+                silent=True,
+            )
+
+            total_vectors = sum(counts.values()) if isinstance(counts, dict) else 0
+            results.append({
+                "lecture": key,
+                "status": "OK",
+                "mode": "full_rebuild",
+                "vectors_indexed": total_vectors,
+            })
+            ok_count += 1
+            logger.info(
+                "[backfill] %s: full-rebuild done (%d vectors)", key, total_vectors
+            )
+
+        except RuntimeError as exc:
+            if "budget" in str(exc).lower():
+                logger.error("[backfill] %s: budget exceeded — stopping", key)
+                results.append({
+                    "lecture": key,
+                    "status": "FAIL",
+                    "reason": f"budget exceeded: {exc}",
+                })
+                fail_count += 1
+                break  # Stop further processing — budget is shared
+            logger.error("[backfill] %s: full-rebuild failed: %s", key, exc)
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+        except Exception as exc:
+            logger.error(
+                "[backfill] %s: full-rebuild error: %s", key, exc, exc_info=True
+            )
+            results.append({"lecture": key, "status": "FAIL", "reason": str(exc)})
+            fail_count += 1
+        finally:
+            # Always clean up the downloaded video file
+            try:
+                if video_path and video_path.exists():
+                    video_path.unlink()
+                    logger.info("[backfill] %s: cleaned up %s", key, video_path.name)
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "[backfill] %s: could not delete video file: %s",
+                    key, cleanup_exc,
+                )
+
     return {
         "results": results,
         "ok": ok_count,
@@ -1117,7 +1327,7 @@ async def backfill_deep_analysis(
             ) from exc
 
     # Validate all keys before starting background work
-    all_keys = req_body.lectures + req_body.reprocess
+    all_keys = req_body.lectures + req_body.reprocess + req_body.full_rebuild
     for key in all_keys:
         try:
             _parse_lecture_key(key)
@@ -1126,7 +1336,7 @@ async def backfill_deep_analysis(
 
     # Auto-detect if no explicit list provided
     lectures_to_deep = req_body.lectures
-    if not lectures_to_deep and not req_body.reprocess:
+    if not lectures_to_deep and not req_body.reprocess and not req_body.full_rebuild:
         try:
             lectures_to_deep = await asyncio.to_thread(_auto_detect_missing_deep_analysis)
         except Exception as exc:
@@ -1136,8 +1346,13 @@ async def backfill_deep_analysis(
             ) from exc
 
     lectures_to_reprocess = req_body.reprocess
+    lectures_to_full_rebuild = req_body.full_rebuild
 
-    total_queued = len(lectures_to_deep) + len(lectures_to_reprocess)
+    total_queued = (
+        len(lectures_to_deep)
+        + len(lectures_to_reprocess)
+        + len(lectures_to_full_rebuild)
+    )
     if total_queued == 0:
         return JSONResponse(
             content={
@@ -1149,9 +1364,10 @@ async def backfill_deep_analysis(
         )
 
     logger.info(
-        "[backfill] Queuing: %d deep-only + %d reprocess",
+        "[backfill] Queuing: %d deep-only + %d reprocess + %d full-rebuild",
         len(lectures_to_deep),
         len(lectures_to_reprocess),
+        len(lectures_to_full_rebuild),
     )
 
     # Schedule as an asyncio task so this endpoint returns 202 immediately.
@@ -1159,7 +1375,12 @@ async def backfill_deep_analysis(
     # calls), so we run it in a thread pool via asyncio.to_thread to avoid
     # blocking the event loop.
     asyncio.create_task(
-        asyncio.to_thread(_run_backfill_sync, lectures_to_deep, lectures_to_reprocess),
+        asyncio.to_thread(
+            _run_backfill_sync,
+            lectures_to_deep,
+            lectures_to_reprocess,
+            lectures_to_full_rebuild,
+        ),
         name=f"backfill_{datetime.now(timezone.utc).strftime('%H%M%S')}",
     )
 
@@ -1168,6 +1389,7 @@ async def backfill_deep_analysis(
             "status": "accepted",
             "queued_deep_only": lectures_to_deep,
             "queued_reprocess": lectures_to_reprocess,
+            "queued_full_rebuild": lectures_to_full_rebuild,
             "total_queued": total_queued,
             "message": (
                 "Backfill running in background. "

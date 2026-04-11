@@ -247,6 +247,9 @@ def transcribe_and_index(
     group_number: int,
     lecture_number: int,
     video_path: str | Path,
+    *,
+    existing_transcript_path: Path | None = None,
+    silent: bool = False,
 ) -> dict[str, int]:
     """Full pipeline: transcribe → analyze → Drive → WhatsApp → Pinecone.
 
@@ -261,6 +264,15 @@ def transcribe_and_index(
     7. Sync Obsidian knowledge vault
 
     Automatically resumes from existing transcript if found in .tmp/.
+
+    Args:
+        group_number: Training group (1 or 2).
+        lecture_number: Lecture number (1-15).
+        video_path: Path to the video file to process.
+        existing_transcript_path: Optional path to a pre-existing transcript file
+            to use instead of re-transcribing.
+        silent: If True, skip all WhatsApp notifications (steps 4-5). Used for
+            backfill/admin operations where notifications are not desired.
     """
     video_path = Path(video_path)
     if not video_path.exists():
@@ -411,7 +423,11 @@ def transcribe_and_index(
             pipeline = transition(pipeline, NOTIFYING)
 
         # Step 4: WhatsApp group notification
-        if pipeline and pipeline.group_notified:
+        if silent:
+            logger.info("Silent mode: skipping WhatsApp group notification")
+            if pipeline:
+                pipeline = transition(pipeline, NOTIFYING, group_notified=True)
+        elif pipeline and pipeline.group_notified:
             logger.info("Resume: group already notified, skipping")
         else:
             logger.info("Step 4: Notifying WhatsApp group...")
@@ -421,7 +437,11 @@ def transcribe_and_index(
                 pipeline = transition(pipeline, NOTIFYING, group_notified=True)
 
         # Step 5: Private report to Tornike
-        if pipeline and pipeline.private_notified:
+        if silent:
+            logger.info("Silent mode: skipping private report WhatsApp")
+            if pipeline:
+                pipeline = transition(pipeline, NOTIFYING, private_notified=True)
+        elif pipeline and pipeline.private_notified:
             logger.info("Resume: private report already sent, skipping")
         else:
             logger.info("Step 5: Sending private report link to Tornike...")
