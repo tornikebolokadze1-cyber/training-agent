@@ -314,12 +314,136 @@ async def _on_startup() -> None:
     # Clean up stale .tmp/ files from crashed/restarted pipelines
     _cleanup_stale_tmp_files()
 
+    # One-time fix: rename G1 L10 → L9 on Drive + re-index Pinecone
+    asyncio.create_task(_fix_g1_l10_to_l9())
+
     # One-time backfill for missing deep_analysis (runs once then self-disables)
     logger.info("[backfill] Scheduling one-time backfill task...")
     asyncio.create_task(_run_one_time_backfill())
     logger.info("[backfill] Task scheduled, will run after 30s delay")
 
     logger.info("FastAPI application started.")
+
+
+async def _fix_g1_l10_to_l9() -> None:
+    """One-time fix: G1 lecture was saved as L10 instead of L9 due to missing EXCLUDED_DATES.
+
+    Renames Drive docs and moves them to the correct folder.
+    Re-indexes Pinecone vectors from g1_l10 to g1_l9.
+    """
+    from tools.core.config import TMP_DIR
+
+    marker = TMP_DIR / ".fix_g1_l10_done"
+    if marker.exists():
+        return
+
+    await asyncio.sleep(20)  # Wait for server to be ready
+
+    try:
+        logger.info("[fix-rename] Starting G1 L10→L9 rename...")
+        from tools.integrations.gdrive_manager import get_drive_service
+
+        svc = get_drive_service()
+
+        # Summary doc: rename + move
+        summary_id = "1YedumZfSBKr2nh-ejYcAKlAUXu0vpc50F9-qdl6Uaaw"
+        analysis_id = "1kzOeoBC1XjtI75fSuZH-ML7JBgraP0ycsGkpksHnDRE"
+        correct_folder = "1YQ5EWAV2LUoHRhXEEOWfZ-ehkCFUM33t"  # ლექცია #9
+        wrong_folder = "1uWlMePG4yqnyY4pyRFRIhR_KX_KU__Bf"  # ლექცია #10
+
+        # Rename summary
+        svc.files().update(
+            fileId=summary_id,
+            body={"name": "ლექცია #9 — შეჯამება"},
+        ).execute()
+        # Move summary to correct folder
+        svc.files().update(
+            fileId=summary_id,
+            addParents=correct_folder,
+            removeParents=wrong_folder,
+        ).execute()
+        logger.info("[fix-rename] Summary renamed and moved to ლექცია #9 folder")
+
+        # Analysis doc is in private folder — just rename, don't move
+        svc.files().update(
+            fileId=analysis_id,
+            body={"name": "ლექცია #9"},
+        ).execute()
+        logger.info("[fix-rename] Analysis doc renamed to ლექცია #9")
+
+        # Re-index Pinecone: copy g1_l10 vectors to g1_l9
+        try:
+            from tools.integrations.knowledge_indexer import (
+                get_pinecone_index,
+                index_lecture_content,
+            )
+
+            idx = get_pinecone_index()
+
+            # For each content type, fetch g1_l10 vectors and re-index as g1_l9
+            for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
+                prefix = f"g1_l10_{content_type}_"
+                try:
+                    all_ids = []
+                    for page_result in idx.list(prefix=prefix, limit=1000):
+                        if isinstance(page_result, list):
+                            all_ids.extend(page_result)
+                        elif isinstance(page_result, dict):
+                            all_ids.extend(page_result.get("vectors", []))
+                        else:
+                            all_ids.append(str(page_result))
+
+                    if not all_ids:
+                        continue
+
+                    fetched = idx.fetch(ids=all_ids)
+                    raw_vectors = (
+                        fetched.get("vectors", {})
+                        if isinstance(fetched, dict)
+                        else getattr(fetched, "vectors", {})
+                    )
+
+                    # Reconstruct text from chunks
+                    chunks = []
+                    for _vid, vec in raw_vectors.items():
+                        meta = (
+                            vec.get("metadata", {})
+                            if isinstance(vec, dict)
+                            else getattr(vec, "metadata", {})
+                        )
+                        chunks.append((meta.get("chunk_index", 0), meta.get("text", "")))
+
+                    chunks.sort(key=lambda x: x[0])
+                    full_text = "\n".join(t for _, t in chunks if t)
+
+                    if full_text:
+                        count = index_lecture_content(
+                            group_number=1,
+                            lecture_number=9,
+                            content=full_text,
+                            content_type=content_type,
+                            force=True,
+                        )
+                        logger.info(
+                            "[fix-rename] Re-indexed %d vectors: g1_l10_%s → g1_l9_%s",
+                            count, content_type, content_type,
+                        )
+
+                        # Delete old g1_l10 vectors
+                        idx.delete(ids=all_ids)
+                        logger.info("[fix-rename] Deleted %d old g1_l10_%s vectors", len(all_ids), content_type)
+
+                except Exception as exc:
+                    logger.warning("[fix-rename] Pinecone %s failed: %s", content_type, exc)
+
+        except Exception as exc:
+            logger.warning("[fix-rename] Pinecone re-index failed: %s", exc)
+
+        marker.write_text("done", encoding="utf-8")
+        logger.info("[fix-rename] G1 L10→L9 fix complete")
+
+    except Exception as exc:
+        logger.error("[fix-rename] Failed: %s", exc, exc_info=True)
 
 
 async def _run_one_time_backfill() -> None:
