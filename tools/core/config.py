@@ -186,7 +186,7 @@ GROUPS: dict[int, GroupConfig] = {
 
 # Holiday/cancellation dates — lectures scheduled on these dates are skipped
 # Format: comma-separated ISO dates in env var, e.g., "2026-04-01,2026-04-15"
-_excluded_dates_str = os.environ.get("EXCLUDED_DATES", "")
+_excluded_dates_str = os.environ.get("EXCLUDED_DATES", "2026-04-10,2026-04-13")
 EXCLUDED_DATES: frozenset[date] = frozenset(
     date.fromisoformat(d.strip())
     for d in _excluded_dates_str.split(",")
