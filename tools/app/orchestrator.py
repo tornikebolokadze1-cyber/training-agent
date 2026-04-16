@@ -336,11 +336,13 @@ async def _upload_g1_l9_part1() -> None:
     """
     from tools.core.config import TMP_DIR
 
-    marker = TMP_DIR / ".g1_l9_part1_uploaded"
+    marker = TMP_DIR / ".g1_l9_part1_v2"
     if marker.exists():
+        logger.info("[g1-l9-part1] Already done (marker exists)")
         return
 
-    await asyncio.sleep(25)
+    await asyncio.sleep(30)
+    logger.info("[g1-l9-part1] Starting Part 1 download...")
 
     try:
         logger.info("[g1-l9-part1] Looking for Part 1 recording on Zoom...")
