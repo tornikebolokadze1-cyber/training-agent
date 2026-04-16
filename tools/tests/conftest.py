@@ -55,6 +55,7 @@ _google_genai = _stub_module("google.genai")
 _google_genai.Client = MagicMock
 _google_genai_types = _stub_module("google.genai.types")
 _google_genai_types.GenerateContentConfig = object
+_google_genai_types.UploadFileConfig = MagicMock
 _google.genai = _google_genai
 
 _google_oauth2 = _stub_module("google.oauth2")

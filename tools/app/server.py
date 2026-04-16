@@ -865,8 +865,8 @@ async def readiness(request: Request):  # noqa: ARG001
     )
 
 
-@app.get("/health")
 @limiter.limit("60/minute")
+@app.get("/health")
 async def health_check(request: Request, force: str = ""):
     """Deep observability endpoint — full dependency audit with TTL caching.
 
@@ -909,8 +909,8 @@ async def health_check(request: Request, force: str = ""):
     return JSONResponse(content=report, status_code=status_code)
 
 
-@app.get("/dashboard")
 @limiter.limit("10/minute")
+@app.get("/dashboard")
 async def dashboard(request: Request):
     """Render the analytics dashboard as an HTML page."""
     try:
@@ -926,8 +926,8 @@ async def dashboard(request: Request):
         )
 
 
-@app.get("/dashboard/data")
 @limiter.limit("10/minute")
+@app.get("/dashboard/data")
 async def dashboard_data(request: Request):
     """Return raw dashboard data as JSON (for custom frontends)."""
     try:
@@ -938,8 +938,8 @@ async def dashboard_data(request: Request):
         return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
-@app.post("/whatsapp-incoming")
 @limiter.limit("30/minute")
+@app.post("/whatsapp-incoming")
 async def whatsapp_incoming(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1301,8 +1301,8 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     }
 
 
-@app.post("/zoom-webhook")
 @limiter.limit("10/minute")
+@app.post("/zoom-webhook")
 async def zoom_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1374,8 +1374,8 @@ async def zoom_webhook(
     return {"status": "ignored", "event": event}
 
 
-@app.post("/process-recording")
 @limiter.limit("5/minute")
+@app.post("/process-recording")
 async def process_recording(
     request: Request,
     payload: ProcessRecordingRequest,
@@ -1487,8 +1487,8 @@ async def process_recording(
 # ---------------------------------------------------------------------------
 
 
-@app.post("/trigger-pre-meeting")
 @limiter.limit("2/minute")
+@app.post("/trigger-pre-meeting")
 async def trigger_pre_meeting(
     request: Request,
     authorization: str | None = Header(None),
@@ -1510,8 +1510,8 @@ async def trigger_pre_meeting(
     return {"status": "triggered", "group": group}
 
 
-@app.post("/retry-latest")
 @limiter.limit("2/minute")
+@app.post("/retry-latest")
 async def retry_latest(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1707,8 +1707,8 @@ async def _manual_pipeline_task(
             logger.info("Cleaned up temp file: %s", local_path)
 
 
-@app.post("/manual-trigger")
 @limiter.limit("2/minute")
+@app.post("/manual-trigger")
 async def manual_trigger(
     request: Request,
     payload: ManualTriggerRequest,
@@ -1774,8 +1774,8 @@ async def manual_trigger(
 _dashboard_cache: tuple[float, str] | None = None
 
 
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 @limiter.limit("30/minute")
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def analytics_dashboard(
     request: Request,
     authorization: str | None = Header(None),
@@ -1803,8 +1803,8 @@ async def analytics_dashboard(
     return HTMLResponse(content=html)
 
 
-@app.get("/api/scores", include_in_schema=False)
 @limiter.limit("60/minute")
+@app.get("/api/scores", include_in_schema=False)
 async def api_scores(
     request: Request,
     authorization: str | None = Header(None),
@@ -1823,8 +1823,8 @@ async def api_scores(
     return {"scores": rows, "total": len(rows)}
 
 
-@app.get("/api/stats", include_in_schema=False)
 @limiter.limit("60/minute")
+@app.get("/api/stats", include_in_schema=False)
 async def api_stats(
     request: Request,
     authorization: str | None = Header(None),
@@ -1865,8 +1865,8 @@ async def api_stats(
     }
 
 
-@app.post("/api/backfill-scores", include_in_schema=False)
 @limiter.limit("2/minute")
+@app.post("/api/backfill-scores", include_in_schema=False)
 async def api_backfill_scores(
     request: Request,
     authorization: str | None = Header(None),
@@ -1884,8 +1884,8 @@ async def api_backfill_scores(
     return {"status": "ok", **result}
 
 
-@app.post("/api/backup-scores", include_in_schema=False)
 @limiter.limit("2/minute")
+@app.post("/api/backup-scores", include_in_schema=False)
 async def api_backup_scores(
     request: Request,
     authorization: str | None = Header(None),

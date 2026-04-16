@@ -353,6 +353,24 @@ async def _upload_g1_l9_part1() -> None:
         )
         from tools.integrations.gdrive_manager import get_drive_service
 
+        # Drive-side idempotency: check before hitting Zoom API
+        g1_l9_folder = "1YQ5EWAV2LUoHRhXEEOWfZ-ehkCFUM33t"
+        svc = get_drive_service()
+        existing = svc.files().list(
+            q=(
+                f"'{g1_l9_folder}' in parents"
+                " and name contains 'ნაწილი 1'"
+                " and mimeType='video/mp4'"
+                " and trashed=false"
+            ),
+            fields="files(id,name)",
+            pageSize=5,
+        ).execute().get("files", [])
+        if existing:
+            logger.info("[g1-l9-part1] Already on Drive: %s", existing[0]["name"])
+            marker.write_text(f"already-exists: {existing[0]['id']}", encoding="utf-8")
+            return
+
         # Query Zoom for April 14 recordings
         from_date = "2026-04-13"
         to_date = "2026-04-15"
@@ -413,9 +431,7 @@ async def _upload_g1_l9_part1() -> None:
         logger.info("[g1-l9-part1] Downloaded: %.1f MB", output_path.stat().st_size / 1_000_000)
 
         # Upload to Google Drive — ლექცია #9 folder (Group 1)
-        g1_l9_folder = "1YQ5EWAV2LUoHRhXEEOWfZ-ehkCFUM33t"
-        svc = get_drive_service()
-
+        # g1_l9_folder and svc already initialised above for idempotency check
         file_metadata = {
             "name": f"ლექცია #9 — ნაწილი 1 ({part1_duration} წთ).mp4",
             "parents": [g1_l9_folder],
@@ -430,6 +446,14 @@ async def _upload_g1_l9_part1() -> None:
 
         logger.info("[g1-l9-part1] Uploaded to Drive: %s (id=%s)", uploaded["name"], uploaded["id"])
 
+        # Post-upload verification: confirm file is queryable on Drive
+        verify = svc.files().get(fileId=uploaded["id"], fields="id,name,size").execute()
+        logger.info(
+            "[g1-l9-part1] Drive verified: %s (%s bytes)",
+            verify["name"],
+            verify.get("size", "?"),
+        )
+
         # Clean up local file
         try:
             output_path.unlink()
@@ -441,6 +465,13 @@ async def _upload_g1_l9_part1() -> None:
 
     except Exception as exc:
         logger.error("[g1-l9-part1] Failed: %s", exc, exc_info=True)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(
+                f"⚠️ G1 L9 Part 1 upload failed: {type(exc).__name__}: {exc}"
+            )
+        except Exception as alert_exc:
+            logger.error("[g1-l9-part1] Could not send operator alert: %s", alert_exc)
 
 
 async def _fix_g1_l10_to_l9() -> None:
