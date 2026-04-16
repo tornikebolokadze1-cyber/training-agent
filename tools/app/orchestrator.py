@@ -317,12 +317,122 @@ async def _on_startup() -> None:
     # One-time fix: rename G1 L10 → L9 on Drive + re-index Pinecone
     asyncio.create_task(_fix_g1_l10_to_l9())
 
+    # One-time: upload G1 L9 Part 1 recording from Zoom to Drive
+    asyncio.create_task(_upload_g1_l9_part1())
+
     # One-time backfill for missing deep_analysis (runs once then self-disables)
     logger.info("[backfill] Scheduling one-time backfill task...")
     asyncio.create_task(_run_one_time_backfill())
     logger.info("[backfill] Task scheduled, will run after 30s delay")
 
     logger.info("FastAPI application started.")
+
+
+async def _upload_g1_l9_part1() -> None:
+    """One-time: find and upload G1 L9 Part 1 from Zoom to Drive.
+
+    G1 L9 (April 14) had 2 Zoom meetings (disconnection mid-lecture).
+    Part 2 was already processed. This uploads Part 1.
+    """
+    from tools.core.config import TMP_DIR
+
+    marker = TMP_DIR / ".g1_l9_part1_uploaded"
+    if marker.exists():
+        return
+
+    await asyncio.sleep(25)
+
+    try:
+        logger.info("[g1-l9-part1] Looking for Part 1 recording on Zoom...")
+        from tools.integrations.zoom_manager import list_user_recordings, download_recording
+        from tools.integrations.gdrive_manager import get_drive_service
+
+        # Query Zoom for April 14 recordings
+        from_date = "2026-04-13"
+        to_date = "2026-04-15"
+        recordings = list_user_recordings(from_date=from_date, to_date=to_date)
+
+        if not recordings:
+            logger.warning("[g1-l9-part1] No recordings found for April 13-15")
+            return
+
+        # Find ALL meetings on April 14
+        april14_meetings = []
+        for meeting in recordings:
+            start_time = meeting.get("start_time", "")
+            if "2026-04-14" in start_time:
+                april14_meetings.append(meeting)
+
+        logger.info("[g1-l9-part1] Found %d meetings on April 14", len(april14_meetings))
+
+        if len(april14_meetings) < 2:
+            logger.warning("[g1-l9-part1] Expected 2 meetings, found %d", len(april14_meetings))
+            # Still try to process if there's at least 1
+            if not april14_meetings:
+                return
+
+        # Sort by start time — Part 1 is the FIRST (earlier) meeting
+        april14_meetings.sort(key=lambda m: m.get("start_time", ""))
+
+        # Part 1 = first meeting
+        part1 = april14_meetings[0]
+        part1_files = part1.get("recording_files", [])
+        mp4_file = next((f for f in part1_files if f.get("file_type") == "MP4"), None)
+
+        if not mp4_file:
+            logger.warning("[g1-l9-part1] No MP4 file in Part 1 meeting")
+            return
+
+        # Check if this is actually Part 1 (shorter) or Part 2 (longer)
+        # If there are 2 meetings, the already-processed one might be either
+        part1_duration = part1.get("duration", 0)
+        logger.info("[g1-l9-part1] Part 1 meeting: duration=%d min, start=%s",
+                    part1_duration, part1.get("start_time", ""))
+
+        if len(april14_meetings) >= 2:
+            part2 = april14_meetings[1]
+            part2_duration = part2.get("duration", 0)
+            logger.info("[g1-l9-part1] Part 2 meeting: duration=%d min, start=%s",
+                        part2_duration, part2.get("start_time", ""))
+
+        # Download Part 1
+        output_path = TMP_DIR / "g1_l9_part1.mp4"
+        logger.info("[g1-l9-part1] Downloading Part 1 (%d min)...", part1_duration)
+        download_recording(
+            download_url=mp4_file["download_url"],
+            output_path=str(output_path),
+        )
+        logger.info("[g1-l9-part1] Downloaded: %.1f MB", output_path.stat().st_size / 1_000_000)
+
+        # Upload to Google Drive — ლექცია #9 folder (Group 1)
+        g1_l9_folder = "1YQ5EWAV2LUoHRhXEEOWfZ-ehkCFUM33t"
+        svc = get_drive_service()
+
+        file_metadata = {
+            "name": f"ლექცია #9 — ნაწილი 1 ({part1_duration} წთ).mp4",
+            "parents": [g1_l9_folder],
+        }
+        from googleapiclient.http import MediaFileUpload
+        media = MediaFileUpload(str(output_path), mimetype="video/mp4", resumable=True)
+        uploaded = svc.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id,name",
+        ).execute()
+
+        logger.info("[g1-l9-part1] Uploaded to Drive: %s (id=%s)", uploaded["name"], uploaded["id"])
+
+        # Clean up local file
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+
+        marker.write_text(f"uploaded: {uploaded['id']}", encoding="utf-8")
+        logger.info("[g1-l9-part1] Done!")
+
+    except Exception as exc:
+        logger.error("[g1-l9-part1] Failed: %s", exc, exc_info=True)
 
 
 async def _fix_g1_l10_to_l9() -> None:
