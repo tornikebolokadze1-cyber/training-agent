@@ -336,7 +336,7 @@ async def _upload_g1_l9_part1() -> None:
     """
     from tools.core.config import TMP_DIR
 
-    marker = TMP_DIR / ".g1_l9_part1_v2"
+    marker = TMP_DIR / ".g1_l9_part1_v3"
     if marker.exists():
         logger.info("[g1-l9-part1] Already done (marker exists)")
         return
@@ -346,7 +346,11 @@ async def _upload_g1_l9_part1() -> None:
 
     try:
         logger.info("[g1-l9-part1] Looking for Part 1 recording on Zoom...")
-        from tools.integrations.zoom_manager import list_user_recordings, download_recording
+        from tools.integrations.zoom_manager import (
+            list_user_recordings,
+            download_recording,
+            get_access_token,
+        )
         from tools.integrations.gdrive_manager import get_drive_service
 
         # Query Zoom for April 14 recordings
@@ -400,9 +404,11 @@ async def _upload_g1_l9_part1() -> None:
         # Download Part 1
         output_path = TMP_DIR / "g1_l9_part1.mp4"
         logger.info("[g1-l9-part1] Downloading Part 1 (%d min)...", part1_duration)
+        access_token = get_access_token()
         download_recording(
             download_url=mp4_file["download_url"],
-            output_path=str(output_path),
+            access_token=access_token,
+            dest_path=output_path,
         )
         logger.info("[g1-l9-part1] Downloaded: %.1f MB", output_path.stat().st_size / 1_000_000)
 
