@@ -2114,6 +2114,15 @@ from tools.app.admin_routes import admin_router  # noqa: E402
 
 app.include_router(admin_router)
 
+# ---------------------------------------------------------------------------
+# Paperclip bridge router — adds /paperclip/health and /paperclip/status.
+# Note: /paperclip/task is already registered above; FastAPI keeps the first
+# registration, so only the new health/status endpoints are effectively added.
+# ---------------------------------------------------------------------------
+from tools.app.paperclip_bridge import router as paperclip_router  # noqa: E402
+
+app.include_router(paperclip_router)
+
 
 if __name__ == "__main__":
     import uvicorn

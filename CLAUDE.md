@@ -106,3 +106,18 @@ pytest tools/tests/test_core.py -v
 - **OpenAPI docs**: `/docs` available locally only (disabled on Railway)
 - **Stale task recovery**: tasks running >4 hours are auto-evicted from deduplication tracker
 - **Operator alerts**: `alert_operator()` in `whatsapp_sender.py` — last-resort WhatsApp notification
+
+## Paperclip Integration
+
+Exposes a bridge endpoint for Paperclip (the company orchestration platform) to dispatch tasks to this agent.
+
+- **Endpoint:** `POST /paperclip/task` (JSON in, JSON out)
+- **Auth:** `Authorization: Bearer $PAPERCLIP_WEBHOOK_SECRET`
+- **Health:** `GET /paperclip/health`
+- **Status:** `GET /paperclip/status`
+
+This agent is registered in the AI Pulse Georgia company at `http://localhost:3100` as "Training Operations Lead" (adapter: http, url: http://localhost:8000/paperclip/task).
+
+The APScheduler-driven autonomous pipeline keeps running independently; the Paperclip bridge is additive — it exposes on-demand task execution without replacing the scheduler.
+
+**Bridge file:** `tools/app/paperclip_bridge.py` — contains `PaperclipTask` / `PaperclipResponse` Pydantic models, task-type routing stubs, and health/status endpoints.
