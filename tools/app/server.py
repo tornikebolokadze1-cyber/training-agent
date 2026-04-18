@@ -19,7 +19,7 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -29,6 +29,8 @@ from tools.core.config import (
     IS_RAILWAY,
     MINIMUM_LECTURE_DURATION_MINUTES,
     N8N_CALLBACK_URL,
+    PAPERCLIP_API_BASE,
+    PAPERCLIP_WEBHOOK_SECRET,
     SERVER_HOST,
     SERVER_PORT,
     TBILISI_TZ,
@@ -1896,6 +1898,207 @@ async def api_backup_scores(
     result = await asyncio.to_thread(backup_scores_to_pinecone)
     logger.info("Manual score backup to Pinecone triggered: %s", result)
     return {"status": "ok", **result}
+
+
+# ---------------------------------------------------------------------------
+# Paperclip bridge — receives task dispatches from Paperclip's HTTP adapter
+# and posts back comments + status updates.
+# ---------------------------------------------------------------------------
+
+
+def verify_paperclip_secret(authorization: str | None) -> None:
+    """Validate the Paperclip bearer secret. Fails closed.
+
+    If PAPERCLIP_WEBHOOK_SECRET is not configured, every request is rejected
+    with 503 to avoid an accidentally-open bridge. Missing or mismatched
+    headers return 401.
+    """
+    if not PAPERCLIP_WEBHOOK_SECRET:
+        logger.error(
+            "PAPERCLIP_WEBHOOK_SECRET not configured — rejecting /paperclip/task (fail closed)"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Server misconfigured: PAPERCLIP_WEBHOOK_SECRET not set",
+        )
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    expected = f"Bearer {PAPERCLIP_WEBHOOK_SECRET}"
+    if not hmac.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Invalid Paperclip secret")
+
+
+class PaperclipTaskPayload(BaseModel):
+    """Flexible Paperclip dispatch envelope.
+
+    Accepts both flat payloads and wrapped payloads (``{"issue": {...}}``).
+    Unknown fields are allowed so upstream envelope drift does not break the
+    bridge — extraction is handled by :func:`_extract_issue_fields`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+def _extract_issue_fields(payload: dict) -> dict:
+    """Pull issue fields from either a flat or wrapped Paperclip payload."""
+    raw_issue = payload.get("issue")
+    issue = raw_issue if isinstance(raw_issue, dict) else payload
+    return {
+        "issueId": (
+            issue.get("id")
+            or issue.get("issueId")
+            or payload.get("issueId")
+            or payload.get("id")
+        ),
+        "identifier": issue.get("identifier") or payload.get("identifier"),
+        "title": issue.get("title") or payload.get("title") or "",
+        "description": issue.get("description") or payload.get("description") or "",
+        "status": issue.get("status") or payload.get("status"),
+        "runId": (
+            payload.get("runId")
+            or payload.get("run_id")
+            or issue.get("executionRunId")
+            or ""
+        ),
+    }
+
+
+def classify_paperclip_intent(title: str, description: str) -> str:
+    """Route a Paperclip task to a handler by matching known substrings.
+
+    Intent names:
+      - ``smoke_test`` — readiness probes from the board
+      - ``process_recording`` — wraps the existing recording pipeline
+      - ``pre_meeting_reminder`` — wraps the pre-meeting scheduler
+      - ``unknown`` — no handler wired; echo the payload
+    """
+    haystack = f"{title}\n{description}".lower()
+    if "smoke" in haystack and "test" in haystack:
+        return "smoke_test"
+    if "process" in haystack and "recording" in haystack:
+        return "process_recording"
+    if "pre-meeting" in haystack or "pre meeting" in haystack or "reminder" in haystack:
+        return "pre_meeting_reminder"
+    return "unknown"
+
+
+async def post_paperclip_comment(
+    issue_id: str, body: str, run_id: str = ""
+) -> None:
+    """POST a comment back to a Paperclip issue. Swallows transport errors."""
+    if not issue_id:
+        return
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}/comments"
+    headers = {"Content-Type": "application/json"}
+    if run_id:
+        headers["X-Paperclip-Run-Id"] = run_id
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json={"body": body}, headers=headers)
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 — we never want a comment failure to blow up the dispatch
+        logger.error("post_paperclip_comment failed for %s: %s", issue_id, exc)
+
+
+async def set_paperclip_issue_status(issue_id: str, status: str) -> None:
+    """PATCH a Paperclip issue's ``status`` field. Swallows transport errors."""
+    if not issue_id or not status:
+        return
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(url, json={"status": status})
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("set_paperclip_issue_status failed for %s: %s", issue_id, exc)
+
+
+async def _handle_smoke_test(fields: dict) -> None:
+    body = (
+        "## /paperclip/task smoke test OK\n\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+        f"- identifier: `{fields.get('identifier', '')}`\n"
+        "- bridge: reachable, auth verified, background task executed.\n\n"
+        "Moving to `in_review`."
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+    await set_paperclip_issue_status(fields["issueId"], "in_review")
+
+
+async def _handle_unknown(fields: dict) -> None:
+    body = (
+        "## /paperclip/task received (intent: unknown)\n\n"
+        "Bridge accepted the dispatch but no handler is wired for this task type yet.\n\n"
+        f"- title: `{fields.get('title', '')[:120]}`\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+
+
+async def _handle_acknowledged(fields: dict, intent: str) -> None:
+    body = (
+        f"## /paperclip/task received (intent: {intent})\n\n"
+        "Bridge accepted the dispatch. Handler acknowledged; full pipeline wiring is a follow-up subtask.\n\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+
+
+async def _dispatch_paperclip_task(fields: dict, intent: str) -> None:
+    try:
+        if intent == "smoke_test":
+            await _handle_smoke_test(fields)
+        elif intent == "unknown":
+            await _handle_unknown(fields)
+        else:
+            await _handle_acknowledged(fields, intent)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Paperclip dispatch failed for intent=%s: %s", intent, exc)
+
+
+@limiter.limit("30/minute")
+@app.post("/paperclip/task")
+async def paperclip_task(
+    request: Request,
+    payload: PaperclipTaskPayload,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Paperclip dispatch bridge.
+
+    Authenticates via ``PAPERCLIP_WEBHOOK_SECRET``, extracts the issue fields
+    from either a flat or wrapped payload, classifies intent, schedules a
+    background handler, and returns 202 with ``{status, runId, issueId, intent}``.
+    """
+    verify_paperclip_secret(authorization)
+
+    data = payload.model_dump()
+    fields = _extract_issue_fields(data)
+    issue_id = fields["issueId"]
+    if not issue_id:
+        raise HTTPException(status_code=422, detail="Missing issue id")
+
+    intent = classify_paperclip_intent(fields["title"], fields["description"])
+
+    logger.info(
+        "[paperclip] accepted dispatch id=%s identifier=%s intent=%s run=%s",
+        issue_id,
+        fields.get("identifier"),
+        intent,
+        fields.get("runId"),
+    )
+
+    background_tasks.add_task(_dispatch_paperclip_task, fields, intent)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "accepted",
+            "runId": fields.get("runId") or "",
+            "issueId": issue_id,
+            "intent": intent,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

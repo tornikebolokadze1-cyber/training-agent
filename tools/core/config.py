@@ -259,6 +259,13 @@ OPERATOR_EMAIL = _env("OPERATOR_EMAIL")
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
+# --- Paperclip bridge ---
+# Separate secret for Paperclip task dispatch so we can rotate it independently
+# of WEBHOOK_SECRET (n8n). Falls back to WEBHOOK_SECRET for single-operator
+# setups where rotating both at once is fine.
+PAPERCLIP_WEBHOOK_SECRET = _env("PAPERCLIP_WEBHOOK_SECRET") or WEBHOOK_SECRET
+PAPERCLIP_API_BASE = _env("PAPERCLIP_API_BASE", "http://127.0.0.1:3100").rstrip("/")
+
 SERVER_HOST = _env("SERVER_HOST", "0.0.0.0" if IS_RAILWAY else "127.0.0.1")
 try:
     SERVER_PORT = int(_env("SERVER_PORT", _env("PORT", "5001")))
@@ -341,7 +348,7 @@ TMP_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 
 # Hybrid model strategy: Pro for long video transcription, 3.1 Pro for Georgian text writing
-GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash"  # Multimodal transcription (cheaper, video chunked to fit 1M token limit)
+GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash-lite"  # 2.5-flash hit persistent 503 high-demand 2026-04-16 — switched to lite (different capacity pool)
 GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest for Georgian text writing
 
 # Prompt templates moved to tools/core/prompts.py — re-exported for backward compatibility
