@@ -1940,7 +1940,19 @@ class PaperclipTaskPayload(BaseModel):
 
 
 def _extract_issue_fields(payload: dict) -> dict:
-    """Pull issue fields from either a flat or wrapped Paperclip payload."""
+    """Pull issue fields from any known Paperclip dispatch shape.
+
+    Supported shapes, in order of precedence:
+      1. Paperclip HTTP-adapter native: ``{agentId, runId, context: {issueId, taskKey, ...}}``
+         (source: ``@paperclipai/server/dist/adapters/http/execute.js``)
+      2. Wrapped:  ``{issue: {id, title, description, ...}, runId}``
+      3. Flat:     ``{issueId, title, description, runId}``
+
+    The adapter-native shape carries no ``title``/``description`` — callers that
+    need them must fetch the issue via ``GET /api/issues/{id}``.
+    """
+    raw_context = payload.get("context")
+    context = raw_context if isinstance(raw_context, dict) else {}
     raw_issue = payload.get("issue")
     issue = raw_issue if isinstance(raw_issue, dict) else payload
     return {
@@ -1949,8 +1961,15 @@ def _extract_issue_fields(payload: dict) -> dict:
             or issue.get("issueId")
             or payload.get("issueId")
             or payload.get("id")
+            or context.get("issueId")
+            or context.get("id")
         ),
-        "identifier": issue.get("identifier") or payload.get("identifier"),
+        "identifier": (
+            issue.get("identifier")
+            or payload.get("identifier")
+            or context.get("taskKey")
+            or context.get("identifier")
+        ),
         "title": issue.get("title") or payload.get("title") or "",
         "description": issue.get("description") or payload.get("description") or "",
         "status": issue.get("status") or payload.get("status"),
@@ -1958,9 +1977,29 @@ def _extract_issue_fields(payload: dict) -> dict:
             payload.get("runId")
             or payload.get("run_id")
             or issue.get("executionRunId")
+            or context.get("runId")
             or ""
         ),
     }
+
+
+async def fetch_paperclip_issue(issue_id: str) -> dict | None:
+    """GET a Paperclip issue by id. Returns the JSON dict or None on failure.
+
+    Used when the adapter-native payload omits ``title``/``description`` — the
+    bridge needs them to classify intent.
+    """
+    if not issue_id:
+        return None
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — fail soft; caller can still ack
+        logger.error("fetch_paperclip_issue failed for %s: %s", issue_id, exc)
+        return None
 
 
 def classify_paperclip_intent(title: str, description: str) -> str:
@@ -2076,7 +2115,33 @@ async def paperclip_task(
     fields = _extract_issue_fields(data)
     issue_id = fields["issueId"]
     if not issue_id:
-        raise HTTPException(status_code=422, detail="Missing issue id")
+        # Manual / idle wakeups from Paperclip carry no issueId in context
+        # (just {actorId, wakeSource, triggeredBy}). Treat as heartbeat no-op:
+        # return 202 so the adapter records success and agent flips to idle.
+        logger.info(
+            "[paperclip] no-issue wake accepted run=%s ctx=%s",
+            fields.get("runId"),
+            data.get("context"),
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "runId": fields.get("runId") or "",
+                "issueId": None,
+                "intent": "idle_wake",
+            },
+        )
+
+    # Paperclip's HTTP-adapter payload carries only ids — no title/description.
+    # Hydrate from the API so classify_paperclip_intent has something to match.
+    if not fields["title"] and not fields["description"]:
+        hydrated = await fetch_paperclip_issue(issue_id)
+        if hydrated:
+            fields["title"] = hydrated.get("title") or ""
+            fields["description"] = hydrated.get("description") or ""
+            fields["identifier"] = fields["identifier"] or hydrated.get("identifier")
+            fields["status"] = fields["status"] or hydrated.get("status")
 
     intent = classify_paperclip_intent(fields["title"], fields["description"])
 

@@ -184,6 +184,53 @@ class TestExtractIssueFields:
         assert fields["description"] == ""
         assert fields["runId"] == ""
 
+    def test_paperclip_http_adapter_native_payload(self):
+        """Paperclip's HTTP adapter sends {agentId, runId, context:{issueId,taskKey,...}}.
+
+        Source: @paperclipai/server/dist/adapters/http/execute.js. No title/
+        description in the body — extractor must surface issueId via context.
+        """
+        payload = {
+            "agentId": "agent-uuid",
+            "runId": "run-42",
+            "context": {
+                "issueId": "iss-42",
+                "taskId": "task-42",
+                "taskKey": "AIP-42",
+                "projectId": None,
+                "projectWorkspaceId": None,
+            },
+        }
+        fields = _extract_issue_fields(payload)
+        assert fields["issueId"] == "iss-42"
+        assert fields["identifier"] == "AIP-42"
+        assert fields["runId"] == "run-42"
+        assert fields["title"] == ""
+        assert fields["description"] == ""
+
+    def test_context_with_payload_template_fields(self):
+        """payloadTemplate fields sit at the top level alongside context."""
+        payload = {
+            "source": "paperclip",
+            "agentId": "agent-uuid",
+            "runId": "run-7",
+            "context": {"issueId": "iss-7", "taskKey": "AIP-7"},
+        }
+        fields = _extract_issue_fields(payload)
+        assert fields["issueId"] == "iss-7"
+        assert fields["identifier"] == "AIP-7"
+
+    def test_flat_payload_takes_precedence_over_context(self):
+        """Explicit flat fields win over context (backward compat)."""
+        payload = {
+            "id": "iss-explicit",
+            "identifier": "AIP-EXPLICIT",
+            "context": {"issueId": "iss-context", "taskKey": "AIP-CTX"},
+        }
+        fields = _extract_issue_fields(payload)
+        assert fields["issueId"] == "iss-explicit"
+        assert fields["identifier"] == "AIP-EXPLICIT"
+
 
 # ===========================================================================
 # verify_paperclip_secret
@@ -363,10 +410,19 @@ class TestPaperclipEndpoint:
         assert body["issueId"] == "iss-2"
         assert body["intent"] == "process_recording"
 
-    async def test_missing_issue_id_returns_422(self, secret_configured):
+    async def test_missing_issue_id_returns_202_idle_wake(
+        self, secret_configured
+    ):
+        """Bare payload without issueId — treated as idle-wake no-op.
+
+        Regression for AIP-42 follow-up: Paperclip's manual/on-demand wake
+        context is {actorId, wakeSource, triggeredBy, ...} with no issueId.
+        Returning 422 flipped the adapter run to failed and kept the agent
+        stuck in `error`. Handler must return 202 so the run succeeds.
+        """
         with patch.object(
             srv, "_dispatch_paperclip_task", new_callable=AsyncMock
-        ):
+        ) as dispatch:
             transport = ASGITransport(app=app)
             async with AsyncClient(
                 transport=transport, base_url="http://localhost"
@@ -376,4 +432,102 @@ class TestPaperclipEndpoint:
                     json={"title": "no id here"},
                     headers=_AUTH_OK,
                 )
-        assert resp.status_code == 422
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "accepted"
+        assert body["issueId"] is None
+        assert body["intent"] == "idle_wake"
+        dispatch.assert_not_called()
+
+    async def test_paperclip_manual_wake_context_returns_202(
+        self, secret_configured
+    ):
+        """Native Paperclip on_demand wake payload: no issueId in context.
+
+        This is the exact shape Paperclip posts when the board fires
+        POST /api/agents/{id}/wakeup with no linked issue. Before the fix,
+        the 422 response marked the heartbeat-run as failed and pinned the
+        agent to status `error`.
+        """
+        with patch.object(
+            srv, "_dispatch_paperclip_task", new_callable=AsyncMock
+        ) as dispatch, patch.object(
+            srv, "fetch_paperclip_issue", new_callable=AsyncMock
+        ) as fetch:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://localhost"
+            ) as ac:
+                resp = await ac.post(
+                    "/paperclip/task",
+                    json={
+                        "agentId": "agent-uuid",
+                        "runId": "run-wake-1",
+                        "context": {
+                            "actorId": "local-board",
+                            "wakeSource": "on_demand",
+                            "triggeredBy": "board",
+                            "forceFreshSession": False,
+                            "wakeTriggerDetail": "manual",
+                        },
+                    },
+                    headers=_AUTH_OK,
+                )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "accepted"
+        assert body["issueId"] is None
+        assert body["runId"] == "run-wake-1"
+        assert body["intent"] == "idle_wake"
+        fetch.assert_not_awaited()
+        dispatch.assert_not_called()
+
+    async def test_paperclip_native_payload_hydrates_and_returns_202(
+        self, secret_configured
+    ):
+        """Native Paperclip HTTP-adapter body: {agentId, runId, context}.
+
+        No title/description in the body — the handler must call
+        fetch_paperclip_issue() to hydrate, then classify intent correctly.
+        Regression test for AIP-42 (422 on heartbeat POST).
+        """
+        hydrated_issue = {
+            "id": "iss-42",
+            "identifier": "AIP-42",
+            "title": "Run smoke test on the bridge",
+            "description": "bridge smoke test",
+            "status": "in_progress",
+        }
+        with patch.object(
+            srv, "_dispatch_paperclip_task", new_callable=AsyncMock
+        ) as dispatch, patch.object(
+            srv, "fetch_paperclip_issue", new_callable=AsyncMock
+        ) as fetch:
+            fetch.return_value = hydrated_issue
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://localhost"
+            ) as ac:
+                resp = await ac.post(
+                    "/paperclip/task",
+                    json={
+                        "agentId": "agent-uuid",
+                        "runId": "run-42",
+                        "context": {
+                            "issueId": "iss-42",
+                            "taskId": "task-42",
+                            "taskKey": "AIP-42",
+                            "projectId": None,
+                            "projectWorkspaceId": None,
+                        },
+                    },
+                    headers=_AUTH_OK,
+                )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "accepted"
+        assert body["issueId"] == "iss-42"
+        assert body["runId"] == "run-42"
+        assert body["intent"] == "smoke_test"
+        fetch.assert_awaited_once_with("iss-42")
+        dispatch.assert_called_once()
