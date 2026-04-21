@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Budget defaults (overridable via env vars)
 DAILY_COST_LIMIT_USD = float(os.environ.get("DAILY_COST_LIMIT_USD", "50.0"))
-LECTURE_COST_LIMIT_USD = float(os.environ.get("LECTURE_COST_LIMIT_USD", "5.0"))
+LECTURE_COST_LIMIT_USD = float(os.environ.get("LECTURE_COST_LIMIT_USD", "20.0"))
 DAILY_COST_ALERT_THRESHOLD = 0.80  # alert at 80% of daily limit
 
 _lock = threading.Lock()
