@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 import anthropic
@@ -254,7 +255,9 @@ class WhatsAppAssistant:
 
         Checks for the Georgian trigger word ("მრჩეველო") and common
         Latin transliterations ("mrchevelo", "mrcheveli").  Comparison
-        is case-insensitive.
+        is case-insensitive and Unicode-normalized (NFC) so that
+        decomposed Georgian code points from some mobile keyboards
+        still match.
 
         Args:
             text: Raw message text.
@@ -262,14 +265,14 @@ class WhatsAppAssistant:
         Returns:
             True when the assistant is directly addressed.
         """
-        lowered = text.lower()
+        normalized = unicodedata.normalize("NFC", text).lower()
         triggers = {
-            ASSISTANT_TRIGGER_WORD.lower(),  # "მრჩეველო"
-            "მრჩეველი",
+            unicodedata.normalize("NFC", ASSISTANT_TRIGGER_WORD).lower(),  # "მრჩეველო"
+            unicodedata.normalize("NFC", "მრჩეველი"),
             "mrchevelo",
             "mrcheveli",
         }
-        return any(t in lowered for t in triggers)
+        return any(t in normalized for t in triggers)
 
     def _is_own_message(self, sender_id: str) -> bool:
         """Return True if the message was sent by the bot's own phone number.
