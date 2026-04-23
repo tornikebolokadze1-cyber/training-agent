@@ -758,6 +758,8 @@ def _calculate_lecture_date(group: int, lecture: int):  # -> date | None
     """
     from datetime import date, timedelta
 
+    from tools.core.config import EXCLUDED_DATES
+
     if group == 1:
         start = date(2026, 3, 13)  # First lecture: Friday
         weekdays = {4, 1}          # Fri=4, Tue=1
@@ -770,7 +772,7 @@ def _calculate_lecture_date(group: int, lecture: int):  # -> date | None
     count = 0
     d = start
     while count < 15:
-        if d.weekday() in weekdays:
+        if d.weekday() in weekdays and d not in EXCLUDED_DATES:
             count += 1
             if count == lecture:
                 return d
