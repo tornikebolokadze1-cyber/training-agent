@@ -65,6 +65,13 @@ htmlcov/
 # Process management
 .training-agent.pid
 
+# OMC orchestration session state (local only)
+.omc/
+
+# SQLite WAL / shared memory (ephemeral, recreated by SQLite)
+*.db-shm
+*.db-wal
+
 # OS
 .DS_Store
 Thumbs.db

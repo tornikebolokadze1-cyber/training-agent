@@ -264,6 +264,11 @@ N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 # of WEBHOOK_SECRET (n8n). Falls back to WEBHOOK_SECRET for single-operator
 # setups where rotating both at once is fine.
 PAPERCLIP_WEBHOOK_SECRET = _env("PAPERCLIP_WEBHOOK_SECRET") or WEBHOOK_SECRET
+# PAPERCLIP_OPENCLAW_SECRET: Bearer token Paperclip sends on dispatch to the
+# OpenClaw / CRO gateway (`POST /query`). Rotated independently of the Training
+# Ops Lead bridge secret. Falls back to PAPERCLIP_WEBHOOK_SECRET so single-
+# operator setups keep working; production has its own key in .env.
+PAPERCLIP_OPENCLAW_SECRET = _env("PAPERCLIP_OPENCLAW_SECRET", PAPERCLIP_WEBHOOK_SECRET)
 PAPERCLIP_API_BASE = _env("PAPERCLIP_API_BASE", "http://127.0.0.1:3100").rstrip("/")
 
 SERVER_HOST = _env("SERVER_HOST", "0.0.0.0" if IS_RAILWAY else "127.0.0.1")

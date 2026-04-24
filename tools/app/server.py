@@ -2188,6 +2188,18 @@ from tools.app.paperclip_bridge import router as paperclip_router  # noqa: E402
 
 app.include_router(paperclip_router)
 
+# ---------------------------------------------------------------------------
+# OpenClaw / CRO gateway — registers POST /query on the same FastAPI host as
+# the Training bridge. Two routers, two independently-rotated secrets
+# (PAPERCLIP_WEBHOOK_SECRET vs PAPERCLIP_OPENCLAW_SECRET) — documented in
+# TECH_BASELINE.md §3a. Registered at the end of the module so the openclaw
+# module can lazily import server.py helpers (post_paperclip_comment,
+# set_paperclip_issue_status, fetch_paperclip_issue) without a circular import.
+# ---------------------------------------------------------------------------
+from tools.app.openclaw_bridge import register_openclaw_routes  # noqa: E402
+
+register_openclaw_routes(app, limiter)
+
 
 if __name__ == "__main__":
     import uvicorn
