@@ -459,6 +459,28 @@ def _run_post_meeting_pipeline(
     except Exception as exc:
         logger.warning("[post] Idempotency check failed (proceeding): %s", exc)
 
+    # Proactive stale-media cleanup: free disk before the check fires.
+    # Any .mp4 / .ogg in .tmp/ older than 1 hour is from a prior failed run
+    # and can be safely removed. This prevents one bad pipeline from
+    # perpetually blocking all future pipelines via disk-space abort.
+    try:
+        import time as _time
+        cutoff = _time.time() - 3600  # 1 hour
+        freed = 0
+        for pattern in ("*.mp4", "*.ogg", "*.mp4.sha256"):
+            for stale in TMP_DIR.glob(pattern):
+                try:
+                    if stale.stat().st_mtime < cutoff:
+                        size = stale.stat().st_size
+                        stale.unlink()
+                        freed += size
+                except OSError:
+                    continue
+        if freed:
+            logger.info("[post] Pre-flight cleanup freed %.1f MB of stale media", freed / (1024**2))
+    except Exception as exc:
+        logger.warning("[post] Pre-flight cleanup failed (non-fatal): %s", exc)
+
     # Disk space check — abort if less than 2GB free
     disk_usage = shutil.disk_usage(str(TMP_DIR))
     free_gb = disk_usage.free / (1024 ** 3)
