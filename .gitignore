@@ -76,3 +76,29 @@ htmlcov/
 .DS_Store
 Thumbs.db
 token.json.backup-*
+
+# Obsidian local backup (tonight)
+obsidian-vault.backup.*/
+# Data dumps & screenshots (large, reproducible)
+data/dashboard_screenshots/
+data/greenapi_backfill/
+data/green_api_probe_report.json
+
+# === PII & student-data protection (added 2026-04-24) ===
+# Message archive contains real student phone numbers and conversations
+data/messages.db
+data/messages.db-shm
+data/messages.db-wal
+data/greenapi_backfill/
+data/green_api_probe_report.json
+
+# Scores DB is low-risk but contains student-derived aggregate data
+data/scores.db
+data/scores.db-shm
+data/scores.db-wal
+
+# Un-redacted mid-course diagnostic (contains real student names + phones)
+obsidian-vault/ანალიზი/MID_COURSE_WHATSAPP_PATTERNS.md
+
+# Dashboard screenshots may contain logged-in PII
+data/dashboard_screenshots/
