@@ -443,6 +443,22 @@ def _run_post_meeting_pipeline(
             # RuntimeError: circular import edge cases
             logger.debug("[post] Could not import server for dedup cleanup: %s", exc)
 
+    # Idempotency: skip if lecture already fully indexed in Pinecone
+    # (prevents retry storms for already-backfilled lectures)
+    try:
+        from tools.integrations.knowledge_indexer import lecture_exists_in_index
+        required = ("transcript", "summary", "gap_analysis", "deep_analysis")
+        if all(lecture_exists_in_index(group_number, lecture_number, t) for t in required):
+            logger.info(
+                "[post] Skipping — G%d L%d already fully indexed in Pinecone",
+                group_number, lecture_number,
+            )
+            _durable_abort(f"already_indexed: G{group_number} L{lecture_number}")
+            _cleanup_dedup()
+            return
+    except Exception as exc:
+        logger.warning("[post] Idempotency check failed (proceeding): %s", exc)
+
     # Disk space check — abort if less than 2GB free
     disk_usage = shutil.disk_usage(str(TMP_DIR))
     free_gb = disk_usage.free / (1024 ** 3)
