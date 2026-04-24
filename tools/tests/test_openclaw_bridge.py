@@ -30,7 +30,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
 import tools.app.server as srv  # noqa: E402
-import tools.app.openclaw_bridge as oc  # noqa: E402
 from tools.app.openclaw_bridge import (  # noqa: E402
     OpenClawQueryPayload,
     _extract_issue,

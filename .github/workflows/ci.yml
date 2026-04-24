@@ -159,7 +159,9 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run pip-audit
-        run: pip-audit --strict --desc on
+        # GHSA-58qw-9mgm-455v: pip tar/ZIP confusion — no fix version released yet (tracked
+        # upstream at pip/pip#12722). Re-evaluate when pip 26.1+ ships a fix.
+        run: pip-audit --strict --desc on --ignore-vuln GHSA-58qw-9mgm-455v
 
   docker:
     name: Docker Build
