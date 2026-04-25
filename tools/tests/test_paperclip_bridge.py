@@ -53,8 +53,9 @@ from tools.app.server import (  # noqa: E402
     _dispatch_paperclip_task,
     app,
     classify_paperclip_intent,
-    verify_paperclip_secret,
 )
+# verify_paperclip_secret is imported lazily inside TestVerifyPaperclipSecret —
+# see the class docstring for why module-level import would be incorrect here.
 
 _TEST_SECRET = "paperclip-test-secret-xyz"
 _AUTH_OK = {"Authorization": f"Bearer {_TEST_SECRET}"}
