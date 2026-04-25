@@ -1403,6 +1403,130 @@ async def backfill_deep_analysis(
 
 
 # ---------------------------------------------------------------------------
+# WhatsApp webhook configuration inspection / repair
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/whatsapp-webhook-status")
+async def whatsapp_webhook_status(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> JSONResponse:
+    """Inspect the live Green API webhook configuration.
+
+    Reports whether incoming WhatsApp messages are actually being
+    delivered to this server: the configured ``webhookUrl`` on the
+    Green API side, whether ``incomingWebhook`` is enabled, and whether
+    that URL matches what the running container expects (derived from
+    ``SERVER_PUBLIC_URL`` or ``RAILWAY_PUBLIC_DOMAIN``).
+
+    A mismatch is the typical cause of a "live trigger ignored" symptom
+    that the catch-up loop has to recover from — this endpoint confirms
+    the live channel is healthy and tells you whether to call
+    ``/admin/whatsapp-webhook-repair``.
+
+    Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
+    """
+    verify_webhook_secret, _, _, _ = _server_internals()
+    verify_webhook_secret(authorization)
+
+    import os
+
+    from tools.integrations.whatsapp_sender import get_webhook_settings
+
+    try:
+        settings = await asyncio.to_thread(get_webhook_settings)
+    except Exception as exc:
+        logger.error("[admin] whatsapp-webhook-status failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Green API call failed: {exc}")
+
+    webhook_url = str(settings.get("webhookUrl") or "").strip()
+    incoming_flag = str(settings.get("incomingWebhook") or "").lower()
+    incoming_enabled = incoming_flag in ("yes", "true", "1")
+
+    public_url_env = os.environ.get("SERVER_PUBLIC_URL", "").strip()
+    public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if public_url_env:
+        expected_base = public_url_env.rstrip("/")
+    elif public_domain:
+        expected_base = f"https://{public_domain}"
+    else:
+        expected_base = ""
+    expected_url = f"{expected_base}/whatsapp-incoming" if expected_base else ""
+    matches_expected = bool(expected_url) and webhook_url == expected_url
+    token_set = bool(str(settings.get("webhookUrlToken") or "").strip())
+
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "incoming_enabled": incoming_enabled,
+            "webhook_url_configured": webhook_url,
+            "webhook_url_token_set": token_set,
+            "expected_url": expected_url,
+            "matches_expected": matches_expected,
+            "raw_settings_keys": sorted(list(settings.keys())),
+        },
+        status_code=200,
+    )
+
+
+@admin_router.post("/whatsapp-webhook-repair")
+async def whatsapp_webhook_repair(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> JSONResponse:
+    """Re-point the Green API webhook at this server.
+
+    Computes the expected webhook URL from ``SERVER_PUBLIC_URL`` (or
+    ``RAILWAY_PUBLIC_DOMAIN``) and calls Green API's ``setSettings`` so
+    incoming messages are delivered here with the correct Bearer token.
+
+    Use after a Railway URL change, an env-var rotation, or whenever
+    ``/whatsapp-webhook-status`` reports ``matches_expected = false``.
+
+    Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
+    """
+    verify_webhook_secret, _, _, _ = _server_internals()
+    verify_webhook_secret(authorization)
+
+    import os
+
+    from tools.integrations.whatsapp_sender import configure_webhook
+
+    public_url_env = os.environ.get("SERVER_PUBLIC_URL", "").strip()
+    public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if public_url_env:
+        base = public_url_env.rstrip("/")
+    elif public_domain:
+        base = f"https://{public_domain}"
+    else:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot derive public URL — SERVER_PUBLIC_URL and "
+                "RAILWAY_PUBLIC_DOMAIN are both empty"
+            ),
+        )
+
+    target_url = f"{base}/whatsapp-incoming"
+
+    try:
+        result = await asyncio.to_thread(configure_webhook, target_url)
+    except Exception as exc:
+        logger.error("[admin] whatsapp-webhook-repair failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Green API call failed: {exc}")
+
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "configured_url": target_url,
+            "green_api_response": result,
+        },
+        status_code=200,
+    )
+
+
+# ---------------------------------------------------------------------------
 # WhatsApp assistant catch-up — manual replay of missed triggers
 # ---------------------------------------------------------------------------
 
