@@ -338,43 +338,74 @@ async def _check_unprocessed_recordings() -> None:
         )
 
 
-@asynccontextmanager
-async def _lifespan(application: FastAPI):  # noqa: ARG001
-    eviction_task = asyncio.create_task(_eviction_loop())
+async def _deferred_lifespan_init() -> None:
+    """Heavy startup work that must NOT block lifespan from yielding.
 
-    # Startup recovery: check for unprocessed recordings
+    Runs as a background task spawned in ``_lifespan``. Critical for
+    Railway healthchecks: ``/live`` and ``/health`` need to respond
+    immediately so the container is marked healthy. Anything that hits
+    Pinecone or Zoom must be backgrounded with timeouts so a slow
+    upstream cannot prevent the app from accepting connections.
+
+    ``_startup_complete`` flips to ``True`` only when this finishes;
+    ``/ready`` reflects that, while ``/live`` does not depend on it.
+    """
+    global _startup_complete
+
     try:
-        await _check_unprocessed_recordings()
+        await asyncio.wait_for(_check_unprocessed_recordings(), timeout=60)
+    except asyncio.TimeoutError:
+        logger.warning("[startup-recovery] timed out after 60s — continuing")
     except Exception as exc:
         logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
 
-    # Rebuild in-memory dedup cache from persistent pipeline state files
-    _rebuild_task_cache()
+    try:
+        _rebuild_task_cache()
+    except Exception as exc:
+        logger.error("[startup] _rebuild_task_cache failed: %s", exc, exc_info=True)
 
-    # Clean up old completed and stale failed pipeline state files
-    cleanup_completed(max_age_hours=24)
-    cleanup_stale_failed(max_age_hours=12)
+    try:
+        cleanup_completed(max_age_hours=24)
+        cleanup_stale_failed(max_age_hours=12)
+    except Exception as exc:
+        logger.error("[startup] pipeline-state cleanup failed: %s", exc, exc_info=True)
 
-    # Push any local-only scores to Pinecone (idempotent — skips duplicates)
     try:
         from tools.services.analytics import backup_scores_to_pinecone
-        backup_scores_to_pinecone()
+        await asyncio.wait_for(
+            asyncio.to_thread(backup_scores_to_pinecone),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[startup] Pinecone score backup timed out after 60s")
     except Exception as exc:
         logger.error("[startup] Pinecone score backup failed: %s", exc, exc_info=True)
 
-    # Mark startup complete — /ready endpoint will now return 200
-    global _startup_complete
     _startup_complete = True
     logger.info("[startup] Startup complete — /ready will return 200")
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):  # noqa: ARG001
+    eviction_task = asyncio.create_task(_eviction_loop())
+    # Defer heavy startup work to a background task so /live and /health
+    # are servable as soon as uvicorn binds. Without this, Pinecone/Zoom
+    # network calls during startup would block Railway healthchecks and
+    # the container would be killed before it ever responded.
+    deferred_task = asyncio.create_task(_deferred_lifespan_init())
 
     try:
         yield
     finally:
+        deferred_task.cancel()
         eviction_task.cancel()
-        try:
-            await eviction_task
-        except asyncio.CancelledError:
-            pass
+        for task in (deferred_task, eviction_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[lifespan] task cleanup error: %s", exc)
 
 
 app = FastAPI(
