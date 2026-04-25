@@ -565,10 +565,18 @@ class TestRunPostMeetingPipeline:
         (Phase 2 of the pipeline stabilisation contract).
         """
         from tools.core import pipeline_retry
+        from tools.integrations import knowledge_indexer
 
         # Isolate the retry tracker file for this test.
         tracker_file = tmp_path / "retry_tracker.json"
         monkeypatch.setattr(pipeline_retry, "RETRY_TRACKER_PATH", tracker_file)
+
+        # Bypass the Pinecone idempotency gate (introduced in 3d6052c). On CI
+        # the stub Pinecone index reports the lecture as already-indexed,
+        # which short-circuits the pipeline before the disk-space gate fires.
+        monkeypatch.setattr(
+            knowledge_indexer, "lecture_exists_in_index", lambda *_a, **_k: False
+        )
 
         # Simulate zero free bytes so the disk-space gate trips.
         fake_usage = type("FakeUsage", (), {"free": 0, "total": 0, "used": 0})()
