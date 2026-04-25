@@ -720,6 +720,48 @@ def _cleanup_stale_tmp_files() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Deferred boot initialization
+# ---------------------------------------------------------------------------
+
+async def _deferred_boot_init() -> None:
+    """Run analytics backfill + Pinecone sync after uvicorn has bound to $PORT.
+
+    This intentionally does NOT block the startup path. Both operations
+    historically caused Railway boot hangs:
+
+    * ``backfill_from_tmp`` scans the persistent volume and can take many
+      seconds on a populated ``.tmp/`` directory.
+    * ``sync_from_pinecone`` makes 30 sequential network calls to Pinecone
+      and has no built-in timeout — a slow upstream blocks the event loop
+      indefinitely.
+
+    Both are wrapped in timeouts and broad ``except`` so a degraded external
+    service can never prevent the server from staying up. Failures are
+    logged but do not propagate.
+    """
+    from tools.services.analytics import backfill_from_tmp, sync_from_pinecone
+
+    try:
+        backfill_result = await asyncio.to_thread(backfill_from_tmp)
+        if backfill_result.get("processed") or backfill_result.get("failed"):
+            logger.info("Analytics backfill from .tmp/: %s", backfill_result)
+    except Exception as exc:
+        logger.error("[boot] backfill_from_tmp failed: %s", exc, exc_info=True)
+
+    try:
+        sync_result = await asyncio.wait_for(
+            asyncio.to_thread(sync_from_pinecone, True),
+            timeout=120,
+        )
+        if sync_result.get("synced") or sync_result.get("failed"):
+            logger.info("Pinecone sync on startup: %s", sync_result)
+    except asyncio.TimeoutError:
+        logger.warning("[boot] sync_from_pinecone timed out after 120s — continuing without full sync")
+    except Exception as exc:
+        logger.error("[boot] sync_from_pinecone failed: %s", exc, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration entry point
 # ---------------------------------------------------------------------------
 
@@ -765,6 +807,13 @@ async def _async_start() -> None:
     logger.info("Starting APScheduler...")
     scheduler = start_scheduler()
     logger.info("APScheduler is running.")
+
+    # ---- Deferred boot init -------------------------------------------------
+    # Heavy startup work (Pinecone sync, .tmp backfill) runs as a background
+    # task so uvicorn can bind to $PORT and serve /live immediately. Without
+    # this, slow Pinecone responses would block Railway's healthcheck and the
+    # container would be marked unhealthy before it ever responded.
+    asyncio.create_task(_deferred_boot_init())
 
     # ---- uvicorn ------------------------------------------------------------
     uvi_config = uvicorn.Config(
@@ -829,16 +878,12 @@ def start() -> None:
         logger.critical("%s", exc)
         sys.exit(1)
 
-    from tools.services.analytics import backfill_from_tmp, init_db, sync_from_pinecone
+    # Initialize SQLite schema synchronously — local I/O, fast and safe.
+    # Heavier startup work (Pinecone sync, .tmp backfill) is deferred into
+    # _async_start so uvicorn binds to $PORT before anything that could hang
+    # on external services. Critical for Railway /live healthcheck.
+    from tools.services.analytics import init_db
     init_db()
-    backfill_result = backfill_from_tmp()
-    if backfill_result["processed"] or backfill_result["failed"]:
-        logger.info("Analytics backfill from .tmp/: %s", backfill_result)
-
-    # Sync scores from Pinecone (persistent source of truth)
-    sync_result = sync_from_pinecone(force=True)
-    if sync_result.get("synced") or sync_result.get("failed"):
-        logger.info("Pinecone sync on startup: %s", sync_result)
 
     try:
         asyncio.run(_async_start())
