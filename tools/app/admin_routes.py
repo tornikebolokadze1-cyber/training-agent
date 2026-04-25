@@ -1400,3 +1400,53 @@ async def backfill_deep_analysis(
         },
         status_code=202,
     )
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp assistant catch-up — manual replay of missed triggers
+# ---------------------------------------------------------------------------
+
+
+@admin_router.post("/whatsapp-catchup")
+async def whatsapp_catchup(
+    request: Request,
+    authorization: str | None = Header(None),
+    since_minutes: int = 120,
+) -> JSONResponse:
+    """Manually trigger a WhatsApp catch-up run.
+
+    Pulls the last ~100 messages of each allowed chat from Green API and
+    runs the assistant on any trigger message that has no bot reply
+    within 3 min after it. Idempotent — already-handled IDs are kept in
+    ``.tmp/whatsapp_responded.json`` so re-running is safe.
+
+    Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
+
+    Query parameters:
+        since_minutes: How far back to look (default 120, max 1440).
+
+    Returns:
+        ``{"status": "ok", "result": {"checked": N, "replied": N, ...}}``
+    """
+    verify_webhook_secret, _, _, _ = _server_internals()
+    verify_webhook_secret(authorization)
+
+    if since_minutes < 1 or since_minutes > 24 * 60:
+        raise HTTPException(
+            status_code=400, detail="since_minutes must be between 1 and 1440",
+        )
+
+    import tools.app.server as _srv
+
+    if not _srv._assistant_available or _srv.assistant is None:
+        raise HTTPException(status_code=503, detail="Assistant not available")
+
+    from tools.services.whatsapp_catchup import replay_recent
+
+    try:
+        result = await replay_recent(_srv.assistant, since_minutes=since_minutes)
+    except Exception as exc:
+        logger.error("[admin] whatsapp-catchup failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"catchup failed: {exc}")
+
+    return JSONResponse(content={"status": "ok", "result": result}, status_code=200)

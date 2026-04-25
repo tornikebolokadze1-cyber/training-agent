@@ -385,6 +385,53 @@ async def _deferred_lifespan_init() -> None:
     logger.info("[startup] Startup complete — /ready will return 200")
 
 
+# Catch-up loop tuning. Boot delay lets /live + /ready come up before we
+# spend an LLM budget on belated replies; the period balances staleness
+# against Green API rate limits. Both are intentionally generous defaults.
+_CATCHUP_BOOT_DELAY_SECONDS = 20
+_CATCHUP_INTERVAL_SECONDS = 15 * 60
+_CATCHUP_SINCE_MINUTES = 120
+
+
+async def _periodic_catchup_loop() -> None:
+    """Recurring assistant catch-up: replay missed triggers from chat history.
+
+    The live ``/whatsapp-incoming`` webhook is best-effort — Green API
+    can drop or delay deliveries, and a Railway boot hang or transient
+    crash can leave a window of unanswered messages. This loop closes
+    that gap without operator action: every 15 minutes it pulls the
+    last N messages from each allowed chat, identifies trigger messages
+    that were never answered (no bot reply within 3 min after them), and
+    runs ``WhatsAppAssistant._respond_to_missed`` on each. A persistent
+    ledger at ``.tmp/whatsapp_responded.json`` makes this idempotent
+    across restarts so we never double-respond.
+    """
+    if not _assistant_available or assistant is None:
+        logger.info("[catchup] assistant unavailable — loop disabled")
+        return
+
+    # Initial delay so the server's /live + /ready are reachable first.
+    try:
+        await asyncio.sleep(_CATCHUP_BOOT_DELAY_SECONDS)
+    except asyncio.CancelledError:
+        raise
+
+    from tools.services.whatsapp_catchup import replay_recent
+
+    while True:
+        try:
+            await replay_recent(assistant, since_minutes=_CATCHUP_SINCE_MINUTES)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[catchup] iteration failed: %s", exc, exc_info=True)
+
+        try:
+            await asyncio.sleep(_CATCHUP_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # noqa: ARG001
     eviction_task = asyncio.create_task(_eviction_loop())
@@ -393,13 +440,15 @@ async def _lifespan(application: FastAPI):  # noqa: ARG001
     # network calls during startup would block Railway healthchecks and
     # the container would be killed before it ever responded.
     deferred_task = asyncio.create_task(_deferred_lifespan_init())
+    # Recurring catch-up — recovers any messages the live webhook missed.
+    catchup_task = asyncio.create_task(_periodic_catchup_loop())
 
     try:
         yield
     finally:
-        deferred_task.cancel()
-        eviction_task.cancel()
-        for task in (deferred_task, eviction_task):
+        for task in (deferred_task, eviction_task, catchup_task):
+            task.cancel()
+        for task in (deferred_task, eviction_task, catchup_task):
             try:
                 await task
             except asyncio.CancelledError:

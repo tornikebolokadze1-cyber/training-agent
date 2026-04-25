@@ -1059,7 +1059,11 @@ class WhatsAppAssistant:
         if self._allowed_chats and message.chat_id not in self._allowed_chats:
             return None
 
-        is_direct = self._is_direct_mention(message.text)
+        # Direct mention OR reply to a previous bot message both trigger.
+        is_direct = (
+            self._is_direct_mention(message.text)
+            or self._is_reply_to_bot(message.quoted_text)
+        )
         group_number = self._get_group_number(message.chat_id)
 
         loop = asyncio.get_running_loop()
@@ -1171,7 +1175,11 @@ class WhatsAppAssistant:
                 skipped += 1
                 continue
 
-            is_direct = self._is_direct_mention(message.text)
+            # Direct mention OR reply to a previous bot message both trigger.
+            is_direct = (
+                self._is_direct_mention(message.text)
+                or self._is_reply_to_bot(message.quoted_text)
+            )
 
             if is_direct:
                 # Try to respond to direct mentions even if late

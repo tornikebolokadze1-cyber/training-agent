@@ -596,6 +596,59 @@ def get_webhook_settings() -> dict[str, Any]:
     return response.json()
 
 
+def get_chat_history(chat_id: str, count: int = 100) -> list[dict[str, Any]]:
+    """Fetch the last N messages of a chat from Green API.
+
+    Used by the assistant catch-up service to recover messages that were
+    missed by the live ``/whatsapp-incoming`` webhook (e.g. during a Railway
+    boot hang or a Green API webhook outage).
+
+    Returns the raw message list as Green API delivers it. Each item has at
+    minimum ``idMessage``, ``timestamp``, ``type`` ("incoming"/"outgoing"),
+    ``typeMessage``, ``senderId``, ``senderName``, and (when applicable)
+    ``textMessage`` / ``extendedTextMessage`` / ``quotedMessage`` blocks.
+
+    Args:
+        chat_id: WhatsApp chat ID, e.g. "120363XXX@g.us" or "995XXXXXXX@c.us".
+        count: Maximum number of messages to fetch (Green API caps near 100).
+
+    Returns:
+        List of raw Green API message dicts, newest first. Empty list on any
+        non-200 response or when the chat has no history.
+
+    Raises:
+        ValueError: If Green API credentials are not configured.
+    """
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        raise ValueError("Green API not configured")
+
+    url = f"{_base_url()}/getChatHistory/{GREEN_API_TOKEN}"
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(url, json={"chatId": chat_id, "count": count})
+    except httpx.TransportError as exc:
+        logger.warning("get_chat_history transport error for %s: %s", chat_id, exc)
+        return []
+
+    if response.status_code != 200:
+        logger.warning(
+            "get_chat_history returned %d for %s: %s",
+            response.status_code, chat_id, response.text[:200],
+        )
+        return []
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.warning("get_chat_history returned non-JSON for %s", chat_id)
+        return []
+
+    if not isinstance(data, list):
+        return []
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Utility: fetch all groups (for getting group IDs)
 # ---------------------------------------------------------------------------
