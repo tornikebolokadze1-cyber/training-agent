@@ -441,6 +441,49 @@ class TestIsDirectMention:
 
 
 # ===========================================================================
+# 8b. _is_reply_to_bot
+# ===========================================================================
+
+class TestIsReplyToBot:
+    """_is_reply_to_bot detects when a quoted message is a previous bot reply.
+
+    Covers the second failure mode from 2026-04-26: a student replies to a
+    bot message via WhatsApp's quote-reply feature without typing the
+    trigger word, and the assistant must still treat that as a direct
+    continuation of the conversation rather than a passive trigger.
+    """
+
+    def setup_method(self):
+        self.assistant = _make_assistant()
+
+    def test_quoted_bot_signature_at_start_triggers(self):
+        bot_message = "🤖 AI ასისტენტი - მრჩეველი\n---\nLLM არის..."
+        assert self.assistant._is_reply_to_bot(bot_message) is True
+
+    def test_quoted_bot_signature_without_emoji_still_triggers(self):
+        bot_message = "AI ასისტენტი - მრჩეველი\n---\nresponse text"
+        assert self.assistant._is_reply_to_bot(bot_message) is True
+
+    def test_quoted_user_message_does_not_trigger(self):
+        student_message = "გასაგებია, კარგი კითხვაა"
+        assert self.assistant._is_reply_to_bot(student_message) is False
+
+    def test_quoted_message_containing_trigger_word_triggers(self):
+        # Chained reply: student quoted another student who addressed the bot.
+        student_message = "მრჩეველო, რა არის transformer?"
+        assert self.assistant._is_reply_to_bot(student_message) is True
+
+    def test_empty_quoted_text_does_not_trigger(self):
+        assert self.assistant._is_reply_to_bot("") is False
+
+    def test_long_unrelated_quote_does_not_trigger(self):
+        # A long quoted message with no bot signature and no trigger word
+        # must not be treated as a continuation of an assistant conversation.
+        text = "გასულ კვირას ლექციაზე ვისაუბრეთ პროგრამირების ისტორიაზე. " * 30
+        assert self.assistant._is_reply_to_bot(text) is False
+
+
+# ===========================================================================
 # 9. _is_own_message
 # ===========================================================================
 

@@ -274,6 +274,39 @@ class WhatsAppAssistant:
         }
         return any(t in normalized for t in triggers)
 
+    def _is_reply_to_bot(self, quoted_text: str) -> bool:
+        """Return True if a quoted message looks like a previous bot response.
+
+        Bot messages are formatted by ``_format_response`` as
+        ``🤖 {ASSISTANT_SIGNATURE}\\n---\\n{body}`` — so when a student
+        replies to one, WhatsApp delivers ``quoted_text`` containing the
+        signature near the start. Treating that as a direct trigger lets
+        students continue a conversation by tapping reply, without having
+        to repeat "მრჩეველო" each time.
+
+        We also accept the trigger word inside the quoted message body
+        as a weak signal: a student quoting another student's message
+        that itself addressed the assistant.
+
+        Args:
+            quoted_text: Text body of the message being replied to (may
+                be empty).
+
+        Returns:
+            True when the reply continues an existing conversation with
+            the assistant.
+        """
+        if not quoted_text:
+            return False
+        normalized = unicodedata.normalize("NFC", quoted_text)
+        sig = unicodedata.normalize("NFC", ASSISTANT_SIGNATURE)
+        # Signature in the leading window — quoted bot reply.
+        if sig in normalized[:200]:
+            return True
+        # Trigger word anywhere in quoted text — chained reply to a
+        # message that addressed the assistant.
+        return self._is_direct_mention(quoted_text)
+
     def _is_own_message(self, sender_id: str) -> bool:
         """Return True if the message was sent by the bot's own phone number.
 
@@ -763,6 +796,17 @@ class WhatsAppAssistant:
         Returns:
             The text of the sent message, or None if the assistant stayed silent.
         """
+        # 0. Receipt diagnostic — surfaces in Railway logs so we can tell
+        # whether the webhook reached the assistant at all (vs. a chat-filter
+        # drop or a Green API delivery failure).
+        logger.info(
+            "[assistant] received message: chat=%s sender=%s text_len=%d quoted_len=%d",
+            (message.chat_id or "")[:40],
+            (message.sender_name or message.sender_id or "?")[:30],
+            len(message.text or ""),
+            len(message.quoted_text or ""),
+        )
+
         # 1. Ignore own messages (infinite-loop prevention)
         if self._is_own_message(message.sender_id):
             logger.debug("Ignoring own message from %s", message.sender_id)
@@ -785,8 +829,15 @@ class WhatsAppAssistant:
             )
             return None
 
-        # 3. Check for direct mention
+        # 3. Check for direct mention (in user's own text or via reply-to-bot)
         is_direct = self._is_direct_mention(message.text)
+        is_reply_to_bot = self._is_reply_to_bot(message.quoted_text)
+        if is_reply_to_bot and not is_direct:
+            logger.info(
+                "[assistant] treating as direct trigger — reply to assistant in chat %s",
+                message.chat_id,
+            )
+            is_direct = True
 
         # 4. Cooldown check for passive responses
         if not is_direct and self._is_on_cooldown(message.chat_id):
