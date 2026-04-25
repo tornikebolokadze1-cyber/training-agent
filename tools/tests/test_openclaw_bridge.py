@@ -19,12 +19,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 # Pop stubs so we load real fastapi/slowapi/httpx/pydantic for ASGI testing.
-for _mod in list(sys.modules):
-    if _mod.startswith(
-        ("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server",
-         "tools.app.openclaw_bridge")
-    ):
-        sys.modules.pop(_mod, None)
+# IDEMPOTENT: skip the pop if a sibling test file already swapped in the real
+# modules — re-popping would create a second set of class objects and break
+# class-identity checks across files (e.g. ``isinstance(e, HTTPException)``).
+_fastapi_real = getattr(sys.modules.get("fastapi"), "__file__", None) is not None
+if not _fastapi_real:
+    for _mod in list(sys.modules):
+        if _mod.startswith(
+            ("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server",
+             "tools.app.openclaw_bridge")
+        ):
+            sys.modules.pop(_mod, None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -58,10 +63,16 @@ def patched_secret():
 
 @pytest.fixture
 def stub_outbound():
-    """Stub comment/status helpers so tests don't hit real Paperclip."""
+    """Stub comment/status helpers so tests don't hit real Paperclip.
+
+    Patches by import path (not via :data:`srv`) so we always hit the
+    module currently registered in :data:`sys.modules`. Other test files
+    (``test_paperclip_bridge.py``) re-import ``tools.app.server`` and
+    swap the entry, leaving our module-level :data:`srv` orphaned.
+    """
     with (
-        patch.object(srv, "post_paperclip_comment", AsyncMock()) as mock_post,
-        patch.object(srv, "set_paperclip_issue_status", AsyncMock()) as mock_patch,
+        patch("tools.app.server.post_paperclip_comment", AsyncMock()) as mock_post,
+        patch("tools.app.server.set_paperclip_issue_status", AsyncMock()) as mock_patch,
     ):
         yield mock_post, mock_patch
 

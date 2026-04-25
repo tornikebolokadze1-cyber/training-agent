@@ -27,13 +27,22 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Same bootstrap as test_server_new.py — real FastAPI for TestClient behavior.
+#
+# IDEMPOTENCY: if a sibling test file (test_openclaw_bridge.py,
+# test_server_new.py) already swapped the conftest stubs for real modules,
+# do NOT re-pop. Re-popping creates a SECOND set of class objects, which
+# breaks class identity (HTTPException vs HTTPException) across test files.
+# Detection: real modules have __file__ pointing to a real source path;
+# conftest stubs created via ``types.ModuleType(name)`` have no __file__.
 # ---------------------------------------------------------------------------
 _popped_stubs: dict[str, object] = {}
-for _mod_name in list(sys.modules):
-    if _mod_name.startswith(
-        ("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server")
-    ):
-        _popped_stubs[_mod_name] = sys.modules.pop(_mod_name)
+_fastapi_real = getattr(sys.modules.get("fastapi"), "__file__", None) is not None
+if not _fastapi_real:
+    for _mod_name in list(sys.modules):
+        if _mod_name.startswith(
+            ("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server")
+        ):
+            _popped_stubs[_mod_name] = sys.modules.pop(_mod_name)
 
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -60,13 +69,16 @@ def _reset_limiter():
 
 @pytest.fixture
 def secret_configured():
-    with patch.object(srv, "PAPERCLIP_WEBHOOK_SECRET", _TEST_SECRET):
+    # Patch by string path so the patch always hits the module currently in
+    # sys.modules — sibling test files re-import tools.app.server and orphan
+    # our module-level ``srv`` reference.
+    with patch("tools.app.server.PAPERCLIP_WEBHOOK_SECRET", _TEST_SECRET):
         yield
 
 
 @pytest.fixture
 def secret_unset():
-    with patch.object(srv, "PAPERCLIP_WEBHOOK_SECRET", ""):
+    with patch("tools.app.server.PAPERCLIP_WEBHOOK_SECRET", ""):
         yield
 
 
@@ -238,29 +250,46 @@ class TestExtractIssueFields:
 
 
 class TestVerifyPaperclipSecret:
+    """Direct tests on verify_paperclip_secret().
+
+    Imports happen INSIDE each test, not at module level, because sibling
+    test files (test_server_new.py, test_openclaw_bridge.py) run their own
+    ``sys.modules.pop("fastapi")`` bootstraps during pytest collection.
+    Each pop+reimport creates a new ``HTTPException`` class object. A
+    module-level ``from fastapi import HTTPException`` would bind to
+    whichever ``fastapi`` was current when this file was collected — but
+    by test-run time, sys.modules has the LATEST instance. Resolving both
+    names at test time guarantees they share class identity.
+    """
+
     def test_unset_secret_raises_503(self, secret_unset):
         from fastapi import HTTPException
+        from tools.app.server import verify_paperclip_secret as _verify
 
         with pytest.raises(HTTPException) as exc:
-            verify_paperclip_secret("Bearer anything")
+            _verify("Bearer anything")
         assert exc.value.status_code == 503
 
     def test_missing_header_raises_401(self, secret_configured):
         from fastapi import HTTPException
+        from tools.app.server import verify_paperclip_secret as _verify
 
         with pytest.raises(HTTPException) as exc:
-            verify_paperclip_secret(None)
+            _verify(None)
         assert exc.value.status_code == 401
 
     def test_wrong_secret_raises_401(self, secret_configured):
         from fastapi import HTTPException
+        from tools.app.server import verify_paperclip_secret as _verify
 
         with pytest.raises(HTTPException) as exc:
-            verify_paperclip_secret("Bearer wrong-secret")
+            _verify("Bearer wrong-secret")
         assert exc.value.status_code == 401
 
     def test_correct_secret_does_not_raise(self, secret_configured):
-        verify_paperclip_secret(f"Bearer {_TEST_SECRET}")
+        from tools.app.server import verify_paperclip_secret as _verify
+
+        _verify(f"Bearer {_TEST_SECRET}")
 
 
 # ===========================================================================
