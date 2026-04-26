@@ -1045,6 +1045,23 @@ async def whatsapp_incoming(
     if type_webhook != "incomingMessageReceived":
         return {"status": "ignored", "reason": f"type: {type_webhook}"}
 
+    # Archive the raw webhook payload before any further processing.
+    # This wraps in try/except so an archive failure NEVER blocks the
+    # bot's reply path: durability matters, the live response matters more.
+    # Idempotent via UNIQUE(green_api_id) — Green API webhook replays do
+    # not duplicate. Captures all incoming events including media, where
+    # the assistant logic below ignores non-text messages.
+    try:
+        from tools.services.message_archive import archive_webhook_payload
+        archive_result = archive_webhook_payload(body)
+        if archive_result.get("inserted"):
+            logger.info(
+                "Archived webhook message %s",
+                str(archive_result.get("green_api_id", ""))[:24],
+            )
+    except Exception as archive_exc:
+        logger.warning("Archive write failed (non-blocking): %s", archive_exc)
+
     message_data = body.get("messageData", {})
     type_message = message_data.get("typeMessage")
 
