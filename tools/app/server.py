@@ -1065,9 +1065,31 @@ async def whatsapp_incoming(
     if not text.strip():
         return {"status": "ignored", "reason": "empty text"}
 
-    # Skip messages sent by the bot itself (prevents infinite loops)
+    # Skip messages sent by the bot itself (prevents infinite loops).
+    #
+    # The operator (Tornike) is the WhatsApp account holder that the Green
+    # API instance is connected to, so every message HE TYPES MANUALLY in
+    # any chat — group or DM — arrives here with ``fromMe=true``. A blanket
+    # fromMe filter would silently drop all his "მრჩეველო" tests and his
+    # quote-replies to bot messages, which is exactly what was reported on
+    # 2026-04-26.
+    #
+    # Bot-authored replies always begin with the 🤖 emoji + the assistant
+    # signature that ``_format_response`` prepends, so we distinguish the
+    # two cases by inspecting the message body. Outgoing-message webhooks
+    # are also disabled at the Green API side as a second line of defence
+    # (configure_webhook sets ``outgoingMessageWebhook=no``).
     if message_data.get("fromMe", False):
-        return {"status": "ignored", "reason": "own message"}
+        text_head = (text or "").lstrip()
+        is_bot_self = (
+            text_head.startswith("🤖")
+            or "AI ასისტენტი - მრჩეველი" in text_head[:80]
+        )
+        if is_bot_self:
+            return {"status": "ignored", "reason": "own bot message"}
+        # Fall through: operator's manual message — treat as a normal user
+        # message so direct triggers and reply-to-bot work from the
+        # operator's phone too.
 
     if not _assistant_available or assistant is None:
         logger.warning("WhatsApp assistant not available — ignoring incoming message")

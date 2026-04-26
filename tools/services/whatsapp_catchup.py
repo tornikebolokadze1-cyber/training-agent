@@ -166,11 +166,36 @@ def _quoted_looks_like_bot(quoted_text: str) -> bool:
     return _has_trigger_word(quoted_text)
 
 
+def _looks_like_bot_message(text: str) -> bool:
+    """Return True when ``text`` looks like a message authored by this assistant.
+
+    The Green API account holder (the operator) shares the WhatsApp number
+    that the bot connects to, so messages they type manually arrive in
+    ``getChatHistory`` with ``type == "outgoing"`` — the same direction tag
+    the bot's own replies carry. Direction alone is therefore not enough
+    to tell the two apart.
+
+    Bot replies are always wrapped by ``_format_response`` with the
+    ``🤖 {ASSISTANT_SIGNATURE}\\n---\\n`` header, so the signature appears
+    in the leading window of the body. Manual operator messages do not.
+    """
+    if not text:
+        return False
+    head = text.lstrip()
+    if head.startswith("🤖"):
+        return True
+    sig = unicodedata.normalize("NFC", ASSISTANT_SIGNATURE)
+    return sig in unicodedata.normalize("NFC", head)[:80]
+
+
 def _bot_already_replied(history: list[dict[str, Any]], trigger_idx: int) -> bool:
     """Return True if a bot message follows the trigger within the lookahead window.
 
     ``history`` is in newest-first order, so messages BEFORE ``trigger_idx``
-    in the list are NEWER than the trigger.
+    in the list are NEWER than the trigger. Only outgoing messages bearing
+    the assistant signature count as a "bot reply" — the operator's manual
+    messages from the same number do not, otherwise their next typed line
+    would always be misread as the bot already having handled the trigger.
     """
     trigger = history[trigger_idx]
     trigger_ts = int(trigger.get("timestamp") or 0)
@@ -181,7 +206,10 @@ def _bot_already_replied(history: list[dict[str, Any]], trigger_idx: int) -> boo
         ts = int(msg.get("timestamp") or 0)
         if ts < trigger_ts or ts - trigger_ts > RESPONSE_LOOKAHEAD_SECONDS:
             continue
-        if msg.get("type") == "outgoing":
+        if msg.get("type") != "outgoing":
+            continue
+        text, _ = _extract_text_and_quote(msg)
+        if _looks_like_bot_message(text):
             return True
     return False
 
@@ -264,9 +292,16 @@ async def replay_recent(
         for idx, raw in enumerate(history):
             result.checked += 1
 
-            # Skip our own messages.
+            # Skip ONLY the bot's own outgoing messages. The operator
+            # (account holder) typing manually also produces "outgoing"
+            # entries on this account; those are legitimate user messages
+            # and must flow through the trigger-detection path below.
             if raw.get("type") == "outgoing":
-                continue
+                outgoing_text, _ = _extract_text_and_quote(raw)
+                if _looks_like_bot_message(outgoing_text):
+                    continue
+                # Operator's manual outgoing message — continue evaluating
+                # like an incoming message.
 
             ts = int(raw.get("timestamp") or 0)
             if ts < cutoff_ts:

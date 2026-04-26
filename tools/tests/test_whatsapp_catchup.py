@@ -154,10 +154,13 @@ class TestBotAlreadyReplied:
         # Trigger is at index 1; index 0 is newer but also incoming.
         assert catchup._bot_already_replied(history, 1) is False
 
-    def test_outgoing_within_3min_after_trigger_marks_replied(self):
+    def test_outgoing_bot_within_3min_after_trigger_marks_replied(self):
+        # Bot reply must carry the assistant signature; a plain outgoing
+        # message from the operator's phone would not count.
         history = [
             _make_history_entry(
-                id_message="bot", timestamp=1060, text="reply",
+                id_message="bot", timestamp=1060,
+                text="🤖 AI ასისტენტი - მრჩეველი\n---\nreply body",
                 direction="outgoing", sender_id="bot",
             ),
             _make_history_entry(
@@ -166,10 +169,27 @@ class TestBotAlreadyReplied:
         ]
         assert catchup._bot_already_replied(history, 1) is True
 
+    def test_outgoing_without_signature_does_not_mark_replied(self):
+        # Operator typing a follow-up to their own trigger must not be
+        # mistaken for a bot reply.
+        history = [
+            _make_history_entry(
+                id_message="op_followup", timestamp=1060,
+                text="დავამატე — სასწავლო თემაა",
+                direction="outgoing",
+            ),
+            _make_history_entry(
+                id_message="trigger", timestamp=1000, text="მრჩეველო",
+                direction="incoming",
+            ),
+        ]
+        assert catchup._bot_already_replied(history, 1) is False
+
     def test_outgoing_more_than_3min_later_does_not_count(self):
         history = [
             _make_history_entry(
-                id_message="bot", timestamp=1500, text="late reply",
+                id_message="bot", timestamp=1500,
+                text="🤖 AI ასისტენტი - მრჩეველი\n---\nlate reply",
                 direction="outgoing", sender_id="bot",
             ),
             _make_history_entry(
@@ -256,9 +276,12 @@ class TestReplayRecent:
         monkeypatch.setattr(catchup, "_allowed_chats", lambda: ["test@g.us"])
 
         now = int(time.time())
+        # Outgoing bot message must carry the signature; a plain outgoing
+        # follow-up from the operator's phone would not be a valid "reply".
         history = [
             _make_history_entry(
-                id_message="bot", timestamp=now - 50, text="here is the answer",
+                id_message="bot", timestamp=now - 50,
+                text="🤖 AI ასისტენტი - მრჩეველი\n---\nhere is the answer",
                 direction="outgoing", sender_id="bot",
             ),
             _make_history_entry(
@@ -375,3 +398,111 @@ class TestReplayRecent:
 
         assert assistant._respond_to_missed.await_count == 3
         assert result["replied"] == 3
+
+    def test_operator_outgoing_trigger_is_replayed(self, monkeypatch, tmp_path):
+        """The Green API account holder typing manually appears as 'outgoing'.
+
+        Without distinguishing bot replies from operator manual messages
+        the catch-up service would silently skip every "მრჩეველო" the
+        operator sends — the exact bug surfaced on 2026-04-26.
+        """
+        monkeypatch.setattr(catchup, "DEDUP_FILE", tmp_path / "ledger.json")
+        monkeypatch.setattr(catchup, "_allowed_chats", lambda: ["test@g.us"])
+
+        now = int(time.time())
+        history = [
+            _make_history_entry(
+                id_message="op1", timestamp=now - 60,
+                text="მრჩეველო, ეს მე ვწერ",
+                direction="outgoing",  # operator's own phone
+            ),
+        ]
+
+        with patch.object(catchup, "get_chat_history", return_value=history):
+            assistant = _make_assistant_mock()
+            result = self._run(catchup.replay_recent(assistant, since_minutes=120))
+
+        assistant._respond_to_missed.assert_awaited_once()
+        assert result["replied"] == 1
+
+    def test_outgoing_bot_message_is_skipped(self, monkeypatch, tmp_path):
+        """Bot's own outgoing messages (signature-prefixed) must NOT trigger replay."""
+        monkeypatch.setattr(catchup, "DEDUP_FILE", tmp_path / "ledger.json")
+        monkeypatch.setattr(catchup, "_allowed_chats", lambda: ["test@g.us"])
+
+        now = int(time.time())
+        history = [
+            _make_history_entry(
+                id_message="bot1", timestamp=now - 60,
+                text="🤖 AI ასისტენტი - მრჩეველი\n---\nresponse body",
+                direction="outgoing",
+            ),
+        ]
+
+        with patch.object(catchup, "get_chat_history", return_value=history):
+            assistant = _make_assistant_mock()
+            result = self._run(catchup.replay_recent(assistant, since_minutes=120))
+
+        assistant._respond_to_missed.assert_not_awaited()
+        assert result["replied"] == 0
+
+    def test_operator_manual_reply_does_not_count_as_bot_reply(
+        self, monkeypatch, tmp_path,
+    ):
+        """A manual operator message right after a trigger must NOT mark it answered.
+
+        Otherwise every time the operator types "მრჩეველო" and immediately
+        adds a clarification, the clarification would suppress the actual
+        bot response by being treated as one.
+        """
+        monkeypatch.setattr(catchup, "DEDUP_FILE", tmp_path / "ledger.json")
+        monkeypatch.setattr(catchup, "_allowed_chats", lambda: ["test@g.us"])
+
+        now = int(time.time())
+        # Newest-first: operator clarification, then operator trigger.
+        history = [
+            _make_history_entry(
+                id_message="op_followup", timestamp=now - 50,
+                text="დავამატე — სასწავლო თემაა",
+                direction="outgoing",
+            ),
+            _make_history_entry(
+                id_message="op_trigger", timestamp=now - 100,
+                text="მრჩეველო, ერთი კითხვა მაქვს",
+                direction="outgoing",
+            ),
+        ]
+
+        with patch.object(catchup, "get_chat_history", return_value=history):
+            assistant = _make_assistant_mock()
+            result = self._run(catchup.replay_recent(assistant, since_minutes=120))
+
+        # Trigger must still be replayed even though a manual outgoing
+        # message followed it within the lookahead window.
+        assistant._respond_to_missed.assert_awaited()
+        assert result["replied"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 6. _looks_like_bot_message — signature detection
+# ---------------------------------------------------------------------------
+
+
+class TestLooksLikeBotMessage:
+    def test_emoji_prefix_triggers(self):
+        assert catchup._looks_like_bot_message("🤖 AI ასისტენტი - მრჩეველი\n---\nbody") is True
+
+    def test_signature_without_emoji_triggers(self):
+        assert catchup._looks_like_bot_message("AI ასისტენტი - მრჩეველი\n---\nbody") is True
+
+    def test_plain_user_message_does_not_trigger(self):
+        assert catchup._looks_like_bot_message("მრჩეველო, რა არის LLM?") is False
+
+    def test_empty_does_not_trigger(self):
+        assert catchup._looks_like_bot_message("") is False
+
+    def test_signature_far_into_long_text_does_not_trigger(self):
+        # Beyond the 80-char leading window — counts as user content
+        # that happens to mention the assistant rather than a bot reply.
+        text = ("x" * 100) + " AI ასისტენტი - მრჩეველი"
+        assert catchup._looks_like_bot_message(text) is False
