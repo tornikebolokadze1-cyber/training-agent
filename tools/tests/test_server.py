@@ -716,13 +716,21 @@ class TestWhatsAppIncomingEndpoint:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ignored"
 
-    async def test_own_message_ignored(self, patched_secrets):
-        """Messages sent by the bot itself (fromMe=True) are ignored."""
+    async def test_own_bot_message_ignored(self, patched_secrets):
+        """Bot replies (fromMe=True with the assistant signature) are ignored.
+
+        The signature is what ``_format_response`` prepends to every bot
+        reply, so its presence in the leading window of an outgoing message
+        is the canonical way to tell "this is the bot talking to itself".
+        """
         body = {
             **_WA_TEXT_BODY,
             "messageData": {
-                **_WA_TEXT_BODY["messageData"],
+                "typeMessage": "textMessage",
                 "fromMe": True,
+                "textMessageData": {
+                    "textMessage": "🤖 AI ასისტენტი - მრჩეველი\n---\nLLM არის...",
+                },
             },
         }
         async with await _async_client() as client:
@@ -730,7 +738,35 @@ class TestWhatsAppIncomingEndpoint:
                 "/whatsapp-incoming", json=body, headers=_WA_AUTH
             )
         assert resp.status_code == 200
-        assert resp.json()["status"] == "ignored"
+        body_json = resp.json()
+        assert body_json["status"] == "ignored"
+        assert "bot" in body_json.get("reason", "").lower()
+
+    async def test_operator_manual_message_accepted(self, patched_secrets):
+        """fromMe=True without the bot signature is the OPERATOR typing.
+
+        Tornike (the WhatsApp account holder) sends every manual message
+        through with fromMe=True because the Green API instance is bound
+        to his number. Without this distinction his "მრჩეველო" tests are
+        silently dropped — exactly the regression reported on 2026-04-26.
+        """
+        body = {
+            **_WA_TEXT_BODY,
+            "messageData": {
+                "typeMessage": "textMessage",
+                "fromMe": True,
+                "textMessageData": {"textMessage": "მრჩეველო, რა არის LLM?"},
+            },
+        }
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming", json=body, headers=_WA_AUTH
+            )
+        assert resp.status_code == 200
+        # Either accepted (assistant available) or ignored due to assistant
+        # not being initialised in tests — but NOT "own message".
+        body_json = resp.json()
+        assert "own" not in body_json.get("reason", "").lower()
 
     async def test_empty_text_ignored(self, patched_secrets):
         """Messages with empty text content are silently ignored."""
