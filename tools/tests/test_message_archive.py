@@ -202,18 +202,94 @@ class TestPersistence:
 # --------------------------------------------------------------------- #
 
 class TestSchemaCheck:
-    def test_missing_schema_raises(self, tmp_path):
-        """Fix 5: connecting to a DB without migration 001 must raise RuntimeError."""
-        empty_db = tmp_path / "empty.db"
-        sqlite3.connect(str(empty_db)).close()  # create empty file
-        with pytest.raises(RuntimeError, match="schema_migrations"):
-            with ma.connect(empty_db):
-                pass
+    def test_empty_db_auto_bootstraps(self, tmp_path):
+        """Fresh DB (Railway volume just mounted) must auto-apply migration 001.
+
+        This replaces the old behavior where connect() raised on a schemaless DB.
+        Production volumes start empty — the first webhook hit needs to bootstrap
+        the schema transparently rather than wait for a separate migration step.
+        """
+        empty_db = tmp_path / "fresh.db"
+        # Note: not even a `sqlite3.connect(...).close()` precreate — the
+        # parent dir mkdir + lazy file creation must work end-to-end.
+        with ma.connect(empty_db) as conn:
+            row = conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            assert row[0] >= 1
+            # Verify tables actually exist after auto-bootstrap
+            tables = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "messages" in tables
+            assert "senders" in tables
+
+    def test_auto_bootstrap_creates_parent_dir(self, tmp_path):
+        """connect() must create the parent directory on a fresh volume."""
+        nested = tmp_path / "nonexistent_subdir" / "messages.db"
+        with ma.connect(nested) as conn:
+            assert conn is not None
+        assert nested.parent.is_dir()
+        assert nested.exists()
+
+    def test_idempotent_second_connect_does_not_reapply(self, tmp_path):
+        """A bootstrapped DB does not re-run migration on subsequent connects."""
+        db = tmp_path / "x.db"
+        # First connect — applies migration 001 (version=1)
+        with ma.connect(db) as conn:
+            initial = conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations"
+            ).fetchone()[0]
+        # Reset module-level cache to force a re-check this connect
+        ma._SCHEMA_CHECKED = False
+        # Second connect — must NOT re-run migration (would CREATE TABLE
+        # IF NOT EXISTS skip, but INSERT in the migration would duplicate
+        # the row, doubling schema_migrations row count).
+        with ma.connect(db) as conn:
+            after = conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations"
+            ).fetchone()[0]
+        assert after == initial, (
+            f"migration ran twice: {initial} rows after first connect, "
+            f"{after} after second"
+        )
 
     def test_schema_check_passes_with_valid_migration(self, temp_db):
-        """Fix 5: a properly migrated DB connects without error."""
+        """A properly migrated DB connects without error (regression guard)."""
         with ma.connect(temp_db) as conn:
             assert conn is not None
+
+
+class TestEnvDbPath:
+    def test_env_override_resolves_at_import(self, monkeypatch, tmp_path):
+        """MESSAGE_ARCHIVE_DB_PATH env var must override the default at import time.
+
+        Verifies that on Railway, where the env var points the archive at the
+        mounted volume (e.g. /app/.tmp/messages.db), a fresh import picks it up.
+        """
+        custom = tmp_path / "custom_archive.db"
+        monkeypatch.setenv("MESSAGE_ARCHIVE_DB_PATH", str(custom))
+        # Re-import to re-evaluate the module-level constant
+        import importlib
+        importlib.reload(ma)
+        assert ma.DEFAULT_DB_PATH == custom
+        # Restore module to baseline so other tests aren't affected
+        monkeypatch.delenv("MESSAGE_ARCHIVE_DB_PATH", raising=False)
+        importlib.reload(ma)
+
+    def test_default_path_when_env_not_set(self, monkeypatch):
+        """Falls back to PROJECT_ROOT / data / messages.db when env unset."""
+        monkeypatch.delenv("MESSAGE_ARCHIVE_DB_PATH", raising=False)
+        import importlib
+        importlib.reload(ma)
+        assert str(ma.DEFAULT_DB_PATH).endswith("data" + str(Path("/messages.db"))[-12:])
+        # Restore baseline pepper after reload
+        monkeypatch.setenv("SENDER_HASH_PEPPER", "unit-test-pepper")
+        ma._PEPPER_WARNED = False
+        ma._SCHEMA_CHECKED = False
 
 
 # --------------------------------------------------------------------- #
