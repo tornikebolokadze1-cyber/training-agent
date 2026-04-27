@@ -350,6 +350,79 @@ def create_meeting(
     }
 
 
+def start_recording_live(meeting_id: str | int) -> dict[str, Any]:
+    """Force-start cloud recording on a currently-running Zoom meeting.
+
+    Calls Zoom's Live Meeting Events API
+    (``PATCH /v2/live_meetings/{id}/events`` with ``method=recording.start``).
+    Idempotent: if recording is already in progress, Zoom returns 204 with
+    no change. Returns a structured result so the caller can route to
+    operator alert if the OAuth scope is missing — production has been
+    silently failing to auto-record for ~2 weeks because Zoom's
+    ``auto_recording=cloud`` meeting setting silently no-ops when the
+    user-level cloud recording toggle is off; this gives us an active
+    recovery path.
+
+    Required Zoom OAuth scope: ``meeting:update:in_meeting_controls`` or
+    its admin variant. If missing, the function returns ``ok=False`` with
+    ``reason="scope_missing"`` rather than raising.
+
+    Args:
+        meeting_id: Zoom meeting ID (numeric or string).
+
+    Returns:
+        ``{"ok": bool, "status_code": int, "reason": str | None}``.
+        ``reason`` is ``None`` on success, ``"scope_missing"`` when the
+        OAuth app needs the in_meeting_controls scope added,
+        ``"meeting_not_live"`` when the meeting hasn't started, or an
+        ``"http_<code>"`` / ``"http_error: <exc>"`` string for other
+        failure modes. Never raises.
+    """
+    try:
+        token = get_access_token()
+    except Exception as exc:
+        logger.warning("[recording.start] auth failed for meeting %s: %s", meeting_id, exc)
+        return {"ok": False, "status_code": 0, "reason": f"auth_error: {exc}"}
+
+    url = f"{ZOOM_API_BASE}/live_meetings/{meeting_id}/events"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {"method": "recording.start"}
+
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.patch(url, json=body, headers=headers)
+    except httpx.RequestError as exc:
+        logger.warning("[recording.start] HTTP error for meeting %s: %s", meeting_id, exc)
+        return {"ok": False, "status_code": 0, "reason": f"http_error: {exc}"}
+
+    if resp.status_code in (200, 202, 204):
+        logger.info(
+            "[recording.start] Cloud recording start succeeded for meeting %s (HTTP %s)",
+            meeting_id, resp.status_code,
+        )
+        return {"ok": True, "status_code": resp.status_code, "reason": None}
+
+    body_text = (resp.text or "")[:300]
+    if resp.status_code == 400 and "scopes" in body_text.lower():
+        logger.warning(
+            "[recording.start] OAuth scope missing (meeting:update:in_meeting_controls) "
+            "for meeting %s — operator must enable in Marketplace app", meeting_id,
+        )
+        return {"ok": False, "status_code": resp.status_code, "reason": "scope_missing"}
+    if resp.status_code == 404:
+        logger.warning(
+            "[recording.start] Meeting %s not in 'started' state — Zoom returned 404",
+            meeting_id,
+        )
+        return {"ok": False, "status_code": resp.status_code, "reason": "meeting_not_live"}
+
+    logger.warning(
+        "[recording.start] Unexpected response for meeting %s: %s body=%s",
+        meeting_id, resp.status_code, body_text,
+    )
+    return {"ok": False, "status_code": resp.status_code, "reason": f"http_{resp.status_code}"}
+
+
 @resilient_api_call(service="zoom", operation="get_meeting_recordings", max_attempts=3)
 def get_meeting_recordings(meeting_id: str | int) -> dict[str, Any]:
     """Retrieve cloud recording files for a completed Zoom meeting.

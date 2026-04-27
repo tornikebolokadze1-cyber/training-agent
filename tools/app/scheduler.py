@@ -786,6 +786,40 @@ async def pre_meeting_job(group_number: int) -> None:
         except Exception:
             logger.error("[pre] alert_operator also failed for Group %d", group_number)
 
+    # ---- Schedule recording watchdog (T+2 min after lecture start) -----------
+    # Zoom's `auto_recording=cloud` setting in create_meeting can silently
+    # no-op when the user-level "Cloud recording" toggle is off, when storage
+    # is exhausted, or when the host joins as participant. We've been losing
+    # recordings to trash since 2026-04-14 (root cause documented in
+    # PR introducing this watchdog). The watchdog calls Zoom's Live Meeting
+    # Events API to force-start recording 2 minutes after lecture start,
+    # giving the host time to join. If the OAuth scope is missing or the
+    # API call fails, the operator gets a WhatsApp DM with a "click Record
+    # now" instruction so the lecture can still be saved manually.
+    if zoom_meeting_id:
+        try:
+            running_scheduler = _get_running_scheduler()
+            watchdog_fire = today_start + timedelta(minutes=2)
+            running_scheduler.add_job(
+                _recording_watchdog,
+                trigger="date",
+                run_date=watchdog_fire,
+                args=[group_number, lecture_number, zoom_meeting_id],
+                id=f"rec_watchdog_g{group_number}_l{lecture_number}",
+                name=f"Recording watchdog: G{group_number} L{lecture_number}",
+                replace_existing=True,
+                misfire_grace_time=600,  # 10 min grace if scheduler restarted
+            )
+            logger.info(
+                "[pre] Scheduled recording watchdog at %s for G%d L%d (meeting %s)",
+                watchdog_fire.isoformat(),
+                group_number,
+                lecture_number,
+                zoom_meeting_id,
+            )
+        except Exception as exc:
+            logger.error("[pre] Failed to schedule recording watchdog: %s", exc)
+
     # ---- Schedule post-meeting fallback job ----------------------------------
     # The primary trigger is now the meeting.ended webhook (in server.py).
     # This scheduler job is a SAFETY NET — it fires at 23:30 (T+210 min)
@@ -806,6 +840,102 @@ async def pre_meeting_job(group_number: int) -> None:
             "for Group %d, Lecture #%d",
             group_number,
             lecture_number,
+        )
+
+
+async def _recording_watchdog(
+    group_number: int,
+    lecture_number: int,
+    meeting_id: str,
+) -> None:
+    """Confirm cloud recording is active 2 min after lecture start; alert if not.
+
+    Calls ``start_recording_live(meeting_id)`` which is idempotent — if
+    recording already started, Zoom returns 204 and we log success. If
+    Zoom rejects with a scope error, the OAuth app needs the
+    ``meeting:update:in_meeting_controls`` scope added; the operator gets
+    a WhatsApp DM so they can click Record manually while the fix is
+    propagated. If the meeting isn't live (404), retry once after 90
+    seconds — host might still be joining.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        zm = _import_zoom_manager()
+    except ImportError as exc:
+        logger.error("[watchdog] zoom_manager unavailable: %s", exc)
+        return
+
+    result = await loop.run_in_executor(
+        None, lambda: zm.start_recording_live(meeting_id)
+    )
+
+    if result.get("ok"):
+        logger.info(
+            "[watchdog] Recording confirmed active for G%d L%d (meeting %s)",
+            group_number,
+            lecture_number,
+            meeting_id,
+        )
+        return
+
+    reason = result.get("reason", "unknown")
+
+    # If meeting hasn't started yet, retry once after 90s
+    if reason == "meeting_not_live":
+        logger.info(
+            "[watchdog] Meeting %s not yet live — retrying in 90s for G%d L%d",
+            meeting_id,
+            group_number,
+            lecture_number,
+        )
+        await asyncio.sleep(90)
+        result = await loop.run_in_executor(
+            None, lambda: zm.start_recording_live(meeting_id)
+        )
+        if result.get("ok"):
+            logger.info(
+                "[watchdog] Retry succeeded — recording active for G%d L%d",
+                group_number, lecture_number,
+            )
+            return
+        reason = result.get("reason", "unknown")
+
+    # Anything else → alert operator with actionable instruction
+    if reason == "scope_missing":
+        msg = (
+            f"⚠️ ZOOM RECORDING NOT ACTIVE — Group {group_number}, Lecture #{lecture_number}\n\n"
+            f"Meeting ID: {meeting_id}\n\n"
+            "Zoom auto_recording config silently no-op'd AND watchdog can't "
+            "force-start because OAuth app is missing the "
+            "`meeting:update:in_meeting_controls` scope.\n\n"
+            "▶️ DO NOW: open Zoom → Record → Record to the Cloud (host).\n"
+            "🛠 FIX FOR FUTURE: Marketplace → your Server-to-Server app → "
+            "Scopes → add `meeting:update:in_meeting_controls:admin`."
+        )
+    else:
+        msg = (
+            f"⚠️ ZOOM RECORDING WATCHDOG FAILED — Group {group_number}, "
+            f"Lecture #{lecture_number}\n\n"
+            f"Meeting ID: {meeting_id}\n"
+            f"Reason: {reason}\n\n"
+            "▶️ DO NOW: confirm recording is active in Zoom (look for the "
+            "REC indicator). If not, click Record → Record to the Cloud."
+        )
+
+    try:
+        alert_operator(msg)
+        logger.warning(
+            "[watchdog] Operator alerted for G%d L%d (reason=%s)",
+            group_number,
+            lecture_number,
+            reason,
+        )
+    except Exception as exc:
+        logger.error(
+            "[watchdog] alert_operator FAILED for G%d L%d: %s",
+            group_number,
+            lecture_number,
+            exc,
         )
 
 
