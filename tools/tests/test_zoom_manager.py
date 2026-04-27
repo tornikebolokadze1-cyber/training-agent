@@ -360,3 +360,104 @@ class TestConstants:
 
     def test_max_retries_is_positive(self):
         assert zm.MAX_RETRIES > 0
+
+
+# ===========================================================================
+# 8. start_recording_live (Zoom Live Meeting Events API)
+# ===========================================================================
+
+
+class TestStartRecordingLive:
+    """Force-start cloud recording on a live Zoom meeting.
+
+    The watchdog calls this 2 minutes after lecture start. It must be a
+    total function — never raise — so the watchdog can route gracefully
+    to operator alerts on every failure mode.
+    """
+
+    @staticmethod
+    def _mock_response(status_code: int, text: str = ""):
+        m = MagicMock()
+        m.status_code = status_code
+        m.text = text
+        return m
+
+    @staticmethod
+    def _patch_client(response):
+        client_mock = MagicMock()
+        client_mock.__enter__ = MagicMock(return_value=client_mock)
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.patch.return_value = response
+        return patch.object(zm.httpx, "Client", return_value=client_mock)
+
+    def test_success_204_returns_ok_true(self):
+        resp = self._mock_response(204)
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             self._patch_client(resp):
+            r = zm.start_recording_live(123456789)
+        assert r["ok"] is True
+        assert r["status_code"] == 204
+        assert r["reason"] is None
+
+    def test_success_200_returns_ok_true(self):
+        resp = self._mock_response(200, "")
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             self._patch_client(resp):
+            r = zm.start_recording_live("abc")
+        assert r["ok"] is True
+
+    def test_scope_missing_400_returns_scope_missing(self):
+        resp = self._mock_response(
+            400,
+            '{"code":4711,"message":"Invalid access token, does not contain '
+            'scopes:[meeting:update:in_meeting_controls]"}',
+        )
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             self._patch_client(resp):
+            r = zm.start_recording_live(42)
+        assert r["ok"] is False
+        assert r["reason"] == "scope_missing"
+        assert r["status_code"] == 400
+
+    def test_meeting_not_live_404_returns_meeting_not_live(self):
+        resp = self._mock_response(404, "Not Found")
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             self._patch_client(resp):
+            r = zm.start_recording_live("xyz")
+        assert r["ok"] is False
+        assert r["reason"] == "meeting_not_live"
+
+    def test_unexpected_status_returns_http_code(self):
+        resp = self._mock_response(500, "Internal Server Error")
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             self._patch_client(resp):
+            r = zm.start_recording_live(1)
+        assert r["ok"] is False
+        assert r["reason"] == "http_500"
+
+    def test_request_error_returns_http_error(self):
+        from httpx import RequestError
+        client_mock = MagicMock()
+        client_mock.__enter__ = MagicMock(return_value=client_mock)
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.patch.side_effect = RequestError("boom")
+        with patch.object(zm, "get_access_token", return_value="t"), \
+             patch.object(zm.httpx, "Client", return_value=client_mock):
+            r = zm.start_recording_live(7)
+        assert r["ok"] is False
+        assert r["reason"].startswith("http_error:")
+
+    def test_auth_failure_returns_auth_error_not_raises(self):
+        """get_access_token failure must return error dict, not propagate."""
+        with patch.object(zm, "get_access_token",
+                          side_effect=zm.ZoomAuthError("creds invalid")):
+            r = zm.start_recording_live(99)
+        assert r["ok"] is False
+        assert r["reason"].startswith("auth_error:")
+
+    def test_never_raises_on_unknown_exception(self):
+        """Watchdog callers depend on this being a total function."""
+        with patch.object(zm, "get_access_token", side_effect=Exception("kaboom")):
+            r = zm.start_recording_live(0)
+        assert isinstance(r, dict)
+        assert r.get("ok") is False
