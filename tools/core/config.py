@@ -354,7 +354,7 @@ TMP_DIR.mkdir(exist_ok=True)
 
 # Hybrid model strategy: Pro for long video transcription, 3.1 Pro for Georgian text writing
 GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash-lite"  # 2.5-flash hit persistent 503 high-demand 2026-04-16 — switched to lite (different capacity pool)
-GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest for Georgian text writing
+GEMINI_MODEL_ANALYSIS = os.environ.get("GEMINI_MODEL_ANALYSIS_OVERRIDE") or "gemini-3.1-pro-preview"  # env override for quota-exhaustion fallback; default smartest for Georgian text writing
 
 # Prompt templates moved to tools/core/prompts.py — re-exported for backward compatibility
 from tools.core.prompts import (  # noqa: F401, E402
