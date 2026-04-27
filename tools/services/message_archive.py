@@ -33,7 +33,21 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "messages.db"
+
+# Database path — overridable via the MESSAGE_ARCHIVE_DB_PATH env var so
+# Railway (and any other host with a mounted persistent volume) can point
+# the archive at a path that survives container restarts. Local default
+# stays at data/messages.db so existing scripts and tests work unchanged.
+# Resolved at import time; production sets this BEFORE process start.
+DEFAULT_DB_PATH = Path(
+    os.environ.get("MESSAGE_ARCHIVE_DB_PATH")
+    or str(PROJECT_ROOT / "data" / "messages.db")
+)
+
+# Migration SQL — applied automatically on first connect() if the target
+# database is empty. Lets a fresh Railway volume bootstrap itself without
+# a separate migration step in the deploy pipeline.
+_MIGRATION_FILE = PROJECT_ROOT / "scripts" / "migrate_001_messages.sql"
 
 # Placeholder pepper used when env var missing.  Logs a warning so the
 # operator notices; NEVER ship this to production — rotate all hashes
@@ -305,30 +319,57 @@ def archive_webhook_payload(
 # DB layer
 # ---------------------------------------------------------------------------
 
-def _check_schema(conn: sqlite3.Connection) -> None:
-    """Verify that migration 001 has been applied. Raises RuntimeError if not."""
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Verify migration 001 has been applied; auto-apply on first connect.
+
+    Production volumes (Railway / mounted disks) start empty — the SQLite
+    file is created on first connect with no tables. Auto-bootstrap means
+    we don't need a separate migration step in the deploy pipeline; the
+    first webhook hit on a fresh volume just works.
+
+    Raises RuntimeError only if both the schema is missing AND the migration
+    SQL file cannot be located on disk (which would be a packaging bug).
+    """
     try:
         row = conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1"
         ).fetchone()
-        if not row or row[0] < 1:
-            raise RuntimeError(
-                "messages.db missing migration 001; "
-                "run scripts/migrate_001_messages.sql first"
-            )
-    except sqlite3.OperationalError as e:
-        raise RuntimeError(f"schema_migrations table missing: {e}") from e
+        if row and row[0] >= 1:
+            return  # schema already applied — fast path
+    except sqlite3.OperationalError:
+        pass  # schema_migrations table missing — fall through to bootstrap
+
+    if not _MIGRATION_FILE.exists():
+        raise RuntimeError(
+            f"messages.db has no schema and migration file {_MIGRATION_FILE} "
+            "not found — packaging bug?"
+        )
+    sql = _MIGRATION_FILE.read_text(encoding="utf-8")
+    conn.executescript(sql)
+    conn.commit()
+    logger.info(
+        "Bootstrapped messages.db schema (migration 001 applied) at %s",
+        _MIGRATION_FILE,
+    )
+
+
+# Back-compat alias for callers that imported the previous name. The new
+# name (`_ensure_schema`) better reflects the auto-bootstrap behavior.
+_check_schema = _ensure_schema
 
 
 @contextmanager
 def connect(db_path: Path = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
     global _SCHEMA_CHECKED
+    # Ensure parent directory exists (Railway volumes start empty;
+    # SQLite cannot create files in a non-existent directory).
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         if not _SCHEMA_CHECKED:
-            _check_schema(conn)
+            _ensure_schema(conn)
             _SCHEMA_CHECKED = True
         yield conn
         conn.commit()
