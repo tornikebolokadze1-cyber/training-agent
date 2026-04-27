@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 from datetime import datetime, timedelta
@@ -1164,6 +1165,105 @@ def start_scheduler() -> AsyncIOScheduler:
         register_reconciliation_jobs(scheduler)
     except Exception as exc:
         logger.error("Failed to register reconciliation jobs: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    #  Nightly WhatsApp archive catch-up — 04:30 Tbilisi every day        #
+    #  Defense in depth: if the live webhook drops messages (Railway      #
+    #  restart, transient error, network glitch, deploy downtime), this   #
+    #  fetches the last ~200 messages per chat from Green API and         #
+    #  INSERT-IGNOREs into messages.db. Idempotent via UNIQUE(green_api_  #
+    #  id), so repeated runs are safe and cheap.                          #
+    # ------------------------------------------------------------------ #
+    def _run_whatsapp_archive_catchup() -> None:
+        """Pull recent chat history from Green API and backfill any gaps."""
+        try:
+            import httpx
+            from tools.services.message_archive import (
+                normalize_green_api_message,
+                bulk_insert,
+                connect,
+            )
+        except Exception as exc:
+            logger.error("[archive_catchup] import failed: %s", exc)
+            return
+
+        instance_id = os.environ.get("GREEN_API_INSTANCE_ID")
+        token = os.environ.get("GREEN_API_TOKEN")
+        g1 = os.environ.get("WHATSAPP_GROUP1_ID")
+        g2 = os.environ.get("WHATSAPP_GROUP2_ID")
+        dm = os.environ.get("WHATSAPP_TORNIKE_PHONE")
+        if not all((instance_id, token, g1, g2)):
+            logger.warning(
+                "[archive_catchup] missing Green API or chat env vars; skipping"
+            )
+            return
+
+        chats: list[tuple[str, str]] = [(g1, "group_1"), (g2, "group_2")]
+        if dm:
+            dm_id = dm if dm.endswith("@c.us") else f"{dm}@c.us"
+            chats.append((dm_id, "tornike_dm"))
+
+        base_url = (
+            f"https://api.green-api.com/waInstance{instance_id}"
+            f"/getChatHistory/{token}"
+        )
+        total_inserted = 0
+        total_skipped = 0
+        try:
+            with httpx.Client(timeout=60) as client:
+                for chat_id, label in chats:
+                    try:
+                        r = client.post(
+                            base_url,
+                            json={"chatId": chat_id, "count": 200},
+                        )
+                        if r.status_code != 200:
+                            logger.warning(
+                                "[archive_catchup] %s HTTP %s: %s",
+                                label, r.status_code, r.text[:120],
+                            )
+                            continue
+                        msgs = r.json() or []
+                        normalized = []
+                        for m in msgs:
+                            try:
+                                normalized.append(
+                                    normalize_green_api_message(m, chat_id)
+                                )
+                            except Exception as norm_exc:
+                                logger.debug(
+                                    "[archive_catchup] skip msg in %s: %s",
+                                    label, norm_exc,
+                                )
+                        with connect() as conn:
+                            result = bulk_insert(conn, normalized)
+                        total_inserted += result["inserted"]
+                        total_skipped += result["skipped"]
+                        logger.info(
+                            "[archive_catchup] %s: inserted=%d skipped(dup)=%d",
+                            label, result["inserted"], result["skipped"],
+                        )
+                    except Exception as chat_exc:
+                        logger.warning(
+                            "[archive_catchup] %s failed: %s",
+                            label, chat_exc,
+                        )
+        except Exception as exc:
+            logger.error("[archive_catchup] fatal: %s", exc)
+            return
+
+        logger.info(
+            "[archive_catchup] done — total inserted=%d skipped=%d",
+            total_inserted, total_skipped,
+        )
+
+    scheduler.add_job(
+        _run_whatsapp_archive_catchup,
+        trigger=CronTrigger(hour=4, minute=30, timezone=TBILISI_TZ),
+        id="whatsapp_archive_catchup",
+        name="Nightly WhatsApp archive catch-up (Green API)",
+        replace_existing=True,
+    )
 
     scheduler.start()
     _scheduler_ref = scheduler

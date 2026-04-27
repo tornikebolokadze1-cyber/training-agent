@@ -181,6 +181,126 @@ def normalize_green_api_message(
     )
 
 
+def normalize_webhook_message(
+    body: dict[str, Any],
+    group_number: Optional[int] = None,
+) -> IngestedMessage:
+    """Convert a Green API webhook payload into an IngestedMessage.
+
+    Webhook shape differs from getChatHistory: idMessage and timestamp at
+    the top level; senderData / messageData are nested. Direction is
+    inferred from typeWebhook (incomingMessageReceived → incoming,
+    outgoingMessage* → outgoing) and the fromMe flag.
+
+    Raises ValueError if the payload is missing idMessage or timestamp.
+    Unknown message types are preserved in raw_payload for forensics.
+    """
+    type_webhook = body.get("typeWebhook", "")
+    sender_data = body.get("senderData", {}) or {}
+    message_data = body.get("messageData", {}) or {}
+    type_message = message_data.get("typeMessage", "unknown")
+    chat_id = sender_data.get("chatId", "")
+
+    if group_number is None:
+        group_number = _load_group_map().get(chat_id)
+
+    green_id = body.get("idMessage") or ""
+    if not green_id:
+        raise ValueError(f"webhook missing idMessage: typeWebhook={type_webhook}")
+
+    ts = body.get("timestamp")
+    if not ts:
+        raise ValueError(f"webhook {green_id} missing timestamp")
+    ts_iso = _utc_iso(int(ts))
+
+    sender_id = sender_data.get("sender") or sender_data.get("chatId") or chat_id
+    sender_display = sender_data.get("senderName") or sender_data.get("senderContactName")
+
+    content: Optional[str] = None
+    if type_message == "textMessage":
+        text_md = message_data.get("textMessageData", {}) or {}
+        content = text_md.get("textMessage")
+    elif type_message in ("extendedTextMessage", "quotedMessage"):
+        ext = message_data.get("extendedTextMessageData", {}) or {}
+        content = ext.get("text")
+    elif type_message == "imageMessage":
+        file_md = message_data.get("fileMessageData", {}) or {}
+        content = file_md.get("caption")
+    elif type_message == "reactionMessage":
+        reaction_md = message_data.get("reactionMessageData", {}) or {}
+        content = reaction_md.get("emoji") or reaction_md.get("reaction")
+
+    quoted_green_id = None
+    ext = message_data.get("extendedTextMessageData", {}) or {}
+    quoted = ext.get("quotedMessage") or {}
+    if isinstance(quoted, dict):
+        quoted_green_id = quoted.get("stanzaId") or quoted.get("idMessage")
+
+    from_me = bool(message_data.get("fromMe", False))
+    is_outgoing = from_me or type_webhook.startswith("outgoing")
+    direction = "outgoing" if is_outgoing else "incoming"
+
+    return IngestedMessage(
+        green_api_id=str(green_id),
+        chat_id=chat_id,
+        sender_hash=sender_hash(str(sender_id)),
+        sender_display=sender_display,
+        ts_message=ts_iso,
+        direction=direction,
+        msg_type=type_message,
+        content=content,
+        quoted_green_id=quoted_green_id,
+        raw_payload=body,
+        group_number=group_number,
+        is_bot=is_outgoing,
+    )
+
+
+def archive_webhook_payload(
+    body: dict[str, Any],
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Single-call API for live webhook handlers.
+
+    Normalizes and inserts a Green API webhook payload into messages.db.
+    Designed to be called inside a try/except wrapper at the webhook
+    boundary so archive failure never blocks the bot's reply path:
+    durability matters, but the live response matters more.
+
+    Returns
+    -------
+    dict
+        {'inserted': bool, 'green_api_id': str, 'reason': str | None}.
+        'reason' is None on a successful new insert, 'duplicate' if the
+        message was already archived, or an error string otherwise.
+    """
+    try:
+        msg = normalize_webhook_message(body)
+    except Exception as exc:
+        logger.warning("archive_webhook_payload: normalize failed: %s", exc)
+        return {"inserted": False, "green_api_id": "", "reason": f"normalize_error: {exc}"}
+
+    try:
+        with connect(db_path) as conn:
+            inserted = insert_message(conn, msg)
+        return {
+            "inserted": inserted,
+            "green_api_id": msg.green_api_id,
+            "reason": None if inserted else "duplicate",
+        }
+    except Exception as exc:
+        logger.warning(
+            "archive_webhook_payload: insert failed for %s: %s",
+            msg.green_api_id,
+            exc,
+        )
+        return {
+            "inserted": False,
+            "green_api_id": msg.green_api_id,
+            "reason": f"insert_error: {exc}",
+        }
+
+
 # ---------------------------------------------------------------------------
 # DB layer
 # ---------------------------------------------------------------------------

@@ -290,3 +290,156 @@ class TestQueries:
         assert len(g1) == 2 and len(g2) == 2
         assert all(r["group_number"] == 1 for r in g1)
         assert all(r["group_number"] == 2 for r in g2)
+
+
+# --------------------------------------------------------------------- #
+# Webhook normalization + archive helper (Phase 3 wiring)
+# --------------------------------------------------------------------- #
+
+@pytest.fixture
+def webhook_text_payload() -> dict:
+    """Realistic Green API webhook for an incoming text message."""
+    return {
+        "typeWebhook": "incomingMessageReceived",
+        "instanceData": {"idInstance": 9999, "wid": "995123@c.us"},
+        "timestamp": 1745800000,
+        "idMessage": "WEBHOOK_TEXT_001",
+        "senderData": {
+            "chatId": "120363425514041539@g.us",
+            "sender": "995577123456@c.us",
+            "senderName": "Test Student",
+        },
+        "messageData": {
+            "typeMessage": "textMessage",
+            "textMessageData": {"textMessage": "გამარჯობა, რატომ ვერ ვიგებ?"},
+        },
+    }
+
+
+@pytest.fixture
+def webhook_extended_payload() -> dict:
+    """Webhook for an extendedTextMessage (reply / quoted)."""
+    return {
+        "typeWebhook": "incomingMessageReceived",
+        "timestamp": 1745800100,
+        "idMessage": "WEBHOOK_EXT_002",
+        "senderData": {
+            "chatId": "120363407739933658@g.us",
+            "sender": "995599887766@c.us",
+            "senderName": "Reply User",
+        },
+        "messageData": {
+            "typeMessage": "extendedTextMessage",
+            "extendedTextMessageData": {
+                "text": "ეს არის ციტატა-პასუხი",
+                "quotedMessage": {
+                    "stanzaId": "ORIGINAL_MSG_ID",
+                    "idMessage": "ORIGINAL_MSG_ID",
+                },
+            },
+        },
+    }
+
+
+class TestWebhookNormalize:
+    def test_text_message_basic(self, webhook_text_payload):
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.green_api_id == "WEBHOOK_TEXT_001"
+        assert msg.chat_id == "120363425514041539@g.us"
+        assert msg.msg_type == "textMessage"
+        assert msg.content == "გამარჯობა, რატომ ვერ ვიგებ?"
+        assert msg.direction == "incoming"
+        assert msg.is_bot is False
+        assert msg.sender_display == "Test Student"
+        assert len(msg.sender_hash) == 64
+
+    def test_extended_text_with_quoted_id(self, webhook_extended_payload):
+        msg = ma.normalize_webhook_message(webhook_extended_payload)
+        assert msg.green_api_id == "WEBHOOK_EXT_002"
+        assert msg.content == "ეს არის ციტატა-პასუხი"
+        assert msg.quoted_green_id == "ORIGINAL_MSG_ID"
+        assert msg.direction == "incoming"
+
+    def test_from_me_flag_marks_outgoing(self, webhook_text_payload):
+        webhook_text_payload["messageData"]["fromMe"] = True
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.direction == "outgoing"
+        assert msg.is_bot is True
+
+    def test_outgoing_type_webhook_marks_outgoing(self, webhook_text_payload):
+        webhook_text_payload["typeWebhook"] = "outgoingMessageReceived"
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.direction == "outgoing"
+        assert msg.is_bot is True
+
+    def test_missing_id_raises(self, webhook_text_payload):
+        webhook_text_payload["idMessage"] = ""
+        with pytest.raises(ValueError, match="missing idMessage"):
+            ma.normalize_webhook_message(webhook_text_payload)
+
+    def test_missing_timestamp_raises(self, webhook_text_payload):
+        webhook_text_payload["timestamp"] = 0
+        with pytest.raises(ValueError, match="missing timestamp"):
+            ma.normalize_webhook_message(webhook_text_payload)
+
+    def test_unknown_type_keeps_raw_payload(self, webhook_text_payload):
+        webhook_text_payload["messageData"]["typeMessage"] = "stickerMessage"
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.msg_type == "stickerMessage"
+        # raw_payload preserves the entire body for forensics
+        assert msg.raw_payload["messageData"]["typeMessage"] == "stickerMessage"
+        assert msg.content is None
+
+    def test_image_with_caption(self, webhook_text_payload):
+        webhook_text_payload["messageData"] = {
+            "typeMessage": "imageMessage",
+            "fileMessageData": {"caption": "სქრინი"},
+        }
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.msg_type == "imageMessage"
+        assert msg.content == "სქრინი"
+
+    def test_group_inferred_from_env(
+        self, monkeypatch, webhook_text_payload
+    ):
+        monkeypatch.setenv("WHATSAPP_GROUP1_ID", "120363425514041539@g.us")
+        ma._GROUP_ID_MAP = None  # reset cache
+        msg = ma.normalize_webhook_message(webhook_text_payload)
+        assert msg.group_number == 1
+
+
+class TestArchiveWebhookPayload:
+    def test_inserts_new_message(self, temp_db, webhook_text_payload):
+        result = ma.archive_webhook_payload(webhook_text_payload, db_path=temp_db)
+        assert result["inserted"] is True
+        assert result["green_api_id"] == "WEBHOOK_TEXT_001"
+        assert result["reason"] is None
+
+    def test_idempotent_second_call_marks_duplicate(
+        self, temp_db, webhook_text_payload
+    ):
+        ma.archive_webhook_payload(webhook_text_payload, db_path=temp_db)
+        result = ma.archive_webhook_payload(webhook_text_payload, db_path=temp_db)
+        assert result["inserted"] is False
+        assert result["reason"] == "duplicate"
+
+    def test_normalize_failure_is_swallowed(self, temp_db):
+        # missing idMessage triggers normalize ValueError; the helper
+        # MUST return error dict, not raise — webhook handlers rely on this.
+        bad_payload = {"typeWebhook": "incomingMessageReceived"}
+        result = ma.archive_webhook_payload(bad_payload, db_path=temp_db)
+        assert result["inserted"] is False
+        assert "normalize_error" in (result.get("reason") or "")
+
+    def test_persists_through_connect(self, temp_db, webhook_text_payload):
+        ma.archive_webhook_payload(webhook_text_payload, db_path=temp_db)
+        with ma.connect(temp_db) as conn:
+            row = conn.execute(
+                "SELECT green_api_id, content, direction, msg_type "
+                "FROM messages WHERE green_api_id=?",
+                ("WEBHOOK_TEXT_001",),
+            ).fetchone()
+        assert row is not None
+        assert row["content"] == "გამარჯობა, რატომ ვერ ვიგებ?"
+        assert row["direction"] == "incoming"
+        assert row["msg_type"] == "textMessage"
