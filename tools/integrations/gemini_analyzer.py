@@ -1151,7 +1151,15 @@ def _gemini_write_georgian(claude_analysis: str, prompt: str, purpose: str, use_
 
     Gemini 3.1 Pro excels at Georgian language — it takes Claude's structured
     analysis and produces fluent, professional Georgian text.
+
+    Fallback: when env var ``USE_CLAUDE_FOR_GEORGIAN_WRITING=1`` is set, this
+    function delegates to Claude (Anthropic) instead of Gemini. Use this when
+    Gemini Pro/Flash are quota-exhausted or returning persistent 503s and
+    you'd rather pay slightly more for Claude than fail the pipeline.
     """
+    if os.environ.get("USE_CLAUDE_FOR_GEORGIAN_WRITING") == "1":
+        return _claude_write_georgian(claude_analysis, prompt, purpose)
+
     client = _get_client(use_free=use_free)
 
     writing_prompt = (
@@ -1173,6 +1181,76 @@ def _gemini_write_georgian(claude_analysis: str, prompt: str, purpose: str, use_
         use_free=use_free,
         disable_thinking=False,  # Gemini 3.1 Pro requires thinking mode (Budget 0 is invalid)
     )
+
+
+def _claude_write_georgian(claude_analysis: str, prompt: str, purpose: str) -> str:
+    """Claude-based fallback for Georgian writing when Gemini is unavailable.
+
+    Claude Sonnet 4.6 handles Georgian well and is the rescue path when
+    Gemini Pro/Flash hit quota or 503. Cost ~3x higher per token than Gemini
+    Flash, but the quality and reliability are unblocking.
+    """
+    client = _get_anthropic_client()
+
+    user_msg = (
+        f"{prompt}\n\n"
+        "---\n"
+        "ქვემოთ მოცემულია ექსპერტის ანალიზი ინგლისურად. "
+        "გადმოეცი ეს ანალიზი სრულად და დეტალურად ქართულ ენაზე, "
+        "შეინარჩუნე ორიგინალის სტრუქტურა და სიღრმე. "
+        "არ გამოტოვო არცერთი მნიშვნელოვანი პუნქტი. "
+        "გრამატიკა და ბრუნვები იყოს უმწიკვლო, ენა ბუნებრივი ქართული "
+        "(არა ინგლისური კალკი).\n\n"
+        f"EXPERT ANALYSIS:\n{claude_analysis}"
+    )
+
+    logger.info(
+        "Generating %s (Georgian writing) via Claude (Gemini fallback)...",
+        purpose,
+    )
+    response = client.messages.create(
+        model=ASSISTANT_CLAUDE_MODEL,
+        max_tokens=8192,
+        timeout=600.0,
+        system=(
+            "You are a professional Georgian-language writer. You take "
+            "structured English analysis and produce fluent, native-quality "
+            "Georgian text matching the requested format precisely."
+        ),
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    text_parts = [b.text for b in response.content if b.type == "text"]
+    result = "\n".join(text_parts)
+
+    # Cost log for visibility
+    try:
+        usage = getattr(response, "usage", None)
+        if usage:
+            in_tok = getattr(usage, "input_tokens", 0) or 0
+            out_tok = getattr(usage, "output_tokens", 0) or 0
+            cost = (in_tok / 1_000_000) * 3.0 + (out_tok / 1_000_000) * 15.0
+            logger.info(
+                "💰 Claude cost [%s Georgian writing] | input=%d ($%.4f) | "
+                "output=%d ($%.4f) | total=$%.4f",
+                purpose, in_tok, (in_tok / 1_000_000) * 3.0,
+                out_tok, (out_tok / 1_000_000) * 15.0, cost,
+            )
+            try:
+                from tools.core.cost_tracker import record_cost
+                record_cost(
+                    service="claude", model=ASSISTANT_CLAUDE_MODEL,
+                    operation=f"{purpose}_georgian_writing", cost_usd=cost,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    logger.info(
+        "%s (Georgian writing) generated via Claude: %d chars",
+        purpose, len(result),
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
