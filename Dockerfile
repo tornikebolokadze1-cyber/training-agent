@@ -27,6 +27,11 @@ WORKDIR /app
 
 COPY tools/ ./tools/
 COPY workflows/ ./workflows/
+# scripts/ contains migration SQL files that message_archive auto-bootstraps
+# from on first connect against an empty volume. Without this, the runtime
+# raises "messages.db has no schema and migration file not found" on the
+# first webhook and silently drops the archive write. Required since PR #20.
+COPY scripts/migrate_001_messages.sql ./scripts/migrate_001_messages.sql
 
 # Create writable directories (Railway volume overrides .tmp at runtime)
 RUN mkdir -p .tmp .tmp/dlq logs data
