@@ -30,10 +30,18 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Re-import real FastAPI/httpx — same bootstrap as test_server.py
+# Save popped stubs so conftest's reset fixture can detect the pollution.
+#
+# IDEMPOTENT: skip the pop if a sibling test file already swapped the
+# conftest stubs for real modules — re-popping creates a second set of
+# class objects and breaks class-identity checks across files.
 # ---------------------------------------------------------------------------
-for _mod_name in list(sys.modules):
-    if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server")):
-        sys.modules.pop(_mod_name, None)
+_popped_stubs: dict[str, object] = {}
+_fastapi_real = getattr(sys.modules.get("fastapi"), "__file__", None) is not None
+if not _fastapi_real:
+    for _mod_name in list(sys.modules):
+        if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "tools.app.server")):
+            _popped_stubs[_mod_name] = sys.modules.pop(_mod_name)
 
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402

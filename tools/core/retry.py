@@ -90,6 +90,7 @@ def safe_operation(
     *,
     alert: bool = True,
     default: Any = None,
+    dlq_operation: str = "",
 ) -> Callable[[F], F]:
     """Decorator that catches exceptions, logs them, and optionally alerts the operator.
 
@@ -117,6 +118,8 @@ def safe_operation(
         alert: Whether to call ``alert_operator`` on failure (default True).
             Uses a lazy import to avoid circular dependencies.
         default: Value to return when the wrapped function raises (default None).
+        dlq_operation: If set, enqueue to Dead Letter Queue on failure for
+            later retry.  The value is used as the DLQ operation name.
 
     Returns:
         A decorator that wraps the target function with error handling.
@@ -138,6 +141,18 @@ def safe_operation(
                         logger.error(
                             "alert_operator also failed: %s", alert_err
                         )
+                if dlq_operation:
+                    try:
+                        from tools.core.dlq import enqueue as _dlq_enqueue
+
+                        # Capture the function args as payload
+                        _dlq_payload: dict[str, Any] = {
+                            "args": [repr(a) for a in args[:3]],
+                            "operation": operation_name,
+                        }
+                        _dlq_enqueue(dlq_operation, _dlq_payload, str(exc))
+                    except Exception as dlq_err:
+                        logger.debug("DLQ enqueue failed: %s", dlq_err)
                 return copy.deepcopy(default)
 
         return wrapper  # type: ignore[return-value]

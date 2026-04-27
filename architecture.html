@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Training Agent — Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 20px; }
+  h1 { text-align: center; color: #58a6ff; }
+  h2 { color: #79c0ff; margin-top: 40px; }
+  .diagram { background: #161b22; border-radius: 12px; padding: 20px; margin: 20px 0; border: 1px solid #30363d; overflow-x: auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 20px 0; }
+  .stat { background: #161b22; border-radius: 8px; padding: 16px; border: 1px solid #30363d; text-align: center; }
+  .stat .num { font-size: 2em; font-weight: bold; color: #58a6ff; }
+  .stat .label { color: #8b949e; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Training Agent — System Architecture</h1>
+
+<div class="stats">
+  <div class="stat"><div class="num">27</div><div class="label">Python Modules</div></div>
+  <div class="stat"><div class="num">21</div><div class="label">Test Files</div></div>
+  <div class="stat"><div class="num">695</div><div class="label">Obsidian Notes</div></div>
+  <div class="stat"><div class="num">6</div><div class="label">External APIs</div></div>
+  <div class="stat"><div class="num">2</div><div class="label">Training Groups</div></div>
+  <div class="stat"><div class="num">15</div><div class="label">Lectures / Group</div></div>
+</div>
+
+<h2>Full Pipeline Flow</h2>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph TRIGGER["Triggers"]
+        Z["Zoom Recording Webhook"]
+        CRON["APScheduler Cron Jobs"]
+        WA_IN["WhatsApp Message"]
+    end
+
+    subgraph ENTRY["Entry Points &mdash; app/"]
+        ORCH["orchestrator.py\nUnified Entry Point"]
+        SRV["server.py\nFastAPI Webhooks"]
+        SCHED["scheduler.py\nCron Scheduler"]
+    end
+
+    subgraph CORE["Core &mdash; core/"]
+        CFG["config.py\nGroups, Schedules, Prompts"]
+        PIPE["pipeline_state.py\nState Tracking"]
+        RETRY["retry.py\nExponential Backoff"]
+        PROMPTS["prompts.py\nGeorgian AI Prompts"]
+    end
+
+    subgraph SERVICES["Services &mdash; services/"]
+        TRANS["transcribe_lecture.py\nMain Analysis Pipeline"]
+        ASSIST["whatsapp_assistant.py\nAI Assistant"]
+        ANALYTICS["analytics.py\nCourse Reporting"]
+    end
+
+    subgraph INTEGRATIONS["Integrations &mdash; integrations/"]
+        ZOOM["zoom_manager.py\nS2S OAuth, Recording DL"]
+        GDRIVE["gdrive_manager.py\nUpload, Docs, Folders"]
+        GEMINI["gemini_analyzer.py\nTranscription + Writing"]
+        KNOW["knowledge_indexer.py\nPinecone RAG"]
+        WSEND["whatsapp_sender.py\nGreen API Messaging"]
+        OBS["obsidian_sync.py\nKnowledge Graph to Vault"]
+    end
+
+    subgraph EXTERNAL["External Services"]
+        ZOOM_API["Zoom API"]
+        DRIVE_API["Google Drive"]
+        GEM_API["Gemini 2.5 Pro/Flash"]
+        CLAUDE_API["Claude Opus"]
+        PINE_API["Pinecone"]
+        GREEN_API["Green API WhatsApp"]
+    end
+
+    Z --> SRV
+    CRON --> SCHED
+    WA_IN --> SRV
+    ORCH --> SRV
+    ORCH --> SCHED
+
+    SRV --> TRANS
+    SRV --> ASSIST
+    SCHED --> TRANS
+
+    TRANS --> ZOOM
+    TRANS --> GEMINI
+    TRANS --> GDRIVE
+    TRANS --> KNOW
+    TRANS --> WSEND
+    TRANS --> OBS
+    TRANS --> PIPE
+
+    ASSIST --> PINE_API
+    ASSIST --> CLAUDE_API
+    ASSIST --> GEM_API
+
+    ZOOM --> ZOOM_API
+    GDRIVE --> DRIVE_API
+    GEMINI --> GEM_API
+    GEMINI --> CLAUDE_API
+    KNOW --> PINE_API
+    WSEND --> GREEN_API
+
+    TRANS --> CFG
+    TRANS --> PROMPTS
+    TRANS --> RETRY
+
+    style TRIGGER fill:#1f2937,stroke:#3b82f6
+    style ENTRY fill:#1a1a2e,stroke:#6366f1
+    style CORE fill:#1a2332,stroke:#22d3ee
+    style SERVICES fill:#1a2e1a,stroke:#22c55e
+    style INTEGRATIONS fill:#2e1a1a,stroke:#f59e0b
+    style EXTERNAL fill:#2e1a2e,stroke:#ec4899
+</pre>
+</div>
+
+<h2>Analysis Pipeline (transcribe_lecture.py)</h2>
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A["Video File\n442MB"] --> B["Chunk\n4 segments"]
+    B --> C["Upload to\nGemini"]
+    C --> D["Transcribe\nGemini 2.5 Flash"]
+    D --> E["Deep Analysis\nClaude Opus"]
+    E --> F["Georgian Report\nGemini 3.1 Pro"]
+    F --> G["Knowledge Extract\n185 concepts"]
+    G --> H["Obsidian Sync\n695 notes"]
+    G --> I["Pinecone Index\n228 embeddings"]
+    F --> J["Google Drive\nSummary + Report"]
+    J --> K["WhatsApp\nGroup + Private"]
+
+    style A fill:#1e3a5f
+    style D fill:#1e3a5f
+    style E fill:#3a1e5f
+    style F fill:#1e3a5f
+    style H fill:#1e5f3a
+    style I fill:#5f3a1e
+    style K fill:#1e5f1e
+</pre>
+</div>
+
+<h2>Memory and Knowledge Layer</h2>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph HINDSIGHT["Hindsight Memory NEW"]
+        H_RECALL["Recall Hook\nUserPromptSubmit"]
+        H_RETAIN["Retain Hook\nStop Event"]
+        H_DAEMON["hindsight-embed\nport 8888"]
+        H_DB[("PostgreSQL\npg0-embedded")]
+        H_LLM["gpt-4o-mini\nFact Extraction"]
+    end
+
+    subgraph OBSIDIAN_V["Obsidian Vault"]
+        OBS_MOC["MOC\nMain Topics"]
+        OBS_CONC["Concepts\n520 notes"]
+        OBS_INST["Instruments\n160 notes"]
+        OBS_GRAPH["Graph View"]
+    end
+
+    subgraph PINECONE_V["Pinecone Vector DB"]
+        P_IDX["gemini-embedding-001\n3072 dims"]
+        P_QUERY["Semantic Search"]
+    end
+
+    subgraph AUTO_MEM["Claude Auto-Memory"]
+        AM_FILES["MEMORY.md\nFile-based"]
+    end
+
+    H_RECALL --> H_DAEMON
+    H_RETAIN --> H_DAEMON
+    H_DAEMON --> H_DB
+    H_DAEMON --> H_LLM
+
+    OBS_MOC --> OBS_CONC
+    OBS_MOC --> OBS_INST
+    OBS_CONC --> OBS_GRAPH
+    OBS_INST --> OBS_GRAPH
+
+    P_IDX --> P_QUERY
+
+    style HINDSIGHT fill:#1a2e1a,stroke:#22c55e
+    style OBSIDIAN_V fill:#2e1a2e,stroke:#a855f7
+    style PINECONE_V fill:#1a1a2e,stroke:#3b82f6
+    style AUTO_MEM fill:#2e2e1a,stroke:#eab308
+</pre>
+</div>
+
+</body>
+</html>

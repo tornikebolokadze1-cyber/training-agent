@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 import anthropic
@@ -37,6 +38,7 @@ from tools.core.config import (
     GEMINI_MODEL_ANALYSIS,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
+    WHATSAPP_TORNIKE_PHONE,
 )
 from tools.integrations.whatsapp_sender import send_message_to_chat
 
@@ -57,6 +59,28 @@ def _build_group_chat_map() -> dict[str, int]:
     if WHATSAPP_GROUP2_ID:
         mapping[WHATSAPP_GROUP2_ID] = 2
     return mapping
+
+
+def _build_allowed_chats() -> set[str]:
+    """Build the set of chat IDs where the assistant may send messages.
+
+    Only these chats are allowed (Green API free plan = 3 chats):
+      1. Tornike's private chat
+      2. Group #1
+      3. Group #2
+    Messages from any other chat are silently ignored.
+    """
+    allowed: set[str] = set()
+    if WHATSAPP_TORNIKE_PHONE:
+        allowed.add(f"{WHATSAPP_TORNIKE_PHONE}@c.us")
+    if WHATSAPP_GROUP1_ID:
+        allowed.add(WHATSAPP_GROUP1_ID)
+    if WHATSAPP_GROUP2_ID:
+        allowed.add(WHATSAPP_GROUP2_ID)
+    return allowed
+
+
+_ALLOWED_CHATS: set[str] = set()
 
 
 @dataclass
@@ -121,6 +145,13 @@ class WhatsAppAssistant:
 
         # Lazily populated chat-ID → group-number mapping
         self._group_map: dict[str, int] = _build_group_chat_map()
+
+        # Allowed chats — assistant only sends to these (Green API limit)
+        self._allowed_chats: set[str] = _build_allowed_chats()
+        if self._allowed_chats:
+            logger.info("Allowed chats filter active: %s", self._allowed_chats)
+        else:
+            logger.warning("No allowed chats configured — assistant will respond in ALL chats")
 
         # Mem0 personal memory — learns from feedback and conversations.
         # Cloud mode: Qdrant Cloud (vectors) + Neo4j AuraDB (graph).
@@ -224,7 +255,9 @@ class WhatsAppAssistant:
 
         Checks for the Georgian trigger word ("მრჩეველო") and common
         Latin transliterations ("mrchevelo", "mrcheveli").  Comparison
-        is case-insensitive.
+        is case-insensitive and Unicode-normalized (NFC) so that
+        decomposed Georgian code points from some mobile keyboards
+        still match.
 
         Args:
             text: Raw message text.
@@ -232,14 +265,47 @@ class WhatsAppAssistant:
         Returns:
             True when the assistant is directly addressed.
         """
-        lowered = text.lower()
+        normalized = unicodedata.normalize("NFC", text).lower()
         triggers = {
-            ASSISTANT_TRIGGER_WORD.lower(),  # "მრჩეველო"
-            "მრჩეველი",
+            unicodedata.normalize("NFC", ASSISTANT_TRIGGER_WORD).lower(),  # "მრჩეველო"
+            unicodedata.normalize("NFC", "მრჩეველი"),
             "mrchevelo",
             "mrcheveli",
         }
-        return any(t in lowered for t in triggers)
+        return any(t in normalized for t in triggers)
+
+    def _is_reply_to_bot(self, quoted_text: str) -> bool:
+        """Return True if a quoted message looks like a previous bot response.
+
+        Bot messages are formatted by ``_format_response`` as
+        ``🤖 {ASSISTANT_SIGNATURE}\\n---\\n{body}`` — so when a student
+        replies to one, WhatsApp delivers ``quoted_text`` containing the
+        signature near the start. Treating that as a direct trigger lets
+        students continue a conversation by tapping reply, without having
+        to repeat "მრჩეველო" each time.
+
+        We also accept the trigger word inside the quoted message body
+        as a weak signal: a student quoting another student's message
+        that itself addressed the assistant.
+
+        Args:
+            quoted_text: Text body of the message being replied to (may
+                be empty).
+
+        Returns:
+            True when the reply continues an existing conversation with
+            the assistant.
+        """
+        if not quoted_text:
+            return False
+        normalized = unicodedata.normalize("NFC", quoted_text)
+        sig = unicodedata.normalize("NFC", ASSISTANT_SIGNATURE)
+        # Signature in the leading window — quoted bot reply.
+        if sig in normalized[:200]:
+            return True
+        # Trigger word anywhere in quoted text — chained reply to a
+        # message that addressed the assistant.
+        return self._is_direct_mention(quoted_text)
 
     def _is_own_message(self, sender_id: str) -> bool:
         """Return True if the message was sent by the bot's own phone number.
@@ -350,6 +416,8 @@ class WhatsAppAssistant:
         """
         # Remove null bytes and other control chars (keep newlines/tabs)
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Strip Unicode directional overrides and zero-width chars (prompt injection vectors)
+        cleaned = re.sub(r'[\u200b-\u200f\u2028-\u202f\u2060-\u2069\ufeff]', '', cleaned)
         # Truncate to prevent context stuffing (WhatsApp messages rarely exceed 4K)
         max_input_length = 4000
         if len(cleaned) > max_input_length:
@@ -501,6 +569,25 @@ class WhatsAppAssistant:
             reasoning = response.content[0].text.strip()
             logger.debug("Claude reasoning output: %s", reasoning)
 
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _in = response.usage.input_tokens
+                _out = response.usage.output_tokens
+                _cost = (_in * 3.0 + _out * 15.0) / 1_000_000
+                _record_cost(
+                    service="claude",
+                    model=ASSISTANT_CLAUDE_MODEL,
+                    purpose="whatsapp_decision",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             if reasoning.upper() == "SILENT":
                 logger.info(
                     "Claude decided to stay silent for message from %s in %s",
@@ -586,6 +673,27 @@ class WhatsAppAssistant:
             )
             text = gemini_response.text.strip()
             logger.debug("Gemini response (%d chars): %s…", len(text), text[:80])
+
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _meta = getattr(gemini_response, "usage_metadata", None)
+                _in = getattr(_meta, "prompt_token_count", 0) or 0
+                _out = getattr(_meta, "candidates_token_count", 0) or 0
+                _cost = (_in * 1.25 + _out * 10.0) / 1_000_000
+                _record_cost(
+                    service="gemini",
+                    model=self._gemini_model,
+                    purpose="whatsapp_response",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             return text
 
         except Exception as exc:
@@ -622,6 +730,27 @@ class WhatsAppAssistant:
             result = response.text.strip() if response.text else ""
             if result:
                 logger.info("Web search returned %d chars for: %s…", len(result), query[:50])
+
+            # --- Cost tracking ---
+            try:
+                from tools.core.cost_tracker import record_cost as _record_cost
+
+                _meta = getattr(response, "usage_metadata", None)
+                _in = getattr(_meta, "prompt_token_count", 0) or 0
+                _out = getattr(_meta, "candidates_token_count", 0) or 0
+                _cost = (_in * 0.42 + _out * 2.50) / 1_000_000
+                _record_cost(
+                    service="gemini",
+                    model="gemini-2.5-flash",
+                    purpose="whatsapp_web_search",
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    cost_usd=_cost,
+                    pipeline_key="whatsapp",
+                )
+            except Exception as _ct_err:
+                logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
             return result[:2000]  # Cap to avoid huge context
         except Exception as exc:
             logger.warning("Web search failed: %s", exc)
@@ -667,6 +796,17 @@ class WhatsAppAssistant:
         Returns:
             The text of the sent message, or None if the assistant stayed silent.
         """
+        # 0. Receipt diagnostic — surfaces in Railway logs so we can tell
+        # whether the webhook reached the assistant at all (vs. a chat-filter
+        # drop or a Green API delivery failure).
+        logger.info(
+            "[assistant] received message: chat=%s sender=%s text_len=%d quoted_len=%d",
+            (message.chat_id or "")[:40],
+            (message.sender_name or message.sender_id or "?")[:30],
+            len(message.text or ""),
+            len(message.quoted_text or ""),
+        )
+
         # 1. Ignore own messages (infinite-loop prevention)
         if self._is_own_message(message.sender_id):
             logger.debug("Ignoring own message from %s", message.sender_id)
@@ -680,8 +820,24 @@ class WhatsAppAssistant:
         # 2.5 Record message in history (before any filtering)
         self._record_message(message)
 
-        # 3. Check for direct mention
+        # 2.6 Allowed-chat filter (Green API free plan: 3 chats only)
+        if self._allowed_chats and message.chat_id not in self._allowed_chats:
+            logger.info(
+                "Chat %s not in allowed list — ignoring message from %s",
+                message.chat_id,
+                message.sender_name or message.sender_id,
+            )
+            return None
+
+        # 3. Check for direct mention (in user's own text or via reply-to-bot)
         is_direct = self._is_direct_mention(message.text)
+        is_reply_to_bot = self._is_reply_to_bot(message.quoted_text)
+        if is_reply_to_bot and not is_direct:
+            logger.info(
+                "[assistant] treating as direct trigger — reply to assistant in chat %s",
+                message.chat_id,
+            )
+            is_direct = True
 
         # 4. Cooldown check for passive responses
         if not is_direct and self._is_on_cooldown(message.chat_id):
@@ -690,6 +846,30 @@ class WhatsAppAssistant:
                 message.chat_id,
             )
             return None
+
+        # 4.5 Daily budget check — refuse API calls if budget exhausted
+        try:
+            from tools.core.cost_tracker import check_daily_budget
+
+            _ok, _remaining = check_daily_budget()
+            if not _ok:
+                logger.warning("Daily budget exceeded — assistant refusing API calls")
+                if is_direct:
+                    # Only notify the user for direct mentions, not passive triggers
+                    loop = asyncio.get_running_loop()
+                    try:
+                        await loop.run_in_executor(
+                            None,
+                            send_message_to_chat,
+                            message.chat_id,
+                            "🤖 " + ASSISTANT_SIGNATURE + "\n---\n"
+                            "დღევანდელი ბიუჯეტი ამოიწურა. ხვალ ისევ შეგიძლიათ შეკითხვების დასმა.",
+                        )
+                    except Exception:
+                        pass
+                return None
+        except Exception:
+            pass  # cost_tracker not available — proceed normally
 
         logger.info(
             "Processing message from %s in chat %s (direct=%s)",
@@ -798,6 +978,239 @@ class WhatsAppAssistant:
                 logger.debug("Memory save failed (non-critical): %s", exc)
 
         return formatted
+
+    # ------------------------------------------------------------------
+    # Catch-up: process messages missed during WhatsApp disconnection
+    # ------------------------------------------------------------------
+
+    # Polling interval for WhatsApp health checks (seconds).
+    # Used to adjust the disconnect cursor so we don't miss messages
+    # in the gap between the last successful poll and the detected disconnect.
+    HEALTH_POLL_INTERVAL = 30 * 60  # 30 minutes
+
+    def _set_disconnect_cursor(self) -> None:
+        """Record when WhatsApp disconnection was first detected.
+
+        Subtracts one poll interval from the current time to account for
+        the gap between the last successful health check and the actual
+        disconnect moment (up to ``HEALTH_POLL_INTERVAL`` seconds ago).
+        """
+        self._disconnect_ts: float = time.time() - self.HEALTH_POLL_INTERVAL
+        logger.info(
+            "Disconnect cursor set to %d (now minus %ds poll interval)",
+            int(self._disconnect_ts),
+            self.HEALTH_POLL_INTERVAL,
+        )
+
+    def _get_disconnect_cursor(self) -> float | None:
+        """Return the disconnect timestamp, or None if not set."""
+        return getattr(self, "_disconnect_ts", None)
+
+    def _clear_disconnect_cursor(self) -> None:
+        """Clear the disconnect timestamp after catch-up completes."""
+        self._disconnect_ts = None  # type: ignore[assignment]
+
+    def _memorise_silently(self, message: IncomingMessage, group_number: int | None) -> bool:
+        """Store a missed message in memory without responding.
+
+        Used during catch-up when the message is too old to reply to
+        but should still be learned from.
+
+        Args:
+            message: The missed message to memorise.
+            group_number: Training group (1 or 2), or None.
+
+        Returns:
+            True if the memory was saved, False on failure.
+        """
+        if not self._memory:
+            return False
+        try:
+            user_id = message.sender_name or message.sender_id[:10]
+            metadata = {"group": group_number} if group_number else {}
+            self._memory.add(
+                [{"role": "user", "content": message.text}],
+                user_id=user_id,
+                metadata=metadata,
+            )
+            logger.debug("Silently memorised message from %s", user_id)
+            return True
+        except Exception as exc:
+            logger.debug("Silent memorise failed: %s", exc)
+            return False
+
+    async def _respond_to_missed(self, message: IncomingMessage) -> str | None:
+        """Process a single missed message during catch-up.
+
+        Similar to ``handle_message`` but uses group-scoped memory isolation
+        for Mem0 lookups and skips cooldown logic.
+
+        Args:
+            message: A message that was missed during disconnection.
+
+        Returns:
+            The sent response text, or None if the assistant stayed silent
+            or if sending failed.
+        """
+        if not message.text or not message.text.strip():
+            return None
+
+        # Allowed-chat filter (same as handle_message)
+        if self._allowed_chats and message.chat_id not in self._allowed_chats:
+            return None
+
+        # Direct mention OR reply to a previous bot message both trigger.
+        is_direct = (
+            self._is_direct_mention(message.text)
+            or self._is_reply_to_bot(message.quoted_text)
+        )
+        group_number = self._get_group_number(message.chat_id)
+
+        loop = asyncio.get_running_loop()
+
+        # Retrieve Pinecone context
+        context = await loop.run_in_executor(
+            None, self._retrieve_context, message.text, group_number,
+        )
+
+        # Recall memories WITH group filter (isolation for catch-up)
+        memory_context = ""
+        if self._memory:
+            try:
+                user_id = message.sender_name or message.sender_id[:10]
+                search_kwargs: dict = {
+                    "user_id": user_id,
+                    "limit": 3,
+                }
+                if group_number is not None:
+                    search_kwargs["filters"] = {"group": {"eq": group_number}}
+                memories = self._memory.search(message.text, **search_kwargs)
+                if memories and memories.get("results"):
+                    mem_items = [m["memory"] for m in memories["results"] if m.get("memory")]
+                    if mem_items:
+                        memory_context = (
+                            "MEMORY (previous interactions with this user):\n"
+                            + "\n".join(f"- {m}" for m in mem_items)
+                        )
+            except Exception as exc:
+                logger.debug("Memory recall in catch-up failed: %s", exc)
+
+        if memory_context:
+            context = f"{context}\n\n{memory_context}" if context else memory_context
+
+        # Claude: decide and reason
+        reasoning = await loop.run_in_executor(
+            None, self._decide_and_reason, message, context, is_direct, "",
+        )
+        if reasoning is None:
+            return None
+
+        # Web search enrichment
+        web_context = ""
+        if self._needs_web_search(reasoning, message.text):
+            web_context = await loop.run_in_executor(
+                None, self._web_search, message.text,
+            )
+
+        # Gemini: write response
+        combined_context = context
+        if web_context:
+            combined_context = (
+                f"{context}\n\nWEB SEARCH RESULTS (real-time):\n{web_context}"
+                if context
+                else f"WEB SEARCH RESULTS (real-time):\n{web_context}"
+            )
+        response_text = await loop.run_in_executor(
+            None, self._write_response, reasoning, message.text, combined_context,
+        )
+
+        # Format and send
+        formatted = self._format_response(response_text)
+        try:
+            await loop.run_in_executor(
+                None, send_message_to_chat, message.chat_id, formatted,
+            )
+            logger.info("Catch-up response sent to %s (%d chars)", message.chat_id, len(formatted))
+        except Exception as exc:
+            logger.error("Failed to send catch-up response to %s: %s", message.chat_id, exc)
+            return None
+
+        # Save to memory WITH group metadata
+        if self._memory:
+            try:
+                user_id = message.sender_name or message.sender_id[:10]
+                conversation = [
+                    {"role": "user", "content": message.text},
+                    {"role": "assistant", "content": response_text},
+                ]
+                metadata = {"group": group_number} if group_number else {}
+                self._memory.add(conversation, user_id=user_id, metadata=metadata)
+            except Exception as exc:
+                logger.debug("Memory save in catch-up failed: %s", exc)
+
+        return formatted
+
+    async def catch_up(self, missed_messages: list[IncomingMessage]) -> dict[str, int]:
+        """Process messages that were missed during a WhatsApp disconnection.
+
+        Iterates through missed messages, attempting to respond to direct
+        mentions and silently memorising others. Tracks outcomes accurately
+        so that failures are not counted as successes.
+
+        Args:
+            missed_messages: List of messages received while disconnected,
+                ordered chronologically.
+
+        Returns:
+            Dict with counts: ``{"replied": N, "memorised": N, "failed": N, "skipped": N}``.
+        """
+        replied = 0
+        memorised = 0
+        failed = 0
+        skipped = 0
+
+        for message in missed_messages:
+            # Skip empty / media-only
+            if not message.text or not message.text.strip():
+                skipped += 1
+                continue
+
+            # Direct mention OR reply to a previous bot message both trigger.
+            is_direct = (
+                self._is_direct_mention(message.text)
+                or self._is_reply_to_bot(message.quoted_text)
+            )
+
+            if is_direct:
+                # Try to respond to direct mentions even if late
+                result = await self._respond_to_missed(message)
+                if result:
+                    replied += 1
+                else:
+                    # Response failed (Claude silent or send error) — try to memorise
+                    group_number = self._get_group_number(message.chat_id)
+                    memorised_ok = self._memorise_silently(message, group_number)
+                    if memorised_ok:
+                        memorised += 1
+                    else:
+                        failed += 1
+            else:
+                # Non-direct: just memorise silently, don't flood the group
+                group_number = self._get_group_number(message.chat_id)
+                memorised_ok = self._memorise_silently(message, group_number)
+                if memorised_ok:
+                    memorised += 1
+                else:
+                    # No memory available or save failed — still not an error for non-direct
+                    skipped += 1
+
+        self._clear_disconnect_cursor()
+
+        logger.info(
+            "Catch-up complete: %d replied, %d memorised, %d failed, %d skipped (of %d total)",
+            replied, memorised, failed, skipped, len(missed_messages),
+        )
+        return {"replied": replied, "memorised": memorised, "failed": failed, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------

@@ -1,38 +1,36 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: []
-category: platform
+aliases: [Claude Web Interface, Claude ვებ ინტერფეისი]
+category: tool
 ---
 
 # Claude
 
+> ქართულად: **Claude ვებ ინტერფეისი**
+
 ## აღწერა
 
-Anthropic-ის AI მოდელი, რომელიც ლიდერობს ბენჩმარკებში, აგენტურ შესაძლებლობებში, სტრუქტურირებულ შედეგებში და აქვს ჰალუცინაციის დაბალი მაჩვენებელი.
+Anthropic-ის მიერ შექმნილი AI მოდელი, რომელიც გამოირჩევა რეალურ დროში კვლევის, სააგენტო (agentic) მოქმედებებისა და Python სკრიპტების ლაივ-რეჟიმში წერის უნარით ვებსაიტებიდან მონაცემების ამოსაღებად. მას აქვს დესკტოპ აპლიკაცია, რომელიც უფრო მძლავრია, ვიდრე ვებ-ინტერფეისი და უზრუნველყოფს გაფართოებულ შესაძლებლობებს.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 1)
+- [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- [[Anthropic]]
-- [[რეალურ დროში კვლევა]]
-- [[Agentic behavior]]
-- [[Python script]]
-- [[Personalization]]
-- [[Memory Management]]
-- [[Deep Research]]
+- [[ChatGPT]]
+- [[Google Gemini]]
+- [[Grok]]
+- [[Perplexity]]
+- [[AI Code Evaluation]]
+- [[Claude Browser Extension]]
+- [[Claude Desktop App]]
+- [[Agentic Behavior]]
 - [[Claude Desktop Application]]
-- [[Excel]]
-- [[Copilot]]
-- [[Claude Skills]]
-- [[MCP (Model Context Protocol) Server]]
-- [[Chrome Browser]]
-- [[MCP (Model Context Protocol) Servers]]
-- [[Claude Desktop (Coworker)]]
+- [[Deep Research]]

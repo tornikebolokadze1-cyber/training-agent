@@ -55,6 +55,7 @@ _google_genai = _stub_module("google.genai")
 _google_genai.Client = MagicMock
 _google_genai_types = _stub_module("google.genai.types")
 _google_genai_types.GenerateContentConfig = object
+_google_genai_types.UploadFileConfig = MagicMock
 _google.genai = _google_genai
 
 _google_oauth2 = _stub_module("google.oauth2")
@@ -100,7 +101,25 @@ _googleapiclient.http = _googleapiclient_http
 # pinecone
 # ===================================================================
 _pinecone = _stub_module("pinecone")
-_pinecone.Pinecone = MagicMock
+
+def _make_pinecone_client(*args, **kwargs):
+    """Return a mock Pinecone client with JSON-serializable dict returns."""
+    client = MagicMock()
+    # Index().describe_index_stats() must return a real dict, not MagicMock,
+    # so it can be serialized in admin/system-report responses.
+    index = MagicMock()
+    index.describe_index_stats.return_value = {
+        "total_vector_count": 0,
+        "dimension": 3072,
+        "index_fullness": 0.0,
+        "namespaces": {},
+    }
+    index.query.return_value = {"matches": []}
+    index.upsert.return_value = {"upserted_count": 0}
+    client.Index.return_value = index
+    return client
+
+_pinecone.Pinecone = _make_pinecone_client
 _pinecone.ServerlessSpec = MagicMock
 
 # ===================================================================
@@ -123,6 +142,7 @@ _httpx.Timeout = MagicMock
 _httpx.TransportError = type("TransportError", (Exception,), {})
 _httpx.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
 _httpx.TimeoutException = type("TimeoutException", (_httpx.TransportError,), {})
+_httpx.RequestError = type("RequestError", (Exception,), {})
 
 # ===================================================================
 # fastapi — including middleware and responses submodules
@@ -178,6 +198,22 @@ class _BaseModel:
 
 
 _pydantic.BaseModel = _BaseModel
+
+
+def _field_validator(*args, **kwargs):
+    """No-op decorator factory standing in for pydantic.field_validator.
+
+    Real pydantic v2 returns a decorator that registers a validator on the
+    BaseModel. The stub just passes the function through unchanged so any
+    test importing a module that uses @field_validator can collect.
+    """
+    def _decorator(fn):
+        return fn
+    return _decorator
+
+
+_pydantic.field_validator = _field_validator
+_pydantic.ValidationError = type("ValidationError", (Exception,), {})
 
 # ===================================================================
 # dotenv
@@ -250,7 +286,17 @@ import pytest  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_module_caches() -> None:  # type: ignore[misc]
     """Reset all module-level caches before each test."""
+    # Snapshot httpx module state so we can detect pollution from test_server_new.py
+    _httpx_mod = sys.modules.get("httpx")
+    _httpx_client_before = getattr(_httpx_mod, "Client", None) if _httpx_mod else None
     yield
+    # Post-test cleanup: reset ALL circuit breakers to prevent cross-test pollution
+    try:
+        from tools.core.api_resilience import _circuits
+        for circuit in _circuits.values():
+            circuit.reset()
+    except ImportError:
+        pass
     # Post-test cleanup: clear caches that might bleed between tests
     for mod_name, attrs in [
         ("tools.integrations.gdrive_manager", [
@@ -269,3 +315,82 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
                     val.clear()
                 else:
                     setattr(mod, attr, None)
+
+    # Restore httpx stubs if they were overwritten by test_server.py/test_server_new.py
+    # which pop stubs and import real httpx for TestClient. This ensures subsequent
+    # tests still get mock httpx.
+    _httpx_now = sys.modules.get("httpx")
+    if _httpx_now is not None and not isinstance(getattr(_httpx_now, "Client", None), type(MagicMock)):
+        # Real httpx is loaded — re-apply stubs
+        _httpx_now.Client = MagicMock
+        _httpx_now.AsyncClient = MagicMock
+        _httpx_now.Timeout = MagicMock
+        _httpx_now.TransportError = type("TransportError", (Exception,), {})
+        _httpx_now.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
+        _httpx_now.TimeoutException = type("TimeoutException", (Exception,), {})
+        _httpx_now.RequestError = type("RequestError", (Exception,), {})
+
+
+# ---------------------------------------------------------------------------
+# Budget auto-mock — prevent production scores.db state from breaking tests
+# ---------------------------------------------------------------------------
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _mock_daily_budget(monkeypatch):
+    """Mock cost_tracker budget checks so tests don't depend on real scores.db state.
+
+    Without this, tests that run transcribe_and_index can fail with
+    'Daily cost limit reached' when the real database has accumulated
+    production costs from launchd-driven lecture processing.
+    """
+    try:
+        import tools.core.cost_tracker as _ct
+        monkeypatch.setattr(_ct, "check_daily_budget", lambda: (True, 100.0))
+        monkeypatch.setattr(_ct, "check_lecture_budget", lambda key: (True, 100.0))
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_stale_state_files():
+    """Remove real pipeline_state JSONs before each test.
+
+    Production launchd lectures can leave FAILED state files in .tmp/
+    which break transcribe_and_index tests that assume a clean slate.
+    We delete only pipeline_state_g*_l*.json — other .tmp/ files (checkpoints)
+    are left alone so test_pipeline_state_hardened continues to work.
+    """
+    from pathlib import Path
+    import glob
+    project_tmp = Path(__file__).parent.parent.parent / ".tmp"
+    if project_tmp.exists():
+        for f in glob.glob(str(project_tmp / "pipeline_state_g*_l*.json")):
+            try:
+                Path(f).unlink()
+            except OSError:
+                pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_zoom_token(request, monkeypatch):
+    """Prevent test_server's real httpx from hitting real Zoom OAuth.
+
+    When test_server.py pops httpx stubs to use TestClient, any code path
+    that calls zoom_manager.get_access_token() with fake credentials
+    (ZOOM_CLIENT_ID=test in CI) produces HTTP 400 warnings and can cause
+    MagicMock leaks into JSON bodies.
+
+    Skipped for TestGetAccessToken which tests the real function directly.
+    """
+    # TestGetAccessToken tests the real get_access_token — don't mock it there.
+    cls = request.node.cls
+    if cls is not None and cls.__name__ == "TestGetAccessToken":
+        return
+    try:
+        import tools.integrations.zoom_manager as _zm
+        monkeypatch.setattr(_zm, "get_access_token", lambda: "fake-test-token")
+    except ImportError:
+        pass

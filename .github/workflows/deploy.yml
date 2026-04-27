@@ -32,30 +32,87 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Deploy to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --detach
-
-      - name: Wait for deployment health
+      # Guard: never deploy while a lecture pipeline is running. Interrupting
+      # an active Gemini transcription wastes ~$0.50 in phantom-billed input
+      # tokens and leaves the pipeline in a half-finished state that
+      # startup-recovery then has to redo from scratch. This gate polls
+      # /health until tasks_in_progress is 0 OR a 30-minute ceiling is hit.
+      # If the ceiling is hit, the deploy aborts — the operator can retry
+      # after the pipeline finishes (use workflow_dispatch to force).
+      - name: Wait for idle pipeline before deploying
+        if: github.event_name != 'workflow_dispatch'
         env:
           DEPLOY_URL: ${{ secrets.RAILWAY_PUBLIC_URL }}
         run: |
           if [ -z "$DEPLOY_URL" ]; then
-            echo "RAILWAY_PUBLIC_URL secret not set — skipping health verification"
+            echo "RAILWAY_PUBLIC_URL secret not set — skipping idle gate (unsafe)"
             exit 0
           fi
 
-          echo "Waiting for deployment to become healthy..."
+          echo "Checking pipeline idleness before deploy..."
+          MAX_ATTEMPTS=30  # 30 x 60s = 30 minutes max wait
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            TASKS=$(curl -sf --max-time 10 "$DEPLOY_URL/health" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('tasks_in_progress','unknown'))" \
+              2>/dev/null || echo "unreachable")
+
+            if [ "$TASKS" = "0" ]; then
+              echo "Pipeline idle (tasks_in_progress=0) -- proceeding with deploy"
+              break
+            fi
+
+            if [ "$TASKS" = "unreachable" ] || [ "$TASKS" = "unknown" ]; then
+              echo "WARNING: /health unreachable on attempt $i -- assuming idle"
+              break
+            fi
+
+            echo "Attempt $i/$MAX_ATTEMPTS: tasks_in_progress=$TASKS -- waiting 60s..."
+            sleep 60
+
+            if [ "$i" = "$MAX_ATTEMPTS" ]; then
+              echo "ERROR: Pipeline still busy after 30 minutes (tasks=$TASKS)"
+              echo "Deploy aborted to avoid killing an active lecture run."
+              echo "Retry manually via workflow_dispatch once pipeline completes."
+              exit 1
+            fi
+          done
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+        run: railway up --service training-agent --detach
+
+      - name: Wait for deployment liveness
+        env:
+          DEPLOY_URL: ${{ secrets.RAILWAY_PUBLIC_URL }}
+        run: |
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "RAILWAY_PUBLIC_URL secret not set — skipping liveness verification"
+            exit 0
+          fi
+
+          echo "Waiting for service to become live (/live probe)..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -sf "$DEPLOY_URL/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Deployment is healthy!"
-              exit 0
+            STATUS=$(curl -sf --max-time 8 "$DEPLOY_URL/live" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "alive" ]; then
+              echo "Service is alive!"
+              break
             fi
             echo "Attempt $i/30: status=$STATUS — waiting 10s..."
             sleep 10
+            if [ "$i" = "30" ]; then
+              echo "Service did not become live within 5 minutes"
+              exit 1
+            fi
           done
 
-          echo "Deployment did not become healthy within 5 minutes"
-          exit 1
+          # Post-deploy smoke test — deep health check (uses cached result, no extra API spend)
+          echo "Running post-deploy smoke test (/health)..."
+          HEALTH=$(curl -sf --max-time 15 "$DEPLOY_URL/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "unreachable")
+          echo "Post-deploy health status: $HEALTH"
+          if [ "$HEALTH" = "critical" ]; then
+            echo "WARNING: post-deploy health is CRITICAL — check dependency status"
+            exit 1
+          fi
+          echo "Deployment verified successfully (status=$HEALTH)"

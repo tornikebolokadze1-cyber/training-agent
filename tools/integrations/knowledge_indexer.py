@@ -11,8 +11,10 @@ Embedding model:
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import date
 
 from google import genai
@@ -24,6 +26,8 @@ from tools.core.config import (
     GEMINI_EMBEDDING_MODEL,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
+    PINECONE_SCORE_THRESHOLD_DIRECT,
+    PINECONE_SCORE_THRESHOLD_PASSIVE,
 )
 from tools.core.retry import retry_with_backoff
 
@@ -48,7 +52,10 @@ RETRY_BASE_DELAY = 5  # seconds
 UPSERT_BATCH_SIZE = 100
 
 # Valid content types (used for metadata and vector ID generation)
-CONTENT_TYPES = frozenset({"transcript", "summary", "gap_analysis", "deep_analysis"})
+CONTENT_TYPES = frozenset({
+    "transcript", "summary", "gap_analysis", "deep_analysis",
+    "whatsapp_chat", "obsidian_concept", "obsidian_tool",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -77,36 +84,37 @@ def get_pinecone_index() -> object:
         return _pinecone_index_cache
 
     with _pinecone_lock:
+        # Double-check after acquiring lock (another thread may have initialized)
         if _pinecone_index_cache is not None:
             return _pinecone_index_cache
 
-    if not PINECONE_API_KEY:
-        raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
+        if not PINECONE_API_KEY:
+            raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
 
-    pc = Pinecone(api_key=PINECONE_API_KEY)
+        pc = Pinecone(api_key=PINECONE_API_KEY)
 
-    existing = [idx.name for idx in pc.list_indexes()]
-    if PINECONE_INDEX_NAME not in existing:
-        logger.info(
-            "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
-            PINECONE_INDEX_NAME,
-            EMBEDDING_DIMENSION,
-        )
-        pc.create_index(
-            name=PINECONE_INDEX_NAME,
-            dimension=EMBEDDING_DIMENSION,
-            metric="cosine",
-            spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
-        )
-        # Wait until the index is ready
-        _wait_for_index_ready(pc)
-        logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
-    else:
-        logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
+        existing = [idx.name for idx in pc.list_indexes()]
+        if PINECONE_INDEX_NAME not in existing:
+            logger.info(
+                "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
+                PINECONE_INDEX_NAME,
+                EMBEDDING_DIMENSION,
+            )
+            pc.create_index(
+                name=PINECONE_INDEX_NAME,
+                dimension=EMBEDDING_DIMENSION,
+                metric="cosine",
+                spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
+            )
+            # Wait until the index is ready
+            _wait_for_index_ready(pc)
+            logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
+        else:
+            logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
 
-    index = pc.Index(PINECONE_INDEX_NAME)
-    _pinecone_index_cache = index
-    return index
+        index = pc.Index(PINECONE_INDEX_NAME)
+        _pinecone_index_cache = index
+        return index
 
 
 def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
@@ -133,6 +141,9 @@ def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
     raise TimeoutError(
         f"Pinecone index '{PINECONE_INDEX_NAME}' did not become ready within {timeout}s"
     )
+
+
+# lecture_exists_in_index is defined below (line ~334) with content_type support
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +257,204 @@ def embed_texts_batch(texts: list[str]) -> list[list[float]]:
 
 
 # ---------------------------------------------------------------------------
+# Embedding quality validation
+# ---------------------------------------------------------------------------
+
+
+class EmbeddingQualityError(ValueError):
+    """Raised when an embedding vector fails quality checks."""
+
+
+def validate_embedding(vector: list[float], *, label: str = "embedding") -> None:
+    """Validate that an embedding vector meets quality criteria.
+
+    Checks:
+    - Dimension matches EMBEDDING_DIMENSION (3072 for gemini-embedding-001).
+    - Vector is not all zeros.
+    - Vector norm is within a reasonable range (not too small or too large).
+
+    Args:
+        vector: The embedding vector to validate.
+        label: A label for error messages (e.g. chunk ID).
+
+    Raises:
+        EmbeddingQualityError: If any check fails.
+    """
+    if len(vector) != EMBEDDING_DIMENSION:
+        raise EmbeddingQualityError(
+            f"{label}: expected {EMBEDDING_DIMENSION} dims, got {len(vector)}"
+        )
+
+    norm = math.sqrt(sum(v * v for v in vector))
+
+    if norm < 1e-8:
+        raise EmbeddingQualityError(
+            f"{label}: vector is all zeros (norm={norm:.2e})"
+        )
+
+    # Gemini embedding norms are typically close to 1.0 for cosine-metric models,
+    # but allow a generous range to avoid false positives.
+    if norm < 0.01 or norm > 100.0:
+        raise EmbeddingQualityError(
+            f"{label}: vector norm out of range ({norm:.4f}); "
+            "expected between 0.01 and 100.0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Lecture existence check (prefix-based, no zero-vector hack)
+# ---------------------------------------------------------------------------
+
+
+def lecture_exists_in_index(
+    group_number: int,
+    lecture_number: int,
+    content_type: str | None = None,
+) -> bool:
+    """Check whether vectors for a lecture already exist in the index.
+
+    Uses Pinecone's ``list()`` with an ID prefix instead of querying with a
+    dummy zero-vector (which returns meaningless results).
+
+    Args:
+        group_number: Training group (1 or 2).
+        lecture_number: Lecture sequence number (1-15).
+        content_type: Optional filter — check a specific content type only.
+
+    Returns:
+        True if at least one vector with the matching prefix exists.
+    """
+    index = get_pinecone_index()
+
+    if content_type:
+        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
+    else:
+        prefix = f"g{group_number}_l{lecture_number}_"
+
+    try:
+        page = index.list(prefix=prefix, limit=1)
+        # Pinecone list() returns a ListResponse; check if any IDs came back.
+        vectors = page.get("vectors", []) if isinstance(page, dict) else getattr(page, "vectors", [])
+        if vectors:
+            return True
+        # Some SDK versions return the IDs directly in the iterable
+        id_list = list(page) if not isinstance(page, dict) else []
+        return len(id_list) > 0
+    except Exception as exc:
+        logger.warning(
+            "lecture_exists_in_index check failed for g%d l%d: %s — assuming not indexed",
+            group_number, lecture_number, exc,
+        )
+        return False
+
+
+def get_lecture_vector_count(
+    group_number: int,
+    lecture_number: int,
+    content_type: str | None = None,
+) -> int:
+    """Count vectors for a lecture in the index.
+
+    Args:
+        group_number: Training group (1 or 2).
+        lecture_number: Lecture sequence number (1-15).
+        content_type: Optional — count for a specific content type only.
+
+    Returns:
+        Number of vectors found (0 if none or on error).
+    """
+    index = get_pinecone_index()
+
+    if content_type:
+        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
+    else:
+        prefix = f"g{group_number}_l{lecture_number}_"
+
+    try:
+        # Pinecone's index.list(prefix=...) returns a generator of pages,
+        # where each page is a list of vector IDs. Previous code did
+        # len(list(generator)) which counted PAGES, not vectors — causing
+        # all lectures to appear as "0 vectors" and triggering false retries.
+        count = 0
+        for page in index.list(prefix=prefix):
+            if isinstance(page, dict):
+                count += len(page.get("vectors", []))
+            elif hasattr(page, "__len__"):
+                count += len(page)
+            else:
+                count += 1
+        return count
+    except Exception as exc:
+        logger.warning(
+            "get_lecture_vector_count failed for g%d l%d: %s",
+            group_number, lecture_number, exc,
+        )
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Index health check
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PineconeHealthReport:
+    """Result of check_pinecone_health()."""
+
+    healthy: bool
+    total_vectors: int
+    lecture_counts: dict[str, int] = field(default_factory=dict)
+    error: str | None = None
+
+
+def check_pinecone_health() -> PineconeHealthReport:
+    """Verify the Pinecone index is reachable and return vector statistics.
+
+    Returns:
+        A PineconeHealthReport with total count and per-group/per-lecture counts.
+    """
+    try:
+        index = get_pinecone_index()
+        stats = index.describe_index_stats()
+
+        # stats can be a dict or an object
+        if isinstance(stats, dict):
+            total = stats.get("total_vector_count", 0)
+            stats.get("namespaces", {})
+        else:
+            total = getattr(stats, "total_vector_count", 0)
+            getattr(stats, "namespaces", {})
+
+        # Build per-group, per-lecture counts by listing with prefixes
+        lecture_counts: dict[str, int] = {}
+        for group_num in (1, 2):
+            for lecture_num in range(1, 16):
+                prefix = f"g{group_num}_l{lecture_num}_"
+                try:
+                    page = index.list(prefix=prefix, limit=1000)
+                    ids = list(page) if not isinstance(page, dict) else page.get("vectors", [])
+                    count = len(ids)
+                    if count > 0:
+                        lecture_counts[f"g{group_num}_l{lecture_num}"] = count
+                except Exception:
+                    pass  # skip on error, don't fail the whole health check
+
+        return PineconeHealthReport(
+            healthy=True,
+            total_vectors=total,
+            lecture_counts=lecture_counts,
+        )
+
+    except Exception as exc:
+        logger.error("Pinecone health check failed: %s", exc)
+        return PineconeHealthReport(
+            healthy=False,
+            total_vectors=0,
+            error=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Text chunking
 # ---------------------------------------------------------------------------
 
@@ -299,6 +508,8 @@ def index_lecture_content(
     lecture_number: int,
     content: str,
     content_type: str,
+    *,
+    force: bool = False,
 ) -> int:
     """Chunk, embed, and upsert lecture content into Pinecone.
 
@@ -307,17 +518,24 @@ def index_lecture_content(
 
     Vector ID format: ``g{group_number}_l{lecture_number}_{content_type}_{chunk_index}``
 
+    Idempotent: if vectors already exist for this lecture+content_type with the
+    same chunk count, the function skips re-indexing. If the new content produces
+    more chunks (lecture grew), it re-indexes. Use ``force=True`` to always
+    re-index.
+
     Args:
         group_number: Training group identifier (1 or 2).
-        lecture_number: Lecture sequence number (1–15).
+        lecture_number: Lecture sequence number (1-15).
         content: Raw text content to index.
         content_type: One of "transcript", "summary", "gap_analysis", "deep_analysis".
+        force: If True, re-index even when chunk counts match.
 
     Returns:
-        Number of vectors successfully upserted.
+        Number of vectors successfully upserted (0 if skipped).
 
     Raises:
         ValueError: If content_type is not a recognised type.
+        EmbeddingQualityError: If generated embeddings fail validation.
         RuntimeError: If Pinecone or Gemini API calls fail after retries.
     """
     if content_type not in CONTENT_TYPES:
@@ -334,6 +552,21 @@ def index_lecture_content(
 
     index = get_pinecone_index()
     chunks = chunk_text(content)
+    new_chunk_count = len(chunks)
+
+    # --- Idempotent indexing check ---
+    if not force:
+        existing_count = get_lecture_vector_count(
+            group_number, lecture_number, content_type
+        )
+        if existing_count > 0 and existing_count >= new_chunk_count:
+            logger.info(
+                "Skipping g%d l%d [%s]: already indexed (%d vectors, new would be %d).",
+                group_number, lecture_number, content_type,
+                existing_count, new_chunk_count,
+            )
+            return 0
+
     today_iso = date.today().isoformat()
 
     # Delete stale vectors from a previous indexing run (e.g., if re-indexing
@@ -351,8 +584,15 @@ def index_lecture_content(
     except Exception as e:
         logger.warning("Failed to clean stale vectors: %s — proceeding with upsert", e)
 
-    # Batch-embed all chunks (reduces 212 API calls to ~11 for a typical lecture)
+    # Batch-embed all chunks (reduces N API calls to ceil(N/20))
     embeddings = embed_texts_batch(chunks)
+
+    # Validate all embeddings before upserting
+    for i, embedding in enumerate(embeddings):
+        validate_embedding(
+            embedding,
+            label=f"g{group_number}_l{lecture_number}_{content_type}_{i}",
+        )
 
     vectors: list[dict] = []
     for chunk_index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
@@ -415,16 +655,23 @@ def query_knowledge(
     query_text: str,
     group_number: int | None = None,
     top_k: int = 5,
+    *,
+    score_threshold: float | None = None,
+    mode: str = "direct",
 ) -> list[dict]:
     """Query Pinecone for course knowledge chunks relevant to the query.
 
     Args:
         query_text: The question or topic to search for.
-        group_number: Optional filter — restrict results to a specific group.
+        group_number: Optional filter -- restrict results to a specific group.
         top_k: Number of top results to return (default 5).
+        score_threshold: Minimum cosine similarity score to include a result.
+            If None, uses the default from config based on ``mode``.
+        mode: "direct" (explicit question) or "passive" (topic detection).
+            Affects the default score threshold.
 
     Returns:
-        List of result dicts, each containing:
+        List of result dicts (filtered by score), each containing:
         - ``text`` (str): The matched chunk text.
         - ``score`` (float): Cosine similarity score (higher is better).
         - ``metadata`` (dict): Full vector metadata (group, lecture, type, etc.).
@@ -436,16 +683,31 @@ def query_knowledge(
         logger.warning("Empty query_text passed to query_knowledge — returning empty results.")
         return []
 
+    # Resolve threshold
+    if score_threshold is None:
+        if mode == "passive":
+            score_threshold = PINECONE_SCORE_THRESHOLD_PASSIVE
+        else:
+            score_threshold = PINECONE_SCORE_THRESHOLD_DIRECT
+
     index = get_pinecone_index()
     query_vector = embed_text(query_text)
+
+    # Validate query vector before sending
+    try:
+        validate_embedding(query_vector, label="query_vector")
+    except EmbeddingQualityError as exc:
+        logger.error("Query embedding failed validation: %s", exc)
+        return []
 
     filter_dict: dict | None = None
     if group_number is not None:
         filter_dict = {"group_number": {"$eq": group_number}}
 
     logger.info(
-        "Querying Pinecone: top_k=%d, group_filter=%s, query='%s...'",
-        top_k, group_number, query_text[:80],
+        "Querying Pinecone: top_k=%d, group_filter=%s, threshold=%.2f, "
+        "mode=%s, query='%s...'",
+        top_k, group_number, score_threshold, mode, query_text[:80],
     )
     response = retry_with_backoff(
         index.query,
@@ -458,19 +720,216 @@ def query_knowledge(
         operation_name="Pinecone query",
     )
 
-    matches = response.get("matches", []) if isinstance(response, dict) else response.matches
+    MIN_RELEVANCE_SCORE = 0.40  # Conservative threshold for Georgian text (multi-byte tokenization)
+
+    raw_matches = response.get("matches", []) if isinstance(response, dict) else response.matches
+    matches = [m for m in raw_matches if (m.get("score", 0) if isinstance(m, dict) else getattr(m, "score", 0)) >= MIN_RELEVANCE_SCORE]
+
+    if not matches:
+        logger.info("No Pinecone results above score threshold %.2f for query", MIN_RELEVANCE_SCORE)
+        return []
+
     results: list[dict] = []
+    filtered_count = 0
     for match in matches:
         metadata = match.get("metadata", {}) if isinstance(match, dict) else match.metadata
         score = match.get("score", 0.0) if isinstance(match, dict) else match.score
+
+        if score < score_threshold:
+            filtered_count += 1
+            continue
+
         results.append({
             "text": metadata.get("text", ""),
             "score": score,
             "metadata": metadata,
         })
 
-    logger.info("Query returned %d results.", len(results))
+    logger.info(
+        "Query returned %d results (%d filtered below %.2f threshold).",
+        len(results), filtered_count, score_threshold,
+    )
     return results
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp chat indexing
+# ---------------------------------------------------------------------------
+
+
+def index_whatsapp_chats() -> int:
+    """Fetch WhatsApp chat history from Green API and index into Pinecone.
+
+    Indexes messages from both training group chats as searchable content.
+    Uses a synthetic group-level ID (group_number=N, lecture_number=0)
+    to distinguish chat content from lecture content.
+
+    Returns:
+        Total number of vectors indexed across both groups.
+    """
+    import httpx
+
+    from tools.core.config import (
+        GREEN_API_INSTANCE_ID,
+        GREEN_API_TOKEN,
+        WHATSAPP_GROUP1_ID,
+        WHATSAPP_GROUP2_ID,
+    )
+
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        logger.warning("Green API not configured — cannot index WhatsApp chats")
+        return 0
+
+    total = 0
+    chats = [
+        (WHATSAPP_GROUP1_ID, 1),
+        (WHATSAPP_GROUP2_ID, 2),
+    ]
+
+    for chat_id, group_num in chats:
+        if not chat_id:
+            continue
+
+        url = (
+            f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE_ID}"
+            f"/getChatHistory/{GREEN_API_TOKEN}"
+        )
+
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.post(url, json={"chatId": chat_id, "count": 100})
+
+            if response.status_code != 200:
+                logger.warning("Green API returned %d for group %d", response.status_code, group_num)
+                continue
+
+            messages = response.json()
+            if not messages:
+                continue
+
+            # Build readable text from messages
+            lines: list[str] = []
+            for msg in messages:
+                sender = msg.get("senderName", msg.get("senderId", "?"))
+                text = msg.get("textMessage", "")
+                if not text:
+                    msg_type = msg.get("typeMessage", "")
+                    text = f"[{msg_type}]" if msg_type else "[media]"
+                lines.append(f"{sender}: {text}")
+
+            chat_text = "\n".join(lines)
+            if not chat_text.strip():
+                continue
+
+            # Index as whatsapp_chat content type, lecture_number=0 (non-lecture)
+            count = index_lecture_content(
+                group_number=group_num,
+                lecture_number=0,
+                content=chat_text,
+                content_type="whatsapp_chat",
+            )
+            total += count
+            logger.info("Indexed %d WhatsApp chat vectors for group %d", count, group_num)
+
+        except Exception as exc:
+            logger.error("Failed to index WhatsApp chat for group %d: %s", group_num, exc)
+
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Obsidian knowledge indexing
+# ---------------------------------------------------------------------------
+
+
+def index_obsidian_knowledge() -> int:
+    """Index Obsidian vault concept and tool notes into Pinecone.
+
+    Reads markdown files from the vault's კონცეფციები/ and ინსტრუმენტები/
+    directories and indexes their content for RAG retrieval.
+
+    Uses group_number=0 (cross-group) and lecture_number=0 (non-lecture)
+    since these are general knowledge notes, not lecture-specific.
+
+    Returns:
+        Total number of vectors indexed.
+    """
+
+    from tools.core.config import PROJECT_ROOT
+
+    vault_root = PROJECT_ROOT / "obsidian-vault"
+    total = 0
+
+    dirs_and_types = [
+        (vault_root / "კონცეფციები", "obsidian_concept"),
+        (vault_root / "ინსტრუმენტები", "obsidian_tool"),
+    ]
+
+    for dir_path, content_type in dirs_and_types:
+        if not dir_path.exists():
+            logger.warning("Obsidian directory not found: %s", dir_path)
+            continue
+
+        md_files = sorted(dir_path.glob("*.md"))
+        all_content: list[str] = []
+
+        for md_file in md_files:
+            text = md_file.read_text(encoding="utf-8")
+            # Strip YAML frontmatter
+            if text.startswith("---"):
+                end = text.find("---", 3)
+                if end != -1:
+                    text = text[end + 3:].strip()
+            if text:
+                all_content.append(f"# {md_file.stem}\n{text}")
+
+        if not all_content:
+            continue
+
+        combined = "\n\n---\n\n".join(all_content)
+        # Use group_number=0 for cross-group knowledge
+        count = index_lecture_content(
+            group_number=0,
+            lecture_number=0,
+            content=combined,
+            content_type=content_type,
+        )
+        total += count
+        logger.info("Indexed %d vectors from %d %s notes", count, len(md_files), content_type)
+
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+
+def delete_content_type(content_type: str, group_number: int | None = None) -> int:
+    """Delete all vectors of a specific content type from the index.
+
+    Args:
+        content_type: The content type to delete (e.g., "deep_analysis").
+        group_number: Optional — only delete for a specific group.
+
+    Returns:
+        Approximate number of vectors deleted (best effort).
+    """
+    index = get_pinecone_index()
+    filter_dict: dict = {"content_type": {"$eq": content_type}}
+    if group_number is not None:
+        filter_dict["group_number"] = {"$eq": group_number}
+
+    try:
+        index.delete(filter=filter_dict)
+        logger.info(
+            "Deleted vectors: content_type=%s, group=%s",
+            content_type, group_number or "all",
+        )
+        return 1  # Pinecone delete doesn't return count
+    except Exception as exc:
+        logger.error("Failed to delete %s vectors: %s", content_type, exc)
+        return 0
 
 
 # ---------------------------------------------------------------------------

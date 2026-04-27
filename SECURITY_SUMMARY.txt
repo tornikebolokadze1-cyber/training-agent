@@ -1,0 +1,236 @@
+================================================================================
+TRAINING AGENT — SECURITY REVIEW SUMMARY
+================================================================================
+
+Date: 2026-03-18
+Reviewer: Security Team
+Overall Risk Level: MEDIUM (good fundamentals with improvement opportunities)
+
+================================================================================
+DOCUMENTS CREATED
+================================================================================
+
+1. SECURITY_REVIEW.md (7,000+ words)
+   - Detailed analysis of each auth mechanism
+   - Strengths and weaknesses for each system
+   - Specific code references and line numbers
+   - Actionable recommendations
+
+2. SECURITY_FIXES.md (2,000+ words)
+   - Copy-paste ready code fixes for all 10 issues
+   - Integration instructions
+   - Testing guidance
+   - Deployment checklist
+
+================================================================================
+QUICK SCORECARD
+================================================================================
+
+Component                    Risk    Status    Notes
+─────────────────────────────────────────────────────────────────────────────
+Zoom S2S OAuth              LOW     ✅ GOOD   Thread-safe, proper expiry handling
+  - Token cache                             60-second safety margin
+  - Token refresh              LOW     ✅ GOOD   Handles 401 correctly
+  - Scope validation           LOW     ⚠️ MIN    No explicit verification
+
+Google OAuth2               MEDIUM  ⚠️ CAUTION Railway refresh untested
+  - Refresh token flow         MEDIUM  ⚠️ CAUTION No success validation
+  - Railway materialization    LOW     ✅ GOOD   Secure temp files
+  - Scope creep                LOW     ✅ GOOD   Minimal scopes
+
+Webhook Validation          LOW     ✅ GOOD   HMAC uses constant-time compare
+  - HMAC-SHA256 impl.          LOW     ✅ GOOD   Textbook correct
+  - Zoom CRC validation        LOW     ✅ GOOD   Proper HMAC-SHA256
+  - Zoom signature verify      MEDIUM  ⚠️ IMPROVE Accepts future timestamps
+  - WEBHOOK_SECRET handling    LOW     ✅ GOOD   Fails closed
+
+WhatsApp Green API          MEDIUM  ⚠️ CAUTION Token in URL (protocol limit)
+  - Instance + token auth      MEDIUM  ⚠️ CAUTION URL-based, retry issues
+  - Incoming msg validation    MEDIUM  ⚠️ IMPROVE Needs sender dedup
+
+Rate Limiting              LOW     ⚠️ CAUTION IP-based (safe on Railway only)
+  - Per-IP limits             LOW     ⚠️ CAUTION Bypassable in untrusted proxy
+
+Pinecone                   LOW     ⚠️ IMPROVE No periodic key validation
+  - API key handling          LOW     ⚠️ IMPROVE In-memory, no refresh validation
+
+Cross-Cutting Issues:
+  - SSRF Protection           LOW     ✅ GOOD   Download URL validation solid
+  - Sensitive data in logs    MEDIUM  ⚠️ IMPROVE May leak secrets in errors
+  - Security headers          LOW     ⚠️ IMPROVE Missing HSTS
+  - Input validation          LOW     ⚠️ IMPROVE Chat ID format unchecked
+
+================================================================================
+ISSUES SUMMARY
+================================================================================
+
+CRITICAL (0):
+  None identified
+
+HIGH (0):
+  None identified
+
+MEDIUM (5):
+  1. Zoom webhook timestamp validation accepts future timestamps
+  2. Google OAuth refresh on Railway lacks success validation
+  3. WhatsApp Green API needs sender-based message deduplication
+  4. Rate limiting assumes trusted proxy (not documented)
+  5. Green API retry logic could resend non-idempotent operations
+
+LOW (5):
+  1. Zoom token cache not cleaned up on shutdown
+  2. Railway credential temp files not cleaned on exit
+  3. Missing HSTS header for HTTPS enforcement
+  4. Sensitive data may appear in error log messages
+  5. Pinecone API key not periodically validated
+
+================================================================================
+TOP 3 FIXES TO PRIORITIZE
+================================================================================
+
+1. CRITICAL: Google OAuth Refresh Validation (Railway)
+   Issue: On Railway, refresh can fail silently without raising error
+   Impact: Could cause auth failures during long-lived sessions
+   Fix: Add explicit try/catch with validation before returning creds
+   Files: tools/integrations/gdrive_manager.py (lines 65-76)
+   Effort: 5 minutes
+
+2. IMPORTANT: Zoom Timestamp Validation
+   Issue: Current code accepts timestamps up to 5 min in FUTURE
+   Impact: Opens 5-minute window for replay attacks
+   Risk: Low (Zoom controls message body, hard to forge), but fixable
+   Fix: Tighten to past-only with clock skew tolerance
+   Files: tools/app/server.py (lines 560-566)
+   Effort: 5 minutes
+
+3. IMPORTANT: WhatsApp Message Deduplication
+   Issue: No sender-based dedup; could process same message twice
+   Impact: Duplicate AI responses, confused assistant state
+   Risk: Medium (could affect user experience)
+   Fix: Add message cache keyed by sender_id + message_id
+   Files: tools/app/server.py (lines 453-514)
+   Effort: 20 minutes
+
+================================================================================
+DEPLOYMENT CHECKLIST
+================================================================================
+
+BEFORE DEPLOYING:
+  ☐ Apply all 10 fixes from SECURITY_FIXES.md
+  ☐ Run full test suite: pytest tools/tests/ -v
+  ☐ Test Google OAuth refresh on Railway environment
+  ☐ Manually test WhatsApp message dedup with duplicate sends
+  ☐ Verify Pinecone key validation doesn't block startup
+  ☐ Check logs for sensitive data leakage (trigger errors)
+  ☐ Verify HSTS header present in responses
+
+DURING DEPLOYMENT:
+  ☐ Monitor /health endpoint for 100% success rate
+  ☐ Watch logs for auth-related errors (401, 403)
+  ☐ Check Zoom webhook processing for any failures
+  ☐ Verify WhatsApp messages processed without duplicates
+
+AFTER DEPLOYMENT:
+  ☐ Monitor for 24 hours (watch auth errors)
+  ☐ Verify Pinecone indexing works (API key validation)
+  ☐ Test manual trigger endpoints work with new fixes
+  ☐ Rotate API keys (optional but recommended for fresh deployment)
+
+================================================================================
+STRENGTHS IDENTIFIED
+================================================================================
+
+✅ Token caching is thread-safe (Zoom)
+✅ HMAC-SHA256 uses constant-time comparison (prevents timing attacks)
+✅ Webhook authentication fails closed (rejects if secret unset)
+✅ Proper 401 handling with cache invalidation (Zoom)
+✅ SSRF protection on download URLs (prevents malicious redirection)
+✅ Input validation on sensitive fields (group/lecture/folder IDs)
+✅ Railway credential materialization secure (0o600 perms)
+✅ Zoom CRC validation correct per spec
+✅ Error handling generally sound
+
+================================================================================
+KNOWN LIMITATIONS & TRADE-OFFS
+================================================================================
+
+1. WhatsApp Green API requires token in URL
+   → Due to Green API protocol design (doesn't support Authorization header)
+   → Mitigation: Use HTTPS + restricted network access
+
+2. Rate limiting is IP-based on Railway
+   → Safe because Railway + Cloudflare validate headers
+   → Would need request signing for untrusted proxies
+
+3. Google OAuth scope is broad (full Drive access)
+   → Google Drive doesn't offer granular scopes for service accounts
+   → Mitigation: Use service account (not user account) when possible
+
+4. Pinecone API key cannot be rotated without restarting
+   → API key is cached; no refresh mechanism exists
+   → Mitigation: Add periodic validation (included in fixes)
+
+================================================================================
+TESTING RECOMMENDATIONS
+================================================================================
+
+Unit Tests (automated):
+  - Verify HMAC signatures with valid/invalid/malformed inputs
+  - Test token cache hit/miss logic with mocked time
+  - Test 401 response clears token cache
+  - Test WhatsApp message dedup prevents duplicates
+  - Test SSRF protection rejects non-Zoom URLs
+
+Integration Tests (automated):
+  - Test full Zoom webhook flow (CRC + signature)
+  - Test Google OAuth refresh works on Railway (mock env var)
+  - Test Pinecone API key validation succeeds
+
+Manual Tests (before production):
+  - Trigger a Zoom webhook, verify signature validation
+  - Send duplicate WhatsApp message, verify only processed once
+  - Invalidate Pinecone key, verify validation catches it
+  - Check logs for sensitive data (trigger API error)
+  - Verify HSTS header present (curl -I to server)
+
+Load Tests (before scale):
+  - 100 concurrent /process-recording requests (test rate limiting)
+  - 30/min WhatsApp messages (test message dedup under load)
+  - Zoom webhook burst during meeting.ended event
+
+================================================================================
+REFERENCES & STANDARDS
+================================================================================
+
+Security Standards Applied:
+  - OWASP Top 10 2021 (A01: Broken Access Control, A02: Cryptographic Failures)
+  - OWASP Authentication Cheat Sheet
+  - OWASP Webhook Security Guidelines
+  - CWE-269: Improper Access Control
+  - CWE-290: Authentication using a Hard-Coded Credentials
+  - CWE-613: Insufficient Session Expiration
+
+External Standards:
+  - Zoom API Security: https://marketplace.zoom.us/docs/api-reference/security
+  - Google OAuth 2.0: https://developers.google.com/identity/protocols/oauth2
+  - HMAC-SHA256: FIPS 198-1, RFC 2104
+  - HSTS: RFC 6797
+
+================================================================================
+SIGN-OFF
+================================================================================
+
+This security review was conducted on 2026-03-18 and covers all identified
+authentication and authorization flows in the Training Agent project.
+
+The codebase demonstrates solid security fundamentals with good practices in
+token lifecycle management, webhook validation, and SSRF protection. The
+identified issues are mostly low-to-medium risk and can be addressed with
+the provided copy-paste fixes.
+
+Estimated effort to apply all fixes: 2-3 hours
+Estimated effort to test fixes: 1-2 hours
+Estimated risk reduction: HIGH (from MEDIUM to LOW-MEDIUM)
+
+Ready for production deployment after fixes are applied and tested.
+================================================================================

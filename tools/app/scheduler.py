@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,6 +33,10 @@ from tools.core.config import (
     TOTAL_LECTURES,
     get_lecture_folder_name,
     get_lecture_number,
+)
+from tools.core.pipeline_state import (
+    is_pipeline_active,
+    is_pipeline_done,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -82,7 +88,9 @@ def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
         "meeting_id": meeting_id,
         "fire_time": fire_time_iso,
     })
-    _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    tmp_path.replace(_PENDING_JOBS_FILE)
     logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
                 group_number, lecture_number, fire_time_iso)
 
@@ -160,7 +168,10 @@ def _import_zoom_manager():
 # ---------------------------------------------------------------------------
 
 
-def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
+def check_recording_ready(
+    meeting_id: str,
+    skip_initial_delay: bool = False,
+) -> list[dict[str, Any]]:
     """Poll the Zoom API until all recording segments are available.
 
     When a host disconnects and rejoins, Zoom creates multiple recording
@@ -172,6 +183,9 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
 
     Args:
         meeting_id: The Zoom meeting ID string.
+        skip_initial_delay: If True, skip the 15-min initial wait (useful
+            for retries and startup recovery where the recording is already
+            available on Zoom's servers).
 
     Returns:
         A list of completed MP4 recording file dicts (each contains
@@ -185,13 +199,20 @@ def check_recording_ready(meeting_id: str) -> list[dict[str, Any]]:
 
     elapsed = 0
     consecutive_404s = 0  # Track "still processing" 404s for adaptive backoff
-    logger.info(
-        "[recording] Waiting %d min before first poll for meeting %s...",
-        RECORDING_INITIAL_DELAY // 60,
-        meeting_id,
-    )
-    time.sleep(RECORDING_INITIAL_DELAY)
-    elapsed += RECORDING_INITIAL_DELAY
+    if skip_initial_delay:
+        logger.info(
+            "[recording] Skipping initial delay (retry/recovery mode) — "
+            "polling meeting %s immediately...",
+            meeting_id,
+        )
+    else:
+        logger.info(
+            "[recording] Waiting %d min before first poll for meeting %s...",
+            RECORDING_INITIAL_DELAY // 60,
+            meeting_id,
+        )
+        time.sleep(RECORDING_INITIAL_DELAY)
+        elapsed += RECORDING_INITIAL_DELAY
 
     while elapsed < RECORDING_POLL_TIMEOUT:
         try:
@@ -353,6 +374,7 @@ def _run_post_meeting_pipeline(
     group_number: int,
     lecture_number: int,
     meeting_id: str,
+    skip_initial_delay: bool = False,
 ) -> None:
     """Full post-meeting pipeline, executed in a background thread.
 
@@ -374,12 +396,105 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
+    from tools.core.pipeline_retry import (
+        classify_error,
+        retry_orchestrator,
+    )
+    from tools.core.pipeline_state import FAILED, load_state, mark_failed
     from tools.integrations.gdrive_manager import (
         ensure_folder,
         get_drive_service,
+        list_files_in_folder,
+        trash_old_recordings,
         upload_file,
     )
     from tools.services.transcribe_lecture import transcribe_and_index
+
+    def _durable_abort(reason: str, *, permanent: bool = False) -> None:
+        """Convert an early abort into a durable retry decision.
+
+        Ensures every early-return path leaves a state the retry system
+        can reason about: marks pipeline FAILED and either enqueues a
+        retry (retryable) or alerts for permanent errors.
+        """
+        try:
+            current = load_state(group_number, lecture_number)
+            if current is not None and current.state not in ("COMPLETE", FAILED):
+                mark_failed(current, reason)
+        except Exception as exc:
+            logger.warning("[post] mark_failed during abort failed: %s", exc)
+
+        try:
+            retry_orchestrator.schedule_retry(
+                group_number, lecture_number, meeting_id,
+                f"[abort{'/permanent' if permanent else ''}] {reason}",
+            )
+        except Exception as exc:
+            logger.error("[post] schedule_retry during abort failed: %s", exc)
+
+    # Helper to clean up dedup key on ALL exit paths (including early returns)
+    def _cleanup_dedup() -> None:
+        try:
+            from tools.app.server import _processing_tasks, _task_key
+            key = _task_key(group_number, lecture_number)
+            _processing_tasks.pop(key, None)
+            logger.info("[post] Dedup key %s removed from _processing_tasks", key)
+        except (ImportError, ValueError, RuntimeError) as exc:
+            # ValueError: WhatsAppAssistant init may fail during import
+            # RuntimeError: circular import edge cases
+            logger.debug("[post] Could not import server for dedup cleanup: %s", exc)
+
+    # Idempotency: skip if lecture already fully indexed in Pinecone
+    # (prevents retry storms for already-backfilled lectures)
+    try:
+        from tools.integrations.knowledge_indexer import lecture_exists_in_index
+        required = ("transcript", "summary", "gap_analysis", "deep_analysis")
+        if all(lecture_exists_in_index(group_number, lecture_number, t) for t in required):
+            logger.info(
+                "[post] Skipping — G%d L%d already fully indexed in Pinecone",
+                group_number, lecture_number,
+            )
+            _durable_abort(f"already_indexed: G{group_number} L{lecture_number}")
+            _cleanup_dedup()
+            return
+    except Exception as exc:
+        logger.warning("[post] Idempotency check failed (proceeding): %s", exc)
+
+    # Proactive stale-media cleanup: free disk before the check fires.
+    # Any .mp4 / .ogg in .tmp/ older than 1 hour is from a prior failed run
+    # and can be safely removed. This prevents one bad pipeline from
+    # perpetually blocking all future pipelines via disk-space abort.
+    try:
+        import time as _time
+        cutoff = _time.time() - 3600  # 1 hour
+        freed = 0
+        for pattern in ("*.mp4", "*.ogg", "*.mp4.sha256"):
+            for stale in TMP_DIR.glob(pattern):
+                try:
+                    if stale.stat().st_mtime < cutoff:
+                        size = stale.stat().st_size
+                        stale.unlink()
+                        freed += size
+                except OSError:
+                    continue
+        if freed:
+            logger.info("[post] Pre-flight cleanup freed %.1f MB of stale media", freed / (1024**2))
+    except Exception as exc:
+        logger.warning("[post] Pre-flight cleanup failed (non-fatal): %s", exc)
+
+    # Disk space check — abort if less than 2GB free
+    disk_usage = shutil.disk_usage(str(TMP_DIR))
+    free_gb = disk_usage.free / (1024 ** 3)
+    if free_gb < 2.0:
+        logger.error("[post] Insufficient disk space: %.1f GB free (need 2+ GB). Aborting.", free_gb)
+        _durable_abort(f"insufficient_disk_space: {free_gb:.1f} GB free")
+        _cleanup_dedup()
+        try:
+            alert_operator(f"Disk space critically low: {free_gb:.1f} GB. Pipeline for G{group_number} L{lecture_number} aborted.")
+        except Exception:
+            pass
+        return
+    logger.info("[post] Disk space check: %.1f GB free — OK", free_gb)
 
     group = GROUPS[group_number]
     lecture_folder_name = get_lecture_folder_name(lecture_number)
@@ -394,11 +509,21 @@ def _run_post_meeting_pipeline(
 
     try:
         # ---- Step 1: Wait for recording segments ---------------------------
-        recordings = check_recording_ready(meeting_id)
+        recordings = check_recording_ready(meeting_id, skip_initial_delay=skip_initial_delay)
         if not recordings:
             logger.error(
                 "[post] Aborting: no recording found for meeting %s", meeting_id
             )
+            _durable_abort(f"no_recording_found: meeting={meeting_id}")
+            _cleanup_dedup()
+            try:
+                alert_operator(
+                    f"Pipeline ABORTED for Group {group_number}, Lecture #{lecture_number}: "
+                    f"no recording found for meeting {meeting_id}. "
+                    f"Check Zoom — the recording may not have been saved."
+                )
+            except Exception:
+                pass
             return
 
         # ---- Step 2: Download all segments ---------------------------------
@@ -418,6 +543,12 @@ def _run_post_meeting_pipeline(
                 temp_files.append(seg_path)
             except Exception as exc:
                 logger.error("[post] Download failed for segment %d: %s", i, exc)
+                is_permanent = classify_error(exc) == "permanent"
+                _durable_abort(
+                    f"segment_download_failed seg={i}: {exc}",
+                    permanent=is_permanent,
+                )
+                _cleanup_dedup()
                 alert_operator(
                     f"Recording download FAILED for Group {group_number}, "
                     f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
@@ -439,6 +570,8 @@ def _run_post_meeting_pipeline(
                 temp_files.append(local_path)
             except Exception as exc:
                 logger.error("[post] Segment concatenation failed: %s", exc)
+                _durable_abort(f"ffmpeg_concat_failed: {exc}")
+                _cleanup_dedup()
                 alert_operator(
                     f"ffmpeg concat FAILED for Group {group_number}, "
                     f"Lecture #{lecture_number}.\nError: {exc}\n"
@@ -461,8 +594,40 @@ def _run_post_meeting_pipeline(
             lecture_folder_name,
             group["drive_folder_id"],
         )
-        upload_file(local_path, lecture_folder_id)
-        logger.info("[post] Recording uploaded to Drive")
+
+        # Check if video already uploaded (crash recovery — avoid duplicates)
+        video_already_uploaded = False
+        try:
+            existing_files = list_files_in_folder(lecture_folder_id)
+            prefix = f"group{group_number}_lecture{lecture_number}_"
+            existing_video = next(
+                (
+                    f
+                    for f in existing_files
+                    if f.get("name", "").startswith(prefix)
+                    and f.get("name", "").endswith(".mp4")
+                    and not f.get("mimeType", "").startswith("application/vnd.google-apps")
+                ),
+                None,
+            )
+            if existing_video is not None:
+                video_already_uploaded = True
+                logger.info(
+                    "[post] Video already in Drive (crash recovery): %s — skipping upload",
+                    existing_video["name"],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[post] Could not check for existing video in Drive: %s — will upload normally",
+                exc,
+            )
+
+        if video_already_uploaded:
+            logger.info("[post] Skipped duplicate upload to Drive")
+        else:
+            trash_old_recordings(lecture_folder_id, group_number, lecture_number)
+            upload_file(local_path, lecture_folder_id)
+            logger.info("[post] Recording uploaded to Drive")
 
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
@@ -483,22 +648,27 @@ def _run_post_meeting_pipeline(
             lecture_number,
             exc,
         )
+        # Schedule automatic retry instead of just alerting
+        try:
+            from tools.core.pipeline_retry import retry_orchestrator
+            retry_result = retry_orchestrator.schedule_retry(
+                group_number, lecture_number, meeting_id, str(exc),
+            )
+            logger.info(
+                "[post] Retry scheduled for G%d L%d: %s",
+                group_number, lecture_number, retry_result,
+            )
+        except Exception as retry_exc:
+            logger.error("[post] Failed to schedule retry: %s", retry_exc)
+
         alert_operator(
             f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
-            f"Error: {exc}"
+            f"Error: {exc}\n"
+            f"Automatic retry has been scheduled."
         )
     finally:
-        # CRITICAL: Always remove the dedup key so other paths (recording.completed,
-        # manual-trigger, scheduler fallback) are not permanently blocked.
-        try:
-            from tools.app.server import _processing_tasks, _task_key
-            key = _task_key(group_number, lecture_number)
-            _processing_tasks.pop(key, None)
-            logger.info("[post] Dedup key %s removed from _processing_tasks", key)
-        except ImportError:
-            pass  # standalone scheduler mode — no server module
-
-        # Remove from persistent pending jobs store
+        # Clean up in-memory cache — always, even if already cleaned in early return
+        _cleanup_dedup()
         _remove_pending_job(group_number, lecture_number)
 
         # Clean up all temp files (segments + merged)
@@ -671,9 +841,13 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
                     key,
                 )
                 return
+            # Also check persistent pipeline state
+            if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
+                logger.info("[post] Pipeline already active/complete for G%d L%d — skipping", group_number, lecture_number)
+                return
             # CRITICAL: Set the dedup key BEFORE dispatching to the executor.
             # Atomic check-and-set under lock prevents webhook+scheduler race.
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         logger.info("[post] Scheduler FALLBACK claimed dedup key %s", key)
     except ImportError:
         pass  # server module not available (standalone scheduler mode)
@@ -796,7 +970,7 @@ def start_scheduler() -> AsyncIOScheduler:
 
     executors = {
         "default": AsyncIOExecutor(),
-        "threadpool": ThreadPoolExecutor(max_workers=4),
+        "threadpool": ThreadPoolExecutor(max_workers=6),
     }
     job_defaults = {
         "coalesce": True,        # merge multiple misfired instances into one
@@ -867,6 +1041,227 @@ def start_scheduler() -> AsyncIOScheduler:
         args=[2],
         id="pre_group2_thursday",
         name="Pre-meeting: Group 2 (Thursday)",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Nightly catch-all — 02:00 Tbilisi time every day                   #
+    # ------------------------------------------------------------------ #
+    from tools.core.pipeline_retry import nightly_catch_all
+
+    scheduler.add_job(
+        nightly_catch_all,
+        trigger=CronTrigger(
+            hour=2,
+            minute=0,
+            timezone=TBILISI_TZ,
+        ),
+        id="nightly_catch_all",
+        name="Nightly catch-all: retry unprocessed lectures",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Pinecone score backup — every 6 hours (safety net for ephemeral DB) #
+    # ------------------------------------------------------------------ #
+    from tools.services.analytics import backup_scores_to_pinecone
+
+    scheduler.add_job(
+        backup_scores_to_pinecone,
+        trigger="interval",
+        hours=6,
+        id="pinecone_score_backup",
+        name="Pinecone score backup",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Google OAuth token health check — 08:00 Tbilisi time every day     #
+    #  Proactively catches revoked/expiring refresh_tokens BEFORE a       #
+    #  lecture pipeline needs them. Alerts operator with ~12 hours of     #
+    #  lead time (well before the 18:00 pre-meeting job).                 #
+    # ------------------------------------------------------------------ #
+    def _daily_token_health_check() -> None:
+        from tools.core.token_manager import check_token_health
+        from tools.integrations.whatsapp_sender import alert_operator
+
+        health = check_token_health()
+        expires_in = health.get("expires_in_hours")
+        has_refresh = health.get("has_refresh_token")
+        error = health.get("error")
+
+        if error or not has_refresh:
+            logger.critical(
+                "[token_health] CRITICAL — refresh_token missing/invalid: %s", error
+            )
+            alert_operator(
+                "🔐 Google OAuth refresh_token is missing or invalid.\n"
+                f"Details: {error or 'no refresh_token'}\n"
+                "Run `python -m tools.core.token_manager --reauth` BEFORE "
+                "tonight's lecture (18:00)."
+            )
+            return
+
+        if expires_in is not None and expires_in < 48:
+            logger.warning(
+                "[token_health] Token expires in %.1fh — refresh recommended",
+                expires_in,
+            )
+            try:
+                from tools.core.token_manager import refresh_google_token
+                refresh_google_token()
+            except Exception as exc:
+                logger.error("[token_health] Preemptive refresh failed: %s", exc)
+        else:
+            logger.info(
+                "[token_health] OK — %.1fh until expiry, refresh_token present",
+                expires_in or 0.0,
+            )
+
+    scheduler.add_job(
+        _daily_token_health_check,
+        trigger=CronTrigger(hour=8, minute=0, timezone=TBILISI_TZ),
+        id="google_token_health",
+        name="Daily Google OAuth token health check",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Daily Drive↔Pinecone audit — 09:00 Tbilisi time every day          #
+    #  Detects missing videos, duplicate uploads, missing summaries, and  #
+    #  empty Pinecone indexes BEFORE students notice. Runs after the      #
+    #  token health check so any auth issue is surfaced first.            #
+    # ------------------------------------------------------------------ #
+    from tools.services.drive_audit import daily_audit_job
+
+    scheduler.add_job(
+        daily_audit_job,
+        trigger=CronTrigger(hour=9, minute=0, timezone=TBILISI_TZ),
+        id="drive_pinecone_audit",
+        name="Daily Drive↔Pinecone consistency audit",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Proactive token health monitor — 06:00 Tbilisi time every day      #
+    #  Redundant safety net BEFORE the existing 08:00 inline check, so    #
+    #  any token issue is caught with maximum lead time. Uses the new     #
+    #  tools.services.token_health_monitor module which has unit tests.   #
+    # ------------------------------------------------------------------ #
+    try:
+        from tools.services.token_health_monitor import register_proactive_token_jobs
+        register_proactive_token_jobs(scheduler)
+    except Exception as exc:
+        logger.error("Failed to register proactive token health jobs: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    #  Nightly data reconciliation — 03:30 Tbilisi time every day         #
+    #  Detects drift between Pinecone, scores DB, and pipeline state      #
+    #  files. Runs after the 02:00 nightly catch-all so it sees a stable  #
+    #  state. Catches the same class of bug that wasted ~$25-35/10 days.  #
+    # ------------------------------------------------------------------ #
+    try:
+        from tools.services.data_reconciliation import register_reconciliation_jobs
+        register_reconciliation_jobs(scheduler)
+    except Exception as exc:
+        logger.error("Failed to register reconciliation jobs: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    #  Nightly WhatsApp archive catch-up — 04:30 Tbilisi every day        #
+    #  Defense in depth: if the live webhook drops messages (Railway      #
+    #  restart, transient error, network glitch, deploy downtime), this   #
+    #  fetches the last ~200 messages per chat from Green API and         #
+    #  INSERT-IGNOREs into messages.db. Idempotent via UNIQUE(green_api_  #
+    #  id), so repeated runs are safe and cheap.                          #
+    # ------------------------------------------------------------------ #
+    def _run_whatsapp_archive_catchup() -> None:
+        """Pull recent chat history from Green API and backfill any gaps."""
+        try:
+            import httpx
+            from tools.services.message_archive import (
+                normalize_green_api_message,
+                bulk_insert,
+                connect,
+            )
+        except Exception as exc:
+            logger.error("[archive_catchup] import failed: %s", exc)
+            return
+
+        instance_id = os.environ.get("GREEN_API_INSTANCE_ID")
+        token = os.environ.get("GREEN_API_TOKEN")
+        g1 = os.environ.get("WHATSAPP_GROUP1_ID")
+        g2 = os.environ.get("WHATSAPP_GROUP2_ID")
+        dm = os.environ.get("WHATSAPP_TORNIKE_PHONE")
+        if not all((instance_id, token, g1, g2)):
+            logger.warning(
+                "[archive_catchup] missing Green API or chat env vars; skipping"
+            )
+            return
+
+        chats: list[tuple[str, str]] = [(g1, "group_1"), (g2, "group_2")]
+        if dm:
+            dm_id = dm if dm.endswith("@c.us") else f"{dm}@c.us"
+            chats.append((dm_id, "tornike_dm"))
+
+        base_url = (
+            f"https://api.green-api.com/waInstance{instance_id}"
+            f"/getChatHistory/{token}"
+        )
+        total_inserted = 0
+        total_skipped = 0
+        try:
+            with httpx.Client(timeout=60) as client:
+                for chat_id, label in chats:
+                    try:
+                        r = client.post(
+                            base_url,
+                            json={"chatId": chat_id, "count": 200},
+                        )
+                        if r.status_code != 200:
+                            logger.warning(
+                                "[archive_catchup] %s HTTP %s: %s",
+                                label, r.status_code, r.text[:120],
+                            )
+                            continue
+                        msgs = r.json() or []
+                        normalized = []
+                        for m in msgs:
+                            try:
+                                normalized.append(
+                                    normalize_green_api_message(m, chat_id)
+                                )
+                            except Exception as norm_exc:
+                                logger.debug(
+                                    "[archive_catchup] skip msg in %s: %s",
+                                    label, norm_exc,
+                                )
+                        with connect() as conn:
+                            result = bulk_insert(conn, normalized)
+                        total_inserted += result["inserted"]
+                        total_skipped += result["skipped"]
+                        logger.info(
+                            "[archive_catchup] %s: inserted=%d skipped(dup)=%d",
+                            label, result["inserted"], result["skipped"],
+                        )
+                    except Exception as chat_exc:
+                        logger.warning(
+                            "[archive_catchup] %s failed: %s",
+                            label, chat_exc,
+                        )
+        except Exception as exc:
+            logger.error("[archive_catchup] fatal: %s", exc)
+            return
+
+        logger.info(
+            "[archive_catchup] done — total inserted=%d skipped=%d",
+            total_inserted, total_skipped,
+        )
+
+    scheduler.add_job(
+        _run_whatsapp_archive_catchup,
+        trigger=CronTrigger(hour=4, minute=30, timezone=TBILISI_TZ),
+        id="whatsapp_archive_catchup",
+        name="Nightly WhatsApp archive catch-up (Green API)",
         replace_existing=True,
     )
 

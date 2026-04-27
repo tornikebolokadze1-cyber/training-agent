@@ -1,0 +1,8 @@
+[    5306ms] [WARNING] Amplitude Logger [Warn]: Plugin name is undefined. 
+      Generating a random UUID for plugin name: f3081589-dbbb-438b-811f-640cdacd1549. 
+      Set a name for the plugin to prevent it from being added multiple times. @ https://cdn.amplitude.com/libs/analytics-browser-gtm-2.34.0-feat-zoning-alpha-min.js.gz:0
+[    5782ms] [ERROR] Attestation check for Attribution Reporting on https://www.facebook.com failed. @ https://zoom.us/signin#/login:0
+[   21035ms] [ERROR] Attestation check for Attribution Reporting on https://www.facebook.com failed. @ https://us06web.zoom.us/myhome:0
+[   22074ms] [WARNING] Amplitude Logger [Warn]: Plugin name is undefined. 
+      Generating a random UUID for plugin name: f08cef24-b88c-486a-8ba9-561e26d2b770. 
+      Set a name for the plugin to prevent it from being added multiple times. @ https://cdn.amplitude.com/libs/analytics-browser-gtm-2.34.0-feat-zoning-alpha-min.js.gz:0

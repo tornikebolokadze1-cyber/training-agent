@@ -71,7 +71,7 @@ Four workflows exist on the n8n instance:
 
 ```bash
 cd "/Users/tornikebolokadze/Desktop/Training Agent"
-python -m tools.orchestrator   # starts scheduler + server together
+python -m tools.app.orchestrator   # starts scheduler + server together
 # Or use the startup script:
 ./start.sh
 ```

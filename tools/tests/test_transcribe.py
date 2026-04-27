@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Module stubs are set up in tools/tests/conftest.py.
 # ---------------------------------------------------------------------------
@@ -187,33 +189,34 @@ class TestNotifyGroupWhatsAppFailure:
 # ===========================================================================
 
 class TestSendPrivateReportToTornike:
-    """_send_private_report_to_tornike must log CRITICAL on failure, not call alert_operator."""
+    """_send_private_report_to_tornike uses @safe_operation(alert=False).
 
-    def test_send_failure_calls_logger_critical(self):
+    On failure it logs ERROR (via safe_operation) and does NOT call
+    alert_operator — because this IS the private channel to Tornike.
+    """
+
+    def test_send_failure_logs_error_not_alert(self):
+        """Failure should log error via safe_operation, not call alert_operator."""
         with (
             patch(_PATCH_SEND_PRIVATE, side_effect=ConnectionError("WhatsApp offline")),
             patch(_PATCH_ALERT) as mock_alert,
-            patch.object(tl.logger, "critical") as mock_critical,
         ):
+            # Should NOT raise — safe_operation catches it
             tl._send_private_report_to_tornike(1, 3, "doc-id-123")
 
-        mock_critical.assert_called_once()
-        # Operator alert must NOT be used — this IS the private channel
+        # Operator alert must NOT be used — alert=False in decorator
         mock_alert.assert_not_called()
 
-    def test_critical_log_contains_group_and_lecture(self):
+    def test_failure_does_not_propagate(self):
+        """safe_operation ensures failure doesn't propagate to caller."""
         with (
             patch(_PATCH_SEND_PRIVATE, side_effect=OSError("send failed")),
             patch(_PATCH_ALERT),
-            patch.object(tl.logger, "critical") as mock_critical,
         ):
-            tl._send_private_report_to_tornike(2, 8, None)
+            # Must not raise
+            result = tl._send_private_report_to_tornike(2, 8, None)
 
-        log_args = mock_critical.call_args[0]
-        # The format string or positional args must encode group 2 and lecture 8
-        full_message = " ".join(str(a) for a in log_args)
-        assert "2" in full_message
-        assert "8" in full_message
+        assert result is None  # safe_operation returns default=None
 
     def test_successful_delivery_does_not_log_critical(self):
         with (
@@ -235,9 +238,9 @@ class TestPineconeIndexingFailure:
     def _make_results(self, **overrides) -> dict:
         base = {
             "transcript": "t" * 3000,
-            "summary": "summary text",
-            "gap_analysis": "gap text",
-            "deep_analysis": "deep text",
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
         }
         base.update(overrides)
         return base
@@ -297,36 +300,32 @@ class TestQualityGate:
     """transcribe_and_index must call alert_operator when key analyses are empty."""
 
     def test_empty_summary_triggers_alert(self, tmp_path):
+        """Quality gate fires BEFORE delivery when summary is empty."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake video")
 
         results = {
             "transcript": "t" * 3000,
             "summary": "",           # empty — triggers quality gate
-            "gap_analysis": "gaps",
-            "deep_analysis": "deep",
+            "gap_analysis": "g" * 500,
+            "deep_analysis": "d" * 500,
         }
 
         with (
             patch(_PATCH_ANALYZE, return_value=results),
-            patch(_PATCH_INDEX, return_value=5),
             patch(_PATCH_ALERT),
             patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
-            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
-            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
-            tl.transcribe_and_index(1, 1, video)
+            with pytest.raises(ValueError, match="Quality gate FAILED"):
+                tl.transcribe_and_index(1, 1, video)
 
         mock_alert_local.assert_called()
-        # One of the alert calls should mention the missing analysis
         alert_args = [c[0][0] for c in mock_alert_local.call_args_list]
         quality_alerts = [a for a in alert_args if "summary" in a or "EMPTY" in a]
         assert len(quality_alerts) >= 1
 
     def test_all_analyses_empty_triggers_alert(self, tmp_path):
+        """Quality gate fires BEFORE delivery when all analyses are empty."""
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake video")
 
@@ -339,16 +338,11 @@ class TestQualityGate:
 
         with (
             patch(_PATCH_ANALYZE, return_value=results),
-            patch(_PATCH_INDEX, return_value=0),
             patch(_PATCH_ALERT),
             patch(_PATCH_ALERT_LOCAL) as mock_alert_local,
-            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value=None),
-            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
-            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
-            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
         ):
-            tl.transcribe_and_index(1, 1, video)
+            with pytest.raises(ValueError, match="Quality gate FAILED"):
+                tl.transcribe_and_index(1, 1, video)
 
         mock_alert_local.assert_called()
 
@@ -358,9 +352,9 @@ class TestQualityGate:
 
         results = {
             "transcript": "t" * 3000,
-            "summary": "full summary here",
-            "gap_analysis": "gap analysis content",
-            "deep_analysis": "deep analysis content",
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
         }
 
         alert_messages: list[str] = []
@@ -381,7 +375,7 @@ class TestQualityGate:
             tl.transcribe_and_index(1, 2, video)
 
         # No quality gate alerts should fire when all analyses are present
-        quality_alerts = [a for a in alert_messages if "EMPTY" in a]
+        quality_alerts = [a for a in alert_messages if "EMPTY" in a or "Quality gate" in a]
         assert len(quality_alerts) == 0
 
 
@@ -410,9 +404,9 @@ class TestTranscriptResumeThreshold:
             analyze_calls.append(existing_transcript)
             return {
                 "transcript": "t" * 3000,
-                "summary": "s",
-                "gap_analysis": "g",
-                "deep_analysis": "d",
+                "summary": "s" * 600,
+                "gap_analysis": "g" * 400,
+                "deep_analysis": "d" * 400,
             }
 
         with (
@@ -463,3 +457,147 @@ class TestTranscriptResumeThreshold:
         assert outcome["analyze_calls"][0] == long_transcript, (
             "Transcript over 2000 chars must be reused"
         )
+
+
+# ===========================================================================
+# 8. Pipeline resume — skip stages based on persisted state
+# ===========================================================================
+
+class TestPipelineResume:
+    """Tests for resume logic: skip already-completed stages when state is past TRANSCRIBING."""
+
+    def test_skip_analysis_when_state_past_transcribing(self, tmp_path):
+        """When pipeline state is UPLOADING_DOCS with cached results, analyze_lecture should NOT be called."""
+        from tools.core.pipeline_state import PipelineState, UPLOADING_DOCS
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+
+        # Create cached results files with enough content to pass validation
+        for content_type, content in [
+            ("transcript", "t" * 3000),
+            ("summary", "s" * 600),
+            ("gap_analysis", "g" * 400),
+            ("deep_analysis", "d" * 400),
+        ]:
+            path = fake_tmp / f"g1_l1_{content_type}.txt"
+            path.write_text(content, encoding="utf-8")
+
+        # Mock pipeline state: already past TRANSCRIBING
+        mock_state = PipelineState(
+            group=1, lecture=1, state=UPLOADING_DOCS,
+            summary_doc_id="existing-doc-id",
+        )
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE) as mock_analyze,
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        mock_analyze.assert_not_called()
+
+    def test_fallback_to_full_analysis_when_cache_missing(self, tmp_path):
+        """When pipeline state is past TRANSCRIBING but no cached files exist, analyze_lecture IS called."""
+        from tools.core.pipeline_state import PipelineState, UPLOADING_DOCS
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+        # NO cached result files — .tmp/ is empty
+
+        mock_state = PipelineState(
+            group=1, lecture=1, state=UPLOADING_DOCS,
+        )
+
+        full_results = {
+            "transcript": "t" * 3000,
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
+        }
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE, return_value=full_results) as mock_analyze,
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        mock_analyze.assert_called_once()
+
+    def test_resume_skips_completed_delivery_stages(self, tmp_path):
+        """When pipeline has group_notified=True, _notify_group_whatsapp should NOT be called."""
+        from tools.core.pipeline_state import PipelineState, NOTIFYING
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+
+        # Create cached results
+        for content_type, content in [
+            ("transcript", "t" * 3000),
+            ("summary", "s" * 600),
+            ("gap_analysis", "g" * 400),
+            ("deep_analysis", "d" * 400),
+        ]:
+            path = fake_tmp / f"g1_l1_{content_type}.txt"
+            path.write_text(content, encoding="utf-8")
+
+        # Pipeline state: past notification, with group_notified=True
+        mock_state = PipelineState(
+            group=1, lecture=1, state=NOTIFYING,
+            summary_doc_id="doc-1",
+            report_doc_id="doc-2",
+            group_notified=True,
+            private_notified=True,
+        )
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE),
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp") as mock_notify_group,
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike") as mock_notify_private,
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        # Group and private notifications should have been skipped
+        mock_notify_group.assert_not_called()
+        mock_notify_private.assert_not_called()

@@ -1,3 +1,4 @@
+<!-- Last updated: 2026-03-28 -->
 # Memory & Session Persistence Rules — Training Agent
 
 ---
@@ -10,7 +11,8 @@ At the beginning of EVERY session:
 2. **Check `docs/decisions/`** — if it exists, read recent architectural decisions.
 3. **Run `git log --oneline -10`** — see what was done recently.
 4. **Check for handoff notes** — read `.claude/handoff-*.md` if any exist.
-5. **Brief greeting**: "ვხედავ რომ ბოლოს [X]-ზე ვმუშაობდით. გინდათ გააგრძელოთ თუ ახალ რამეზე გადავიდეთ?"
+5. **Memory ვერიფიკაცია** — spot-check 1-2 memory claim ფაქტიურ კოდთან (მაგ: grep-ით შეამოწმე model name config.py-ში). თუ memory ეწინააღმდეგება კოდს, დაუყოვნებლივ განაახლე memory.
+6. **Brief greeting**: "ვხედავ რომ ბოლოს [X]-ზე ვმუშაობდით. გინდათ გააგრძელოთ თუ ახალ რამეზე გადავიდეთ?"
 
 DO NOT recite the entire CLAUDE.md. Acknowledge context silently and get to work.
 
@@ -49,6 +51,12 @@ Before the session ends (user says goodbye, context filling up):
 | რა აშენდა და რატომ | Git commit messages | ჭეშმარიტების წყარო |
 | სესიის კონტექსტი შემდეგ ჯერზე | `.claude/handoff-*.md` | ხიდი სესიებს შორის |
 | მნიშვნელოვანი შეცდომები და გადაწყვეტები | Auto memory | მომავალი რეფერენცია |
+
+### ინფორმაციის წყაროს პრიორიტეტი (კონფლიქტის შემთხვევაში)
+1. ფაქტიური კოდი (config.py, server.py) — ყველაზე სანდო
+2. CLAUDE.md — განახლებული პროექტის ინსტრუქციები
+3. ახალი Memory ფაილები (< 7 დღის) — ბოლო სესიის სწავლა
+4. ძველი Memory ფაილები (7+ დღის) — შეიძლება მოძველებული იყოს, შეამოწმე სანამ იმოქმედებ
 
 ---
 
@@ -100,12 +108,13 @@ Create an ADR when:
 ## 5. Context Window Management
 
 ### Monitor Usage
-- If conversation exceeds 20 exchanges: suggest `/compact`.
+- If conversation exceeds 30 exchanges, or 15+ ფაილი წაკითხულია: suggest `/compact`.
 - If working on many different things: suggest `/clear` between topics.
 - Never let context degrade quality.
 
 ### Compact Strategy
-- Compact BEFORE reaching 60% context usage.
+- Compact BEFORE reaching 80% context usage (1M token მოდელებისთვის, როგორიცაა Opus 4.6; 200K მოდელებისთვის — 60%).
+- 90%-ზე — დაუყოვნებლივ compact, მომხმარებელს შემდეგ აცნობე.
 - When compacting, preserve:
   - Current task state and progress
   - Recent decisions and their reasons
@@ -122,9 +131,30 @@ Create an ADR when:
 
 ---
 
+## 5.1 Memory-ს სიძველის კონტროლი
+
+- 14+ დღის Memory ფაილები: სესიის დაწყებისას შეამოწმე 1-2 claim ფაქტიურ კოდთან
+- თუ Memory ეწინააღმდეგება კოდს: განაახლე Memory დაუყოვნებლივ
+- Memory ფაილის description-ში ჩაწერე "verified YYYY-MM-DD" განახლების შემდეგ
+- User preferences და behavioral feedback — მუდმივი, არ იშლება
+- ერთჯერადი migration/setup შენიშვნები — 30 დღის შემდეგ შეიძლება დაარქივდეს
+
+---
+
+## 5.2 Memory-ს აღდგენა (თუ ფაილები დაიკარგა)
+
+თუ memory ფაილები წაიშალა ან დაზიანდა, აღადგინე ამ თანმიმდევრობით:
+1. CLAUDE.md-დან — პროექტის ძირითადი კონტექსტი
+2. `git log --oneline -30` — ბოლო სესიების აქტივობა
+3. `docs/decisions/` — არქიტექტურული გადაწყვეტილებები
+4. ფაქტიური კოდის ინსპექცია (config.py, server.py) — ტექნიკური დეტალები
+ეს აღადგენს კონტექსტის ~80%-ს.
+
+---
+
 ## 6. Handoff Note Management
 
-### Keep latest 3 handoff notes only.
+### აქტიური განვითარების ფაზაში (ყოველდღიური სესიები) — 5 შენიშვნა. სტაბილურ ფაზაში — 3.
 - When creating a 4th, suggest deleting the oldest.
 - NEVER auto-delete — always ask: "ძველი შენიშვნები წავშალო? (3-ზე მეტია)"
 
@@ -142,6 +172,8 @@ Even across sessions, always remember:
 - **Security**: WEBHOOK_SECRET on all endpoints, Zoom HMAC on /zoom-webhook.
 - **Testing mandatory**: pytest, mock all external services.
 - **Georgian text**: UTF-8 everywhere, prompts stay in Georgian.
+- **Source of truth**: code > CLAUDE.md > recent memory > old memory
+- **Memory validation**: spot-check stale claims against code at session start
 
 These reload from CLAUDE.md and rules every session automatically.
 

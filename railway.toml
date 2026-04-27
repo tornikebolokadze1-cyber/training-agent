@@ -3,8 +3,24 @@ builder = "DOCKERFILE"
 dockerfilePath = "./Dockerfile"
 
 [deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckPath = "/live"
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 numReplicas = 1
+
+# ============================================================
+# CRITICAL: Configure persistent volume via Railway Dashboard!
+# ============================================================
+# Without this, .tmp/ data (cost tracking, pipeline state,
+# budget counters) is LOST on every deploy, making daily budget
+# limits completely ineffective.
+#
+# Steps:
+#   1. Railway Dashboard → your service → Settings → Volumes
+#   2. Mount Path: /app/.tmp
+#   3. Size: 1 GB (sufficient for logs and state files)
+#
+# NOTE: Railway volumes are configured via the dashboard only —
+# they cannot be declared in railway.toml.
+# ============================================================

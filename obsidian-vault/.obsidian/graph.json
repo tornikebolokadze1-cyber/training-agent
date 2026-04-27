@@ -6,17 +6,53 @@
   "hideUnresolved": false,
   "showOrphans": true,
   "collapse-color-groups": false,
-  "colorGroups": [],
-  "collapse-display": true,
-  "showArrow": false,
+  "colorGroups": [
+    {
+      "query": "tag:#\u10da\u10d4\u10e5\u10ea\u10d8\u10d0",
+      "color": {
+        "a": 1,
+        "hex": "#5588ff"
+      }
+    },
+    {
+      "query": "tag:#\u10d8\u10dc\u10e1\u10e2\u10e0\u10e3\u10db\u10d4\u10dc\u10e2\u10d8",
+      "color": {
+        "a": 1,
+        "hex": "#ff8855"
+      }
+    },
+    {
+      "query": "tag:#\u10d9\u10dd\u10dc\u10ea\u10d4\u10e4\u10ea\u10d8\u10d0",
+      "color": {
+        "a": 1,
+        "hex": "#55cc55"
+      }
+    },
+    {
+      "query": "tag:#\u10d0\u10dc\u10d0\u10da\u10d8\u10d6\u10d8",
+      "color": {
+        "a": 1,
+        "hex": "#cc55cc"
+      }
+    },
+    {
+      "query": "tag:#MOC",
+      "color": {
+        "a": 1,
+        "hex": "#ffcc00"
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
   "textFadeMultiplier": 0,
   "nodeSizeMultiplier": 1,
   "lineSizeMultiplier": 1,
-  "collapse-forces": true,
+  "collapse-forces": false,
   "centerStrength": 0.518713248970312,
   "repelStrength": 10,
   "linkStrength": 1,
   "linkDistance": 250,
-  "scale": 1.742932671383466,
-  "close": true
+  "scale": 1,
+  "close": false
 }

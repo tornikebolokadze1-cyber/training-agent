@@ -1,0 +1,33 @@
+- generic [ref=e4]:
+  - progressbar [ref=e6]
+  - main [ref=e14]:
+    - generic [ref=e15]:
+      - generic [ref=e17]:
+        - generic [ref=e18]:
+          - img [ref=e20]
+          - generic [ref=e25]: Sign in with Google
+        - img "Zoom" [ref=e26]
+      - generic [ref=e27]:
+        - heading "Sign in" [level=1] [ref=e28]
+        - generic [ref=e30]:
+          - text: to continue to
+          - button "Zoom" [ref=e31] [cursor=pointer]
+    - generic [ref=e34]:
+      - generic [ref=e39]:
+        - generic [ref=e44]:
+          - textbox "Email or phone" [ref=e45]
+          - generic: Email or phone
+        - button "Forgot email?" [ref=e49] [cursor=pointer]
+      - generic [ref=e52]:
+        - text: Before using this app, you can review Zoom’s
+        - link "privacy policy" [ref=e53] [cursor=pointer]:
+          - /url: https://zoom.com/privacy
+        - text: and
+        - link "terms of service" [ref=e54] [cursor=pointer]:
+          - /url: https://zoom.com/terms
+        - text: .
+    - generic [ref=e56]:
+      - button "Next" [ref=e60]:
+        - generic [ref=e63]: Next
+      - button "Create account" [ref=e68]:
+        - generic [ref=e71]: Create account

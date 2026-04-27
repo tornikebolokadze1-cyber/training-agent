@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,7 +19,7 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -29,6 +29,8 @@ from tools.core.config import (
     IS_RAILWAY,
     MINIMUM_LECTURE_DURATION_MINUTES,
     N8N_CALLBACK_URL,
+    PAPERCLIP_API_BASE,
+    PAPERCLIP_WEBHOOK_SECRET,
     SERVER_HOST,
     SERVER_PORT,
     TBILISI_TZ,
@@ -43,9 +45,19 @@ from tools.core.config import (
 from tools.integrations.gdrive_manager import (
     ensure_folder,
     get_drive_service,
+    trash_old_recordings,
     upload_file,
 )
 from tools.integrations.whatsapp_sender import alert_operator
+from tools.core.pipeline_state import (
+    is_pipeline_active,
+    is_pipeline_done,
+    create_pipeline,
+    list_active_pipelines,
+    cleanup_completed,
+    cleanup_stale_failed,
+    reset_failed,
+)
 from tools.services.transcribe_lecture import transcribe_and_index
 
 try:
@@ -61,11 +73,68 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
 _processing_lock = threading.Lock()  # Prevent webhook+scheduler race condition
+_server_start_time: float = __import__("time").time()  # For startup grace period
 STALE_TASK_HOURS = 4  # Consider a task stale after 4 hours
+_startup_complete: bool = False  # Set to True after lifespan startup finishes
+_APP_VERSION: str = "1.0.0"
+
+
+def _get_git_commit() -> str:
+    """Get the git commit hash from build artifact or live git repo."""
+    # Try to read from Docker build artifact
+    commit_file = Path("/etc/app/git_commit")
+    if commit_file.exists():
+        try:
+            return commit_file.read_text().strip()
+        except Exception:
+            pass
+
+    # Fallback: try to read from live .git directory
+    try:
+        git_head = Path(".git/HEAD")
+        if git_head.exists():
+            head_content = git_head.read_text().strip()
+            if head_content.startswith("ref:"):
+                # e.g. "ref: refs/heads/main"
+                ref_path = Path(".git") / head_content.split(": ", 1)[1]
+                if ref_path.exists():
+                    return ref_path.read_text().strip()[:8]
+            return head_content[:8]
+    except Exception:
+        pass
+
+    return "unknown"
+
+
+_GIT_COMMIT: str = _get_git_commit()
 
 
 def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
+
+
+def _rebuild_task_cache() -> None:
+    """Rebuild in-memory task cache from persistent pipeline state files."""
+    active = list_active_pipelines()
+    with _processing_lock:
+        for pipeline in active:
+            key = _task_key(pipeline.group, pipeline.lecture)
+            if key not in _processing_tasks:
+                try:
+                    _processing_tasks[key] = _ensure_tz_aware(
+                        datetime.fromisoformat(pipeline.started_at)
+                    )
+                except (ValueError, TypeError):
+                    _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+    if active:
+        logger.info("[dedup] Rebuilt task cache from %d active pipeline state files", len(active))
+
+
+def _ensure_tz_aware(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (default to TBILISI_TZ if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TBILISI_TZ)
+    return dt
 
 
 def _evict_stale_tasks() -> list[str]:
@@ -73,10 +142,10 @@ def _evict_stale_tasks() -> list[str]:
 
     Returns list of evicted task keys (for logging).
     """
-    now = datetime.now()
+    now = datetime.now(tz=TBILISI_TZ)
     stale = [
         key for key, started in _processing_tasks.items()
-        if (now - started).total_seconds() > STALE_TASK_HOURS * 3600
+        if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
     ]
     for key in stale:
         _processing_tasks.pop(key, None)
@@ -119,7 +188,6 @@ async def _check_unprocessed_recordings() -> None:
     with matching group + lecture number). If unprocessed recordings are found,
     starts the pipeline automatically.
     """
-    from tools.app.scheduler import _run_post_meeting_pipeline
 
     try:
         zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
@@ -128,11 +196,13 @@ async def _check_unprocessed_recordings() -> None:
         return
 
     today = datetime.now(TBILISI_TZ).date()
+    # Check last 3 days for missed recordings (not just today)
+    from_date = (today - timedelta(days=2)).isoformat()
     today_str = today.isoformat()
 
     try:
         meetings = await asyncio.to_thread(
-            zm.list_user_recordings, today_str, today_str,
+            zm.list_user_recordings, from_date, today_str,
         )
     except Exception as exc:
         logger.warning("[startup-recovery] Failed to list recordings: %s", exc)
@@ -171,25 +241,42 @@ async def _check_unprocessed_recordings() -> None:
                 logger.info("[startup-recovery] %s already processing — skipping", key)
                 continue
 
-        # Check if already indexed in Pinecone (any vectors for this lecture)
+        # Check pipeline state file first (cheaper than Pinecone query)
+        if is_pipeline_done(group_number, lecture_number):
+            logger.info("[startup-recovery] G%d L%d already COMPLETE per state file — skipping", group_number, lecture_number)
+            continue
+        if is_pipeline_active(group_number, lecture_number):
+            logger.info("[startup-recovery] G%d L%d already active per state file — resuming handled by orchestrator", group_number, lecture_number)
+            continue
+
+        # Skip if retry executor already owns this lecture — prevents
+        # duplicate launches when a scheduled retry is pending from a
+        # previous crash (Phase 2 unified contract).
+        from tools.core.pipeline_retry import retry_orchestrator as _retry_orch
+        if _retry_orch.has_pending_retry(group_number, lecture_number):
+            logger.info(
+                "[startup-recovery] G%d L%d already owned by retry tracker — skipping",
+                group_number, lecture_number,
+            )
+            continue
+
+        # Auto-reset FAILED pipelines so they can be retried on startup
+        from tools.core.pipeline_state import load_state as _load_state, FAILED as _FAILED
+        _existing = _load_state(group_number, lecture_number)
+        if _existing and _existing.state == _FAILED:
+            logger.info("[startup-recovery] G%d L%d was FAILED — resetting for retry", group_number, lecture_number)
+            reset_failed(group_number, lecture_number)
+
+        # Check if already indexed in Pinecone via ID prefix scan.
+        # Previously used index.query(vector=[0.0]*3072, filter={...}) which
+        # returns 0 matches with cosine metric — caused false negatives and
+        # triggered unnecessary reprocessing on every startup.
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            # Query with a filter — if any vectors exist for this group+lecture, it's done
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning(
                 "[startup-recovery] Pinecone check failed for G%d L%d: %s — assuming not indexed",
@@ -214,9 +301,13 @@ async def _check_unprocessed_recordings() -> None:
 
         with _processing_lock:
             # Re-check under lock
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+            try:
+                create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         logger.info(
             "[startup-recovery] Starting pipeline for UNPROCESSED recording: "
@@ -224,35 +315,146 @@ async def _check_unprocessed_recordings() -> None:
             group_number, lecture_number, poll_id,
         )
 
-        # Run in background thread (non-blocking)
+        # Run in background thread (non-blocking) via canonical entry point.
+        # Startup recovery — skip 15-min initial delay since recording is already on Zoom.
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
+
+        def _startup_launch(gn: int, ln: int, pid: str) -> None:
+            try:
+                process_lecture_pipeline(
+                    gn, ln, pid,
+                    entry_source="startup_recovery",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[startup-recovery] Claim rejected: %s", exc)
+            finally:
+                _processing_tasks.pop(_task_key(gn, ln), None)
+
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
-            None,
-            _run_post_meeting_pipeline,
-            group_number,
-            lecture_number,
-            poll_id,
+            None, _startup_launch, group_number, lecture_number, poll_id,
         )
+
+
+async def _deferred_lifespan_init() -> None:
+    """Heavy startup work that must NOT block lifespan from yielding.
+
+    Runs as a background task spawned in ``_lifespan``. Critical for
+    Railway healthchecks: ``/live`` and ``/health`` need to respond
+    immediately so the container is marked healthy. Anything that hits
+    Pinecone or Zoom must be backgrounded with timeouts so a slow
+    upstream cannot prevent the app from accepting connections.
+
+    ``_startup_complete`` flips to ``True`` only when this finishes;
+    ``/ready`` reflects that, while ``/live`` does not depend on it.
+    """
+    global _startup_complete
+
+    try:
+        await asyncio.wait_for(_check_unprocessed_recordings(), timeout=60)
+    except asyncio.TimeoutError:
+        logger.warning("[startup-recovery] timed out after 60s — continuing")
+    except Exception as exc:
+        logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
+
+    try:
+        _rebuild_task_cache()
+    except Exception as exc:
+        logger.error("[startup] _rebuild_task_cache failed: %s", exc, exc_info=True)
+
+    try:
+        cleanup_completed(max_age_hours=24)
+        cleanup_stale_failed(max_age_hours=12)
+    except Exception as exc:
+        logger.error("[startup] pipeline-state cleanup failed: %s", exc, exc_info=True)
+
+    try:
+        from tools.services.analytics import backup_scores_to_pinecone
+        await asyncio.wait_for(
+            asyncio.to_thread(backup_scores_to_pinecone),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[startup] Pinecone score backup timed out after 60s")
+    except Exception as exc:
+        logger.error("[startup] Pinecone score backup failed: %s", exc, exc_info=True)
+
+    _startup_complete = True
+    logger.info("[startup] Startup complete — /ready will return 200")
+
+
+# Catch-up loop tuning. Boot delay lets /live + /ready come up before we
+# spend an LLM budget on belated replies; the period balances staleness
+# against Green API rate limits. Both are intentionally generous defaults.
+_CATCHUP_BOOT_DELAY_SECONDS = 20
+_CATCHUP_INTERVAL_SECONDS = 15 * 60
+_CATCHUP_SINCE_MINUTES = 120
+
+
+async def _periodic_catchup_loop() -> None:
+    """Recurring assistant catch-up: replay missed triggers from chat history.
+
+    The live ``/whatsapp-incoming`` webhook is best-effort — Green API
+    can drop or delay deliveries, and a Railway boot hang or transient
+    crash can leave a window of unanswered messages. This loop closes
+    that gap without operator action: every 15 minutes it pulls the
+    last N messages from each allowed chat, identifies trigger messages
+    that were never answered (no bot reply within 3 min after them), and
+    runs ``WhatsAppAssistant._respond_to_missed`` on each. A persistent
+    ledger at ``.tmp/whatsapp_responded.json`` makes this idempotent
+    across restarts so we never double-respond.
+    """
+    if not _assistant_available or assistant is None:
+        logger.info("[catchup] assistant unavailable — loop disabled")
+        return
+
+    # Initial delay so the server's /live + /ready are reachable first.
+    try:
+        await asyncio.sleep(_CATCHUP_BOOT_DELAY_SECONDS)
+    except asyncio.CancelledError:
+        raise
+
+    from tools.services.whatsapp_catchup import replay_recent
+
+    while True:
+        try:
+            await replay_recent(assistant, since_minutes=_CATCHUP_SINCE_MINUTES)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[catchup] iteration failed: %s", exc, exc_info=True)
+
+        try:
+            await asyncio.sleep(_CATCHUP_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
 
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # noqa: ARG001
     eviction_task = asyncio.create_task(_eviction_loop())
-
-    # Startup recovery: check for unprocessed recordings
-    try:
-        await _check_unprocessed_recordings()
-    except Exception as exc:
-        logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
+    # Defer heavy startup work to a background task so /live and /health
+    # are servable as soon as uvicorn binds. Without this, Pinecone/Zoom
+    # network calls during startup would block Railway healthchecks and
+    # the container would be killed before it ever responded.
+    deferred_task = asyncio.create_task(_deferred_lifespan_init())
+    # Recurring catch-up — recovers any messages the live webhook missed.
+    catchup_task = asyncio.create_task(_periodic_catchup_loop())
 
     try:
         yield
     finally:
-        eviction_task.cancel()
-        try:
-            await eviction_task
-        except asyncio.CancelledError:
-            pass
+        for task in (deferred_task, eviction_task, catchup_task):
+            task.cancel()
+        for task in (deferred_task, eviction_task, catchup_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[lifespan] task cleanup error: %s", exc)
 
 
 app = FastAPI(
@@ -310,6 +512,61 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+# Maximum request body size for POST endpoints (1 MiB). Webhook payloads
+# are small JSON documents; anything larger is rejected to prevent abuse.
+MAX_BODY_SIZE = 1_048_576  # 1 MB
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """Enforce a hard cap on POST request body size.
+
+    Runs BEFORE any endpoint handler reads ``request.json()``.  Two paths:
+
+    1. Fast reject: an honest ``Content-Length`` header larger than the limit
+       is rejected immediately with HTTP 413, without touching the body.
+    2. Streaming enforcement: when Content-Length is missing (chunked transfer)
+       or dishonest, we wrap ``receive`` so that accumulated bytes exceeding
+       the limit abort the request with HTTP 413 before the handler sees it.
+    """
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > MAX_BODY_SIZE:
+            return JSONResponse(
+                {"error": "request body too large"},
+                status_code=413,
+            )
+
+        # Wrap receive to enforce streaming limit for chunked / dishonest requests.
+        received = 0
+        original_receive = request._receive
+
+        async def limited_receive():
+            nonlocal received
+            message = await original_receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_BODY_SIZE:
+                    # Signal too-large by raising; caught below to return 413.
+                    raise _BodyTooLargeError()
+            return message
+
+        request._receive = limited_receive
+        try:
+            return await call_next(request)
+        except _BodyTooLargeError:
+            return JSONResponse(
+                {"error": "request body too large"},
+                status_code=413,
+            )
+
+    return await call_next(request)
+
+
+class _BodyTooLargeError(Exception):
+    """Internal sentinel raised by the body-size limiter."""
+
+
 # Security + correlation ID headers middleware — must be defined before routes
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next) -> JSONResponse:
@@ -334,7 +591,13 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     return response
 
 
-assistant: WhatsAppAssistant | None = WhatsAppAssistant() if _assistant_available else None
+assistant: WhatsAppAssistant | None = None
+if _assistant_available:
+    try:
+        assistant = WhatsAppAssistant()
+    except (ValueError, RuntimeError) as _init_err:
+        logger.warning("WhatsAppAssistant init failed (non-fatal): %s", _init_err)
+        assistant = None
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +716,14 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         lecture_folder_id = await asyncio.to_thread(
             ensure_folder, service, lecture_folder_name, payload.drive_folder_id
         )
+        # Clean up any old recording versions before uploading the new one
+        # (prevents duplicate videos from accumulating on retries/re-processing)
+        trashed_count = await asyncio.to_thread(
+            trash_old_recordings, lecture_folder_id, group, lecture,
+        )
+        if trashed_count:
+            logger.info("Trashed %d old recording(s) before upload", trashed_count)
+
         logger.info("Uploading recording to Google Drive...")
         recording_file_id = await asyncio.to_thread(upload_file, local_path, lecture_folder_id)
         drive_recording_url = get_drive_file_url(recording_file_id)
@@ -480,20 +751,48 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         error_msg = f"Processing failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
 
-        await _send_callback(CallbackPayload(
-            status="error",
-            group_number=group,
-            lecture_number=lecture,
-            error_message=str(e),
-        ))
+        # Mark pipeline as failed in state file
+        try:
+            from tools.core.pipeline_state import load_state as _load_ps, mark_failed as _mark_failed_ps
+            _ps = _load_ps(group, lecture)
+            if _ps and _ps.state not in ("COMPLETE", "FAILED"):
+                _mark_failed_ps(_ps, str(e))
+        except Exception as state_err:
+            logger.warning("Failed to mark pipeline state as FAILED: %s", state_err)
+
+        # Enqueue a retry decision via the unified contract. Classifies
+        # the error so permanent failures (403, revoked token, etc.) do
+        # not eat retry budget, while transient errors get exponential
+        # backoff consistent with every other entry path.
+        try:
+            from tools.core.pipeline_retry import retry_orchestrator as _retry_orch
+            _retry_orch.schedule_retry(group, lecture, "", str(e))
+        except Exception as retry_err:
+            logger.warning("Failed to schedule retry for G%d L%d: %s", group, lecture, retry_err)
+
+        try:
+            await _send_callback(CallbackPayload(
+                status="error",
+                group_number=group,
+                lecture_number=lecture,
+                error_message=str(e),
+            ))
+        except Exception as cb_err:
+            logger.warning("n8n callback failed: %s", cb_err)
 
         # Last-resort alert — ensures Tornike knows even if n8n callback fails
-        # Wrapped in to_thread because alert_operator makes blocking HTTP calls
-        await asyncio.to_thread(
-            alert_operator,
-            f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
-            f"Error: {e}",
-        )
+        try:
+            await asyncio.to_thread(
+                alert_operator,
+                f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
+                f"Error: {e}",
+            )
+        except Exception as alert_err:
+            logger.error(
+                "CRITICAL: Both pipeline AND alert_operator failed for G%d L%d. "
+                "Alert error: %s. Original error: %s",
+                group, lecture, alert_err, e,
+            )
 
     finally:
         key = _task_key(group, lecture)
@@ -581,44 +880,119 @@ async def _send_callback(payload: CallbackPayload) -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/health")
-@limiter.limit("60/minute")
-async def health_check(request: Request):
-    """Health check endpoint with basic dependency verification."""
-    checks: dict[str, str] = {}
+@app.get("/live")
+async def liveness(request: Request):  # noqa: ARG001
+    """Liveness probe — is the process alive and the event loop responsive?
 
-    # Check tmp directory is writable
+    Designed for Railway healthcheck, Docker HEALTHCHECK, and GitHub deploy
+    verification.  Makes NO external API calls and does NOT touch Gemini,
+    Claude, Zoom, Pinecone, or any other billable dependency.
+
+    Always returns HTTP 200 as long as the process is running.
+    Completes in < 50 ms under normal conditions.
+    Does NOT require authentication — Railway and Docker need anonymous access.
+    """
+    uptime_s = int(time.time() - _server_start_time)
+
+    # Cheap disk write to /tmp — verifies the filesystem is not read-only
+    tmp_ok = True
     try:
-        test_file = TMP_DIR / ".health_check"
-        test_file.write_text("ok")
-        test_file.unlink()
-        checks["tmp_dir"] = "ok"
-    except Exception as e:
-        checks["tmp_dir"] = f"error: {e}"
-
-    # Check critical env vars are present
-    checks["webhook_secret"] = "configured" if WEBHOOK_SECRET else "MISSING"
-    checks["n8n_callback"] = "configured" if N8N_CALLBACK_URL else "not set"
-
-    # Report in-flight tasks
-    checks["tasks_in_progress"] = str(len(_processing_tasks))
-
-    overall = "healthy" if checks.get("tmp_dir") == "ok" and WEBHOOK_SECRET else "degraded"
-    status_code = 200 if overall == "healthy" else 503
+        _probe = Path("/tmp/.liveness_probe")
+        _probe.write_text("ok")
+        _probe.unlink(missing_ok=True)
+    except OSError:
+        tmp_ok = False
 
     return JSONResponse(
         content={
-            "status": overall,
-            "service": "training-agent",
-            "timestamp": datetime.now().isoformat(),
-            "checks": checks,
+            "status": "alive",
+            "uptime_s": uptime_s,
+            "version": _APP_VERSION,
+            "commit": _GIT_COMMIT,
+            "tmp_writable": tmp_ok,
         },
-        status_code=status_code,
+        status_code=200,
     )
 
 
-@app.get("/dashboard")
+@app.get("/ready")
+async def readiness(request: Request):  # noqa: ARG001
+    """Readiness probe — has the app completed startup initialisation?
+
+    Returns 200 once the lifespan startup hook has finished (scheduler
+    initialised, routes registered, startup recovery complete).
+    Returns 503 while startup is still in progress.
+
+    Makes NO external API calls and does NOT require authentication.
+    """
+    if not _startup_complete:
+        uptime_s = int(time.time() - _server_start_time)
+        return JSONResponse(
+            content={
+                "status": "starting",
+                "uptime_s": uptime_s,
+                "version": _APP_VERSION,
+            },
+            status_code=503,
+        )
+
+    return JSONResponse(
+        content={
+            "status": "ready",
+            "uptime_s": int(time.time() - _server_start_time),
+            "version": _APP_VERSION,
+            "tasks_in_progress": len(_processing_tasks),
+        },
+        status_code=200,
+    )
+
+
+@limiter.limit("60/minute")
+@app.get("/health")
+async def health_check(request: Request, force: str = ""):
+    """Deep observability endpoint — full dependency audit with TTL caching.
+
+    Checks all external services: Gemini, Claude, Zoom, Pinecone, WhatsApp,
+    Google Drive, disk space, and pipeline state.
+
+    Distinction from /live and /ready:
+      - /live  — cheap liveness probe, no external calls (use for Railway/Docker)
+      - /ready — startup completion check, no external calls (use for load balancers)
+      - /health — full dependency audit, may issue billable API calls (use for observability)
+
+    Caching:
+      Results are cached for 5 minutes to prevent frequent polls from issuing
+      billable Gemini/Claude API calls.  Pass ``?force=true`` to bypass the
+      cache and always run a fresh audit.
+
+    HTTP status:
+      - 200 when overall_status is "healthy" or "degraded" (warning-level only)
+      - 503 only when overall_status is "critical" (all or most AI providers down)
+
+    This means warning-level issues (e.g. one dependency slow) do NOT cause
+    Railway/Docker to restart the service.
+    """
+    from tools.core.health_monitor import get_cached_or_run_full_audit
+
+    force_refresh = force.lower() in ("true", "1", "yes")
+    report = get_cached_or_run_full_audit(force=force_refresh)
+
+    # Add legacy fields for backward compatibility
+    report["service"] = "training-agent"
+    report["status"] = report["overall_status"]
+    report["version"] = _APP_VERSION
+    report["commit"] = _GIT_COMMIT
+    report["tasks_in_progress"] = len(_processing_tasks)
+
+    # Only 503 on CRITICAL — warning-level ("degraded") returns 200 so
+    # Railway and Docker do not restart the service for dependency noise.
+    status_code = 503 if report["overall_status"] == "critical" else 200
+
+    return JSONResponse(content=report, status_code=status_code)
+
+
 @limiter.limit("10/minute")
+@app.get("/dashboard")
 async def dashboard(request: Request):
     """Render the analytics dashboard as an HTML page."""
     try:
@@ -634,8 +1008,8 @@ async def dashboard(request: Request):
         )
 
 
-@app.get("/dashboard/data")
 @limiter.limit("10/minute")
+@app.get("/dashboard/data")
 async def dashboard_data(request: Request):
     """Return raw dashboard data as JSON (for custom frontends)."""
     try:
@@ -646,8 +1020,8 @@ async def dashboard_data(request: Request):
         return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
-@app.post("/whatsapp-incoming")
 @limiter.limit("30/minute")
+@app.post("/whatsapp-incoming")
 async def whatsapp_incoming(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -671,6 +1045,23 @@ async def whatsapp_incoming(
     if type_webhook != "incomingMessageReceived":
         return {"status": "ignored", "reason": f"type: {type_webhook}"}
 
+    # Archive the raw webhook payload before any further processing.
+    # This wraps in try/except so an archive failure NEVER blocks the
+    # bot's reply path: durability matters, the live response matters more.
+    # Idempotent via UNIQUE(green_api_id) — Green API webhook replays do
+    # not duplicate. Captures all incoming events including media, where
+    # the assistant logic below ignores non-text messages.
+    try:
+        from tools.services.message_archive import archive_webhook_payload
+        archive_result = archive_webhook_payload(body)
+        if archive_result.get("inserted"):
+            logger.info(
+                "Archived webhook message %s",
+                str(archive_result.get("green_api_id", ""))[:24],
+            )
+    except Exception as archive_exc:
+        logger.warning("Archive write failed (non-blocking): %s", archive_exc)
+
     message_data = body.get("messageData", {})
     type_message = message_data.get("typeMessage")
 
@@ -691,9 +1082,31 @@ async def whatsapp_incoming(
     if not text.strip():
         return {"status": "ignored", "reason": "empty text"}
 
-    # Skip messages sent by the bot itself (prevents infinite loops)
+    # Skip messages sent by the bot itself (prevents infinite loops).
+    #
+    # The operator (Tornike) is the WhatsApp account holder that the Green
+    # API instance is connected to, so every message HE TYPES MANUALLY in
+    # any chat — group or DM — arrives here with ``fromMe=true``. A blanket
+    # fromMe filter would silently drop all his "მრჩეველო" tests and his
+    # quote-replies to bot messages, which is exactly what was reported on
+    # 2026-04-26.
+    #
+    # Bot-authored replies always begin with the 🤖 emoji + the assistant
+    # signature that ``_format_response`` prepends, so we distinguish the
+    # two cases by inspecting the message body. Outgoing-message webhooks
+    # are also disabled at the Green API side as a second line of defence
+    # (configure_webhook sets ``outgoingMessageWebhook=no``).
     if message_data.get("fromMe", False):
-        return {"status": "ignored", "reason": "own message"}
+        text_head = (text or "").lstrip()
+        is_bot_self = (
+            text_head.startswith("🤖")
+            or "AI ასისტენტი - მრჩეველი" in text_head[:80]
+        )
+        if is_bot_self:
+            return {"status": "ignored", "reason": "own bot message"}
+        # Fall through: operator's manual message — treat as a normal user
+        # message so direct triggers and reply-to-bot work from the
+        # operator's phone too.
 
     if not _assistant_available or assistant is None:
         logger.warning("WhatsApp assistant not available — ignoring incoming message")
@@ -826,6 +1239,77 @@ def _extract_recording_context(body: dict) -> dict | None:
     }
 
 
+def _handle_recording_completed_via_polling(
+    body: dict,
+    ctx: dict,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Fallback when recording.completed has an empty download_url.
+
+    Uses the meeting.ended-style polling pipeline to discover and download
+    the recording via Zoom API instead of the direct download URL.
+    """
+
+    group_number = ctx["group_number"]
+    lecture_number = ctx["lecture_number"]
+
+    # Try to extract meeting ID from the webhook payload
+    payload_obj = body.get("payload", {}).get("object", {})
+    meeting_uuid = str(payload_obj.get("uuid", ""))
+    meeting_id = str(payload_obj.get("id", ""))
+    poll_id = meeting_uuid or meeting_id
+
+    if not poll_id:
+        # Last resort: use configured meeting ID for the group
+        group_cfg = GROUPS.get(group_number, {})
+        poll_id = group_cfg.get("zoom_meeting_id", "")
+
+    if not poll_id:
+        logger.error(
+            "recording.completed fallback: no meeting ID for G%d L%d — cannot poll",
+            group_number, lecture_number,
+        )
+        return {"status": "error", "reason": "no meeting ID and empty download URL"}
+
+    _evict_stale_tasks()
+    with _processing_lock:
+        key = _task_key(group_number, lecture_number)
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+            return {"status": "duplicate", "message": f"{key} already processing"}
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+        try:
+            create_pipeline(group_number, lecture_number, meeting_id=poll_id)
+        except ValueError:
+            pass
+
+    logger.info(
+        "recording.completed fallback → polling pipeline: G%d L%d (poll_id=%s)",
+        group_number, lecture_number, poll_id,
+    )
+
+    def _run_and_cleanup() -> None:
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
+        try:
+            process_lecture_pipeline(
+                group_number, lecture_number, poll_id,
+                entry_source="webhook_recording_completed",
+            )
+        except PipelineClaimError as exc:
+            logger.info("[recording.completed fallback] Claim rejected: %s", exc)
+        finally:
+            _processing_tasks.pop(key, None)
+
+    background_tasks.add_task(_run_and_cleanup)
+
+    return {
+        "status": "accepted",
+        "mode": "polling-fallback",
+        "group": group_number,
+        "lecture": lecture_number,
+    }
+
+
 def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict:
     """Handle meeting.ended event with duration-based processing gate.
 
@@ -891,10 +1375,14 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     _evict_stale_tasks()
     with _processing_lock:
         key = _task_key(group_number, lecture_number)
-        if key in _processing_tasks:
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
             logger.info("[meeting.ended] %s already processing — skipping", key)
             return {"status": "duplicate", "message": f"{key} already processing"}
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+        try:
+            create_pipeline(group_number, lecture_number, meeting_id=str(meeting_uuid or meeting_id))
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     # Use meeting UUID for polling (Zoom recordings API needs UUID, not numeric ID)
     poll_id = meeting_uuid if meeting_uuid else meeting_id
@@ -906,12 +1394,20 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         group_number, lecture_number, poll_id,
     )
 
-    # Run post-meeting pipeline in background, clean up dedup key on completion
-    from tools.app.scheduler import _run_post_meeting_pipeline
-
+    # Run post-meeting pipeline in background, clean up dedup key on completion.
+    # Routed through the canonical process_lecture_pipeline so that retry
+    # semantics, state claiming, and exception classification are unified
+    # with every other entry path (Phase 2 of pipeline stabilisation).
     def _run_and_cleanup() -> None:
+        from tools.core.pipeline_retry import process_lecture_pipeline
+        from tools.core.pipeline_state import PipelineClaimError
         try:
-            _run_post_meeting_pipeline(group_number, lecture_number, poll_id)
+            process_lecture_pipeline(
+                group_number, lecture_number, poll_id,
+                entry_source="webhook_meeting_ended",
+            )
+        except PipelineClaimError as exc:
+            logger.info("[meeting.ended] Claim rejected: %s", exc)
         finally:
             _processing_tasks.pop(key, None)
 
@@ -926,8 +1422,8 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     }
 
 
-@app.post("/zoom-webhook")
 @limiter.limit("10/minute")
+@app.post("/zoom-webhook")
 async def zoom_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -956,6 +1452,19 @@ async def zoom_webhook(
         if ctx is None:
             return {"status": "ignored", "reason": "no valid recording or unknown group"}
 
+        # Validate download_url BEFORE registering in dedup tracker
+        download_url = ctx["download_url"]
+        if not download_url or not download_url.strip():
+            logger.warning(
+                "Zoom webhook: recording.completed has EMPTY download_url — "
+                "falling back to polling pipeline (Group %d, Lecture #%d)",
+                ctx["group_number"], ctx["lecture_number"],
+            )
+            # Fall through to meeting.ended-style polling instead of failing silently
+            return _handle_recording_completed_via_polling(
+                body, ctx, background_tasks,
+            )
+
         logger.info(
             "Zoom webhook: recording.completed — Group %d, Lecture #%d, topic=%s",
             ctx["group_number"], ctx["lecture_number"], ctx["topic"],
@@ -964,12 +1473,16 @@ async def zoom_webhook(
         _evict_stale_tasks()
         with _processing_lock:
             key = _task_key(ctx["group_number"], ctx["lecture_number"])
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]):
                 return {"status": "duplicate", "message": f"{key} already processing"}
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+            try:
+                create_pipeline(ctx["group_number"], ctx["lecture_number"], meeting_id="")
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         proc_payload = ProcessRecordingRequest(
-            download_url=ctx["download_url"],
+            download_url=download_url,
             access_token=ctx["access_token"],
             group_number=ctx["group_number"],
             lecture_number=ctx["lecture_number"],
@@ -982,8 +1495,8 @@ async def zoom_webhook(
     return {"status": "ignored", "event": event}
 
 
-@app.post("/process-recording")
 @limiter.limit("5/minute")
+@app.post("/process-recording")
 async def process_recording(
     request: Request,
     payload: ProcessRecordingRequest,
@@ -1008,18 +1521,23 @@ async def process_recording(
 
     key = _task_key(payload.group_number, payload.lecture_number)
     with _processing_lock:
-        if key in _processing_tasks:
-            started = _processing_tasks[key]
+        if key in _processing_tasks or is_pipeline_active(payload.group_number, payload.lecture_number):
+            started = _processing_tasks.get(key)
+            started_str = started.isoformat() if started else "unknown"
             logger.warning(
                 "Duplicate request rejected: Group %d, Lecture #%d (in progress since %s)",
-                payload.group_number, payload.lecture_number, started.isoformat(),
+                payload.group_number, payload.lecture_number, started_str,
             )
             raise HTTPException(
                 status_code=409,
                 detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                       f"is already being processed (started {started.isoformat()})",
+                       f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+        try:
+            create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     logger.info(
         "Received recording request: Group %d, Lecture #%d",
@@ -1030,7 +1548,6 @@ async def process_recording(
     # If download_url is empty or "auto", use Zoom polling pipeline instead of direct download
     is_auto = not payload.download_url or payload.download_url.strip().lower() == "auto"
     if is_auto:
-        from tools.app.scheduler import _run_post_meeting_pipeline
 
         # Need a meeting ID to poll Zoom — use the group's configured meeting ID
         group_cfg = GROUPS.get(payload.group_number, {})
@@ -1049,13 +1566,22 @@ async def process_recording(
         )
 
         def _run_auto(gn: int, ln: int, mid: str) -> None:
+            from tools.core.pipeline_retry import process_lecture_pipeline
+            from tools.core.pipeline_state import PipelineClaimError
             try:
-                _run_post_meeting_pipeline(gn, ln, mid)
+                process_lecture_pipeline(
+                    gn, ln, mid,
+                    entry_source="admin_process_recording",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[process-recording/auto] Claim rejected: %s", exc)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
+        # add_task expects a sync callable — _run_auto runs in a thread pool
+        # Do NOT wrap in asyncio.to_thread — BackgroundTasks handles threading
         background_tasks.add_task(
-            asyncio.to_thread,
             _run_auto,
             payload.group_number,
             payload.lecture_number,
@@ -1082,8 +1608,8 @@ async def process_recording(
 # ---------------------------------------------------------------------------
 
 
-@app.post("/trigger-pre-meeting")
 @limiter.limit("2/minute")
+@app.post("/trigger-pre-meeting")
 async def trigger_pre_meeting(
     request: Request,
     authorization: str | None = Header(None),
@@ -1105,8 +1631,8 @@ async def trigger_pre_meeting(
     return {"status": "triggered", "group": group}
 
 
-@app.post("/retry-latest")
 @limiter.limit("2/minute")
+@app.post("/retry-latest")
 async def retry_latest(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1122,7 +1648,6 @@ async def retry_latest(
     """
     verify_webhook_secret(authorization)
 
-    from tools.app.scheduler import _run_post_meeting_pipeline
 
     try:
         zm = __import__("tools.integrations.zoom_manager", fromlist=["zoom_manager"])
@@ -1167,30 +1692,25 @@ async def retry_latest(
         if lecture_number == 0:
             continue
 
-        # Check dedup
+        # Check dedup (in-memory cache + persistent pipeline state)
         key = _task_key(group_number, lecture_number)
         with _processing_lock:
             if key in _processing_tasks:
                 continue
+        if is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
+            continue
 
-        # Check Pinecone
+        # Check Pinecone via ID prefix scan.
+        # Previously used index.query(vector=[0.0]*3072, filter={...}) which
+        # returns 0 matches with cosine metric — causing false negatives
+        # (lectures that ARE indexed looking missing). Switched to
+        # lecture_exists_in_index() which uses the correct list-by-prefix API.
         already_indexed = False
         try:
-            from tools.integrations.knowledge_indexer import get_pinecone_index
-            index = await asyncio.to_thread(get_pinecone_index)
-            dummy_embedding = [0.0] * 3072
-            result = await asyncio.to_thread(
-                lambda: index.query(
-                    vector=dummy_embedding,
-                    top_k=1,
-                    filter={
-                        "group_number": {"$eq": group_number},
-                        "lecture_number": {"$eq": lecture_number},
-                    },
-                )
+            from tools.integrations.knowledge_indexer import lecture_exists_in_index
+            already_indexed = await asyncio.to_thread(
+                lecture_exists_in_index, group_number, lecture_number,
             )
-            if result.get("matches"):
-                already_indexed = True
         except Exception as exc:
             logger.warning("[retry-latest] Pinecone check failed: %s", exc)
 
@@ -1207,9 +1727,13 @@ async def retry_latest(
 
         _evict_stale_tasks()
         with _processing_lock:
-            if key in _processing_tasks:
+            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
                 continue
-            _processing_tasks[key] = datetime.now()
+            _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+            try:
+                create_pipeline(group_number, lecture_number, meeting_id=str(poll_id))
+            except ValueError:
+                pass  # Pipeline state already exists — that's fine
 
         logger.info(
             "[retry-latest] Starting pipeline for Group %d, Lecture #%d (poll_id=%s)",
@@ -1217,13 +1741,22 @@ async def retry_latest(
         )
 
         def _run_retry(gn: int, ln: int, pid: str) -> None:
+            from tools.core.pipeline_retry import process_lecture_pipeline
+            from tools.core.pipeline_state import PipelineClaimError
             try:
-                _run_post_meeting_pipeline(gn, ln, pid)
+                process_lecture_pipeline(
+                    gn, ln, pid,
+                    entry_source="admin_retry_latest",
+                    skip_initial_delay=True,
+                )
+            except PipelineClaimError as exc:
+                logger.info("[retry-latest] Claim rejected: %s", exc)
             finally:
                 _processing_tasks.pop(_task_key(gn, ln), None)
 
+        # add_task expects a sync callable — do NOT wrap in asyncio.to_thread
         background_tasks.add_task(
-            asyncio.to_thread, _run_retry, group_number, lecture_number, poll_id,
+            _run_retry, group_number, lecture_number, poll_id,
         )
 
         return {
@@ -1295,8 +1828,8 @@ async def _manual_pipeline_task(
             logger.info("Cleaned up temp file: %s", local_path)
 
 
-@app.post("/manual-trigger")
 @limiter.limit("2/minute")
+@app.post("/manual-trigger")
 async def manual_trigger(
     request: Request,
     payload: ManualTriggerRequest,
@@ -1322,14 +1855,19 @@ async def manual_trigger(
 
     key = _task_key(payload.group_number, payload.lecture_number)
     with _processing_lock:
-        if key in _processing_tasks:
-            started = _processing_tasks[key]
+        if key in _processing_tasks or is_pipeline_active(payload.group_number, payload.lecture_number):
+            started = _processing_tasks.get(key)
+            started_str = started.isoformat() if started else "unknown"
             raise HTTPException(
                 status_code=409,
                 detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
-                       f"is already being processed (started {started.isoformat()})",
+                       f"is already being processed (started {started_str})",
             )
-        _processing_tasks[key] = datetime.now()
+        _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
+        try:
+            create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
+        except ValueError:
+            pass  # Pipeline state already exists — that's fine
 
     logger.info(
         "Manual trigger: Group %d, Lecture #%d, Drive file: %s",
@@ -1357,8 +1895,8 @@ async def manual_trigger(
 _dashboard_cache: tuple[float, str] | None = None
 
 
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 @limiter.limit("30/minute")
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def analytics_dashboard(
     request: Request,
     authorization: str | None = Header(None),
@@ -1386,8 +1924,8 @@ async def analytics_dashboard(
     return HTMLResponse(content=html)
 
 
-@app.get("/api/scores", include_in_schema=False)
 @limiter.limit("60/minute")
+@app.get("/api/scores", include_in_schema=False)
 async def api_scores(
     request: Request,
     authorization: str | None = Header(None),
@@ -1406,8 +1944,8 @@ async def api_scores(
     return {"scores": rows, "total": len(rows)}
 
 
-@app.get("/api/stats", include_in_schema=False)
 @limiter.limit("60/minute")
+@app.get("/api/stats", include_in_schema=False)
 async def api_stats(
     request: Request,
     authorization: str | None = Header(None),
@@ -1448,8 +1986,8 @@ async def api_stats(
     }
 
 
-@app.post("/api/backfill-scores", include_in_schema=False)
 @limiter.limit("2/minute")
+@app.post("/api/backfill-scores", include_in_schema=False)
 async def api_backfill_scores(
     request: Request,
     authorization: str | None = Header(None),
@@ -1467,9 +2005,320 @@ async def api_backfill_scores(
     return {"status": "ok", **result}
 
 
+@limiter.limit("2/minute")
+@app.post("/api/backup-scores", include_in_schema=False)
+async def api_backup_scores(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Trigger manual backup of scores to Pinecone."""
+    verify_webhook_secret(authorization)
+    from tools.services.analytics import backup_scores_to_pinecone
+    result = await asyncio.to_thread(backup_scores_to_pinecone)
+    logger.info("Manual score backup to Pinecone triggered: %s", result)
+    return {"status": "ok", **result}
+
+
+# ---------------------------------------------------------------------------
+# Paperclip bridge — receives task dispatches from Paperclip's HTTP adapter
+# and posts back comments + status updates.
+# ---------------------------------------------------------------------------
+
+
+def verify_paperclip_secret(authorization: str | None) -> None:
+    """Validate the Paperclip bearer secret. Fails closed.
+
+    If PAPERCLIP_WEBHOOK_SECRET is not configured, every request is rejected
+    with 503 to avoid an accidentally-open bridge. Missing or mismatched
+    headers return 401.
+    """
+    if not PAPERCLIP_WEBHOOK_SECRET:
+        logger.error(
+            "PAPERCLIP_WEBHOOK_SECRET not configured — rejecting /paperclip/task (fail closed)"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Server misconfigured: PAPERCLIP_WEBHOOK_SECRET not set",
+        )
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    expected = f"Bearer {PAPERCLIP_WEBHOOK_SECRET}"
+    if not hmac.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Invalid Paperclip secret")
+
+
+class PaperclipTaskPayload(BaseModel):
+    """Flexible Paperclip dispatch envelope.
+
+    Accepts both flat payloads and wrapped payloads (``{"issue": {...}}``).
+    Unknown fields are allowed so upstream envelope drift does not break the
+    bridge — extraction is handled by :func:`_extract_issue_fields`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+def _extract_issue_fields(payload: dict) -> dict:
+    """Pull issue fields from any known Paperclip dispatch shape.
+
+    Supported shapes, in order of precedence:
+      1. Paperclip HTTP-adapter native: ``{agentId, runId, context: {issueId, taskKey, ...}}``
+         (source: ``@paperclipai/server/dist/adapters/http/execute.js``)
+      2. Wrapped:  ``{issue: {id, title, description, ...}, runId}``
+      3. Flat:     ``{issueId, title, description, runId}``
+
+    The adapter-native shape carries no ``title``/``description`` — callers that
+    need them must fetch the issue via ``GET /api/issues/{id}``.
+    """
+    raw_context = payload.get("context")
+    context = raw_context if isinstance(raw_context, dict) else {}
+    raw_issue = payload.get("issue")
+    issue = raw_issue if isinstance(raw_issue, dict) else payload
+    return {
+        "issueId": (
+            issue.get("id")
+            or issue.get("issueId")
+            or payload.get("issueId")
+            or payload.get("id")
+            or context.get("issueId")
+            or context.get("id")
+        ),
+        "identifier": (
+            issue.get("identifier")
+            or payload.get("identifier")
+            or context.get("taskKey")
+            or context.get("identifier")
+        ),
+        "title": issue.get("title") or payload.get("title") or "",
+        "description": issue.get("description") or payload.get("description") or "",
+        "status": issue.get("status") or payload.get("status"),
+        "runId": (
+            payload.get("runId")
+            or payload.get("run_id")
+            or issue.get("executionRunId")
+            or context.get("runId")
+            or ""
+        ),
+    }
+
+
+async def fetch_paperclip_issue(issue_id: str) -> dict | None:
+    """GET a Paperclip issue by id. Returns the JSON dict or None on failure.
+
+    Used when the adapter-native payload omits ``title``/``description`` — the
+    bridge needs them to classify intent.
+    """
+    if not issue_id:
+        return None
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — fail soft; caller can still ack
+        logger.error("fetch_paperclip_issue failed for %s: %s", issue_id, exc)
+        return None
+
+
+def classify_paperclip_intent(title: str, description: str) -> str:
+    """Route a Paperclip task to a handler by matching known substrings.
+
+    Intent names:
+      - ``smoke_test`` — readiness probes from the board
+      - ``process_recording`` — wraps the existing recording pipeline
+      - ``pre_meeting_reminder`` — wraps the pre-meeting scheduler
+      - ``unknown`` — no handler wired; echo the payload
+    """
+    haystack = f"{title}\n{description}".lower()
+    if "smoke" in haystack and "test" in haystack:
+        return "smoke_test"
+    if "process" in haystack and "recording" in haystack:
+        return "process_recording"
+    if "pre-meeting" in haystack or "pre meeting" in haystack or "reminder" in haystack:
+        return "pre_meeting_reminder"
+    return "unknown"
+
+
+async def post_paperclip_comment(
+    issue_id: str, body: str, run_id: str = ""
+) -> None:
+    """POST a comment back to a Paperclip issue. Swallows transport errors."""
+    if not issue_id:
+        return
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}/comments"
+    headers = {"Content-Type": "application/json"}
+    if run_id:
+        headers["X-Paperclip-Run-Id"] = run_id
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json={"body": body}, headers=headers)
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 — we never want a comment failure to blow up the dispatch
+        logger.error("post_paperclip_comment failed for %s: %s", issue_id, exc)
+
+
+async def set_paperclip_issue_status(issue_id: str, status: str) -> None:
+    """PATCH a Paperclip issue's ``status`` field. Swallows transport errors."""
+    if not issue_id or not status:
+        return
+    url = f"{PAPERCLIP_API_BASE}/api/issues/{issue_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(url, json={"status": status})
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("set_paperclip_issue_status failed for %s: %s", issue_id, exc)
+
+
+async def _handle_smoke_test(fields: dict) -> None:
+    body = (
+        "## /paperclip/task smoke test OK\n\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+        f"- identifier: `{fields.get('identifier', '')}`\n"
+        "- bridge: reachable, auth verified, background task executed.\n\n"
+        "Moving to `in_review`."
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+    await set_paperclip_issue_status(fields["issueId"], "in_review")
+
+
+async def _handle_unknown(fields: dict) -> None:
+    body = (
+        "## /paperclip/task received (intent: unknown)\n\n"
+        "Bridge accepted the dispatch but no handler is wired for this task type yet.\n\n"
+        f"- title: `{fields.get('title', '')[:120]}`\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+
+
+async def _handle_acknowledged(fields: dict, intent: str) -> None:
+    body = (
+        f"## /paperclip/task received (intent: {intent})\n\n"
+        "Bridge accepted the dispatch. Handler acknowledged; full pipeline wiring is a follow-up subtask.\n\n"
+        f"- run id: `{fields.get('runId', '')}`\n"
+    )
+    await post_paperclip_comment(fields["issueId"], body, fields.get("runId", ""))
+
+
+async def _dispatch_paperclip_task(fields: dict, intent: str) -> None:
+    try:
+        if intent == "smoke_test":
+            await _handle_smoke_test(fields)
+        elif intent == "unknown":
+            await _handle_unknown(fields)
+        else:
+            await _handle_acknowledged(fields, intent)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Paperclip dispatch failed for intent=%s: %s", intent, exc)
+
+
+@limiter.limit("30/minute")
+@app.post("/paperclip/task")
+async def paperclip_task(
+    request: Request,
+    payload: PaperclipTaskPayload,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(None),
+):
+    """Paperclip dispatch bridge.
+
+    Authenticates via ``PAPERCLIP_WEBHOOK_SECRET``, extracts the issue fields
+    from either a flat or wrapped payload, classifies intent, schedules a
+    background handler, and returns 202 with ``{status, runId, issueId, intent}``.
+    """
+    verify_paperclip_secret(authorization)
+
+    data = payload.model_dump()
+    fields = _extract_issue_fields(data)
+    issue_id = fields["issueId"]
+    if not issue_id:
+        # Manual / idle wakeups from Paperclip carry no issueId in context
+        # (just {actorId, wakeSource, triggeredBy}). Treat as heartbeat no-op:
+        # return 202 so the adapter records success and agent flips to idle.
+        logger.info(
+            "[paperclip] no-issue wake accepted run=%s ctx=%s",
+            fields.get("runId"),
+            data.get("context"),
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "runId": fields.get("runId") or "",
+                "issueId": None,
+                "intent": "idle_wake",
+            },
+        )
+
+    # Paperclip's HTTP-adapter payload carries only ids — no title/description.
+    # Hydrate from the API so classify_paperclip_intent has something to match.
+    if not fields["title"] and not fields["description"]:
+        hydrated = await fetch_paperclip_issue(issue_id)
+        if hydrated:
+            fields["title"] = hydrated.get("title") or ""
+            fields["description"] = hydrated.get("description") or ""
+            fields["identifier"] = fields["identifier"] or hydrated.get("identifier")
+            fields["status"] = fields["status"] or hydrated.get("status")
+
+    intent = classify_paperclip_intent(fields["title"], fields["description"])
+
+    logger.info(
+        "[paperclip] accepted dispatch id=%s identifier=%s intent=%s run=%s",
+        issue_id,
+        fields.get("identifier"),
+        intent,
+        fields.get("runId"),
+    )
+
+    background_tasks.add_task(_dispatch_paperclip_task, fields, intent)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "accepted",
+            "runId": fields.get("runId") or "",
+            "issueId": issue_id,
+            "intent": intent,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Admin router — included at the end of the module so admin_routes.py can
+# lazily import server.py internals without triggering a circular import
+# at module load time.
+# ---------------------------------------------------------------------------
+from tools.app.admin_routes import admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
+# ---------------------------------------------------------------------------
+# Paperclip bridge router — adds /paperclip/health and /paperclip/status.
+# Note: /paperclip/task is already registered above; FastAPI keeps the first
+# registration, so only the new health/status endpoints are effectively added.
+# ---------------------------------------------------------------------------
+from tools.app.paperclip_bridge import router as paperclip_router  # noqa: E402
+
+app.include_router(paperclip_router)
+
+# ---------------------------------------------------------------------------
+# OpenClaw / CRO gateway — registers POST /query on the same FastAPI host as
+# the Training bridge. Two routers, two independently-rotated secrets
+# (PAPERCLIP_WEBHOOK_SECRET vs PAPERCLIP_OPENCLAW_SECRET) — documented in
+# TECH_BASELINE.md §3a. Registered at the end of the module so the openclaw
+# module can lazily import server.py helpers (post_paperclip_comment,
+# set_paperclip_issue_status, fetch_paperclip_issue) without a circular import.
+# ---------------------------------------------------------------------------
+from tools.app.openclaw_bridge import register_openclaw_routes  # noqa: E402
+
+register_openclaw_routes(app, limiter)
+
 
 if __name__ == "__main__":
     import uvicorn

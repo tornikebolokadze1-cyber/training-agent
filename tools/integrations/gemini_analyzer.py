@@ -2,16 +2,20 @@
 
 Multimodal transcription with Gemini 2.5 Pro (video chunked into ~45min
 segments via ffmpeg to fit within 1M token limit — preserves slides,
-demos, and screen shares), then Claude Opus reasoning + Gemini Georgian
+demos, and screen shares), then Claude Sonnet reasoning + Gemini Georgian
 writing for analysis.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import logging
+import os
 import subprocess
+import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -32,7 +36,7 @@ from tools.core.config import (
     TRANSCRIPTION_CONTINUATION_PROMPT,
     TRANSCRIPTION_PROMPT,
 )
-from tools.core.retry import safe_operation
+from tools.core.api_resilience import resilient_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +49,45 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
 RETRY_EMPTY_RESPONSE_DELAY = 45  # seconds — Gemini may still be processing
 MIN_MEANINGFUL_RESPONSE_CHARS = 100  # minimum chars for a valid response
+
+# Enhanced retry for empty responses (Gemini returns 200 OK with 0 output tokens)
+MAX_RETRIES_EMPTY = 1  # Each 0-token retry wastes ~$0.20 with no benefit
+RETRY_EMPTY_RESPONSE_DELAY_LONG = 60  # 1 minute for truly empty (0 token) responses
+try:
+    from tools.core.cost_tracker import LECTURE_COST_LIMIT_USD as MAX_COST_PER_LECTURE
+except ImportError:
+    MAX_COST_PER_LECTURE = float(os.environ.get("LECTURE_COST_LIMIT_USD", "5.0"))
+
+# Fallback model when primary transcription model fails repeatedly
+GEMINI_FALLBACK_TRANSCRIPTION_MODEL = os.environ.get(
+    "GEMINI_FALLBACK_TRANSCRIPTION_MODEL", "gemini-2.5-pro"
+)
+
+# Per-execution pipeline key for cost tracking.
+# Using ContextVar ensures concurrent pipelines (threads or asyncio tasks)
+# each see their own key and cannot overwrite each other's cost attribution.
+_pipeline_key_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "pipeline_key", default=""
+)
+
 FILE_POLL_INTERVAL = 3  # seconds (reduced from 10 for faster pipeline)
 FILE_POLL_TIMEOUT = 1800  # 30 minutes max wait for processing (large videos)
 GEMINI_GENERATE_TIMEOUT = 20 * 60  # 20 minutes per generate_content call
 
-# Gemini pricing (per 1M tokens, as of 2025)
+# Gemini pricing (per 1M tokens) — updated 2026-04 from Google Cloud SKU rates.
+# Video/audio inputs are billed at HIGHER rates than text inputs.
+# Flash "input" uses blended video+audio rate since our main use is transcription.
+# Source: Google Cloud Billing SKU breakdown, April 2026.
 GEMINI_COST_TABLE: dict[str, dict[str, float]] = {
+    # Flash video transcription: video ~$0.30/M + audio ~$1.00/M overhead
+    "gemini-2.5-flash": {"input": 0.42, "output": 2.50},
+    # Pro models — Georgian text generation (text-only, no video)
+    "gemini-3.1-pro": {"input": 1.25, "output": 10.0},
+    "gemini-3-pro": {"input": 1.25, "output": 10.0},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
-    "gemini-2.5-pro-preview-05-06": {"input": 1.25, "output": 10.0},
+    "gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
     "gemini-2.0-pro": {"input": 1.25, "output": 10.0},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
 }
 GEMINI_COST_DEFAULT = {"input": 1.25, "output": 10.0}  # fallback
 
@@ -67,6 +99,7 @@ def _is_quota_error(error: Exception) -> bool:
     return any(indicator in error_str for indicator in quota_indicators)
 
 
+_cache_lock = threading.Lock()
 _client_cache: dict[str, genai.Client] = {}  # keyed by API key
 
 _anthropic_client_cache: anthropic.Anthropic | None = None
@@ -75,11 +108,12 @@ _anthropic_client_cache: anthropic.Anthropic | None = None
 def _get_anthropic_client() -> anthropic.Anthropic:
     """Return a cached Anthropic client (avoids creating fresh clients per call)."""
     global _anthropic_client_cache
-    if _anthropic_client_cache is None:
-        if not ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
-        _anthropic_client_cache = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _anthropic_client_cache
+    with _cache_lock:
+        if _anthropic_client_cache is None:
+            if not ANTHROPIC_API_KEY:
+                raise RuntimeError("ANTHROPIC_API_KEY not configured in .env")
+            _anthropic_client_cache = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        return _anthropic_client_cache
 
 
 def _get_client(use_free: bool = False) -> genai.Client:
@@ -88,38 +122,72 @@ def _get_client(use_free: bool = False) -> genai.Client:
     Primary: paid key (billing-enabled, higher limits).
     Fallback: free key (if paid key fails or is not configured).
     """
-    if use_free:
-        if not GEMINI_API_KEY:
-            raise RuntimeError("Free Gemini API key not configured — set GEMINI_API_KEY in .env")
-        key = GEMINI_API_KEY
+    with _cache_lock:
+        if use_free:
+            if not GEMINI_API_KEY:
+                raise RuntimeError("Free Gemini API key not configured — set GEMINI_API_KEY in .env")
+            key = GEMINI_API_KEY
+            if key not in _client_cache:
+                logger.info("Using FREE Gemini API key (fallback)")
+                _client_cache[key] = genai.Client(api_key=key)
+            return _client_cache[key]
+
+        if not GEMINI_API_KEY_PAID:
+            if not GEMINI_API_KEY:
+                raise RuntimeError(
+                    "No Gemini API key configured — set GEMINI_API_KEY or "
+                    "GEMINI_API_KEY_PAID in .env"
+                )
+            key = GEMINI_API_KEY
+            if key not in _client_cache:
+                logger.warning("Paid key not configured — falling back to free key")
+                _client_cache[key] = genai.Client(api_key=key)
+            return _client_cache[key]
+
+        key = GEMINI_API_KEY_PAID
         if key not in _client_cache:
-            logger.info("Using FREE Gemini API key (fallback)")
             _client_cache[key] = genai.Client(api_key=key)
         return _client_cache[key]
 
-    if not GEMINI_API_KEY_PAID:
-        if not GEMINI_API_KEY:
-            raise RuntimeError(
-                "No Gemini API key configured — set GEMINI_API_KEY or "
-                "GEMINI_API_KEY_PAID in .env"
-            )
-        key = GEMINI_API_KEY
-        if key not in _client_cache:
-            logger.warning("Paid key not configured — falling back to free key")
-            _client_cache[key] = genai.Client(api_key=key)
-        return _client_cache[key]
 
-    key = GEMINI_API_KEY_PAID
-    if key not in _client_cache:
-        _client_cache[key] = genai.Client(api_key=key)
-    return _client_cache[key]
+
+
+def cleanup_orphaned_gemini_files() -> int:
+    """Delete orphaned Gemini API file uploads from previous crashed runs.
+
+    Called on startup to prevent leaked files from consuming upload slots
+    and accumulating storage costs.
+    """
+    deleted = 0
+    try:
+        client = _get_client(use_free=False)
+        files = client.files.list()
+        now = datetime.now(timezone.utc)
+        for f in files:
+            try:
+                create_time = getattr(f, "create_time", None)
+                if create_time and (now - create_time).total_seconds() > 7200:  # 2 hours
+                    client.files.delete(name=f.name)
+                    deleted += 1
+                    logger.info(
+                        "Cleaned up orphaned Gemini file: %s (created %s)",
+                        f.name,
+                        create_time,
+                    )
+            except Exception as e:
+                logger.warning("Failed to delete orphaned file %s: %s", f.name, e)
+    except Exception as e:
+        logger.warning("Gemini orphaned file cleanup failed: %s", e)
+    if deleted:
+        logger.info("Startup: cleaned up %d orphaned Gemini file(s)", deleted)
+    return deleted
 
 
 # ---------------------------------------------------------------------------
 # Video Chunking (multimodal — keeps video frames for slides/demos)
 # ---------------------------------------------------------------------------
 
-CHUNK_DURATION_MINUTES = 45  # ~697K video tokens per chunk (safe under 1M limit)
+CHUNK_DURATION_MINUTES = 30  # ~465K tokens/chunk; smaller chunks dodge Gemini phantom-hang observed on >200MB inputs (was 45 — produced 280MB chunks for 187min lectures, ~50% timeout rate on largest chunk)
 
 
 def _get_video_duration_seconds(video_path: Path) -> float:
@@ -142,14 +210,58 @@ def _get_video_duration_seconds(video_path: Path) -> float:
 def _validate_media_path(video_path: Path) -> Path:
     """Resolve and validate that a media path is inside TMP_DIR.
 
-    Logs a warning (instead of raising) for paths outside TMP_DIR to avoid
-    breaking CLI usage and tests while still flagging suspicious paths.
+    Raises ValueError for paths outside TMP_DIR to prevent path traversal.
     """
     resolved = video_path.resolve()
     tmp_resolved = TMP_DIR.resolve()
-    if not str(resolved).startswith(str(tmp_resolved)):
-        logger.warning("Media path outside TMP_DIR: %s", resolved)
+    try:
+        resolved.relative_to(tmp_resolved)
+    except ValueError:
+        raise ValueError(
+            f"Media path outside TMP_DIR rejected: {resolved} "
+            f"(expected prefix: {tmp_resolved})"
+        )
     return resolved
+
+
+def _extract_audio(video_path: str | Path, output_path: str | Path | None = None) -> Path:
+    """Extract audio track from video using ffmpeg.
+
+    Produces a small Opus audio file (~5MB for 30 min vs ~200MB for video).
+    Gemini processes audio at ~32 tokens/sec vs ~258 tokens/sec for video,
+    reducing transcription cost by ~90%.
+    """
+    video_path = Path(video_path)
+    if output_path is None:
+        output_path = video_path.with_suffix(".ogg")
+    else:
+        output_path = Path(output_path)
+
+    if output_path.exists():
+        output_path.unlink()
+
+    cmd = [
+        "ffmpeg", "-i", str(video_path),
+        "-vn",           # no video
+        "-ac", "1",      # mono
+        "-ar", "16000",  # 16kHz (sufficient for speech recognition)
+        "-c:a", "libopus",  # Opus codec (very efficient)
+        "-b:a", "32k",   # 32kbps bitrate
+        "-y",            # overwrite
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        logger.error("ffmpeg audio extraction failed: %s", result.stderr[-500:])
+        raise RuntimeError(f"Audio extraction failed for {video_path.name}: {result.stderr[-200:]}")
+
+    logger.info(
+        "Extracted audio: %s -> %s (%.1f MB -> %.1f MB)",
+        video_path.name, output_path.name,
+        video_path.stat().st_size / 1_000_000,
+        output_path.stat().st_size / 1_000_000,
+    )
+    return output_path
 
 
 def split_video_chunks(video_path: str | Path) -> list[Path]:
@@ -180,15 +292,36 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
         return [video_path]
 
     num_chunks = int(duration // chunk_seconds) + (1 if duration % chunk_seconds > 0 else 0)
-    logger.info(
-        "Video is %.0f min — splitting into %d chunks of ~%d min each.",
-        duration / 60, num_chunks, CHUNK_DURATION_MINUTES,
-    )
+
+    # Smart merge: if final chunk is < 15 min AND merged chunk stays within
+    # token budget, merge with previous chunk to avoid a tiny API call.
+    # Safety: merged chunk must not exceed ~55 min (850K tokens, safe under 1M).
+    max_merged_seconds = 55 * 60  # hard upper bound for merged chunk
+    remainder_seconds = duration % chunk_seconds
+    merged_duration = chunk_seconds + remainder_seconds
+    if (
+        num_chunks > 1
+        and 0 < remainder_seconds < 15 * 60
+        and merged_duration <= max_merged_seconds
+    ):
+        num_chunks -= 1
+        logger.info(
+            "Video is %.0f min — merging short final chunk (%.0f min) with previous "
+            "(merged=%.0f min, within budget). Splitting into %d chunks.",
+            duration / 60, remainder_seconds / 60, merged_duration / 60, num_chunks,
+        )
+    else:
+        logger.info(
+            "Video is %.0f min — splitting into %d chunks of ~%d min each.",
+            duration / 60, num_chunks, CHUNK_DURATION_MINUTES,
+        )
 
     chunk_paths: list[Path] = []
     min_chunk_size = 1024 * 100  # 100 KB minimum for a valid chunk
     for i in range(num_chunks):
         start = i * chunk_seconds
+        # Last chunk gets all remaining duration (handles smart merge)
+        is_last = (i == num_chunks - 1)
         chunk_path = video_path.with_suffix(f".chunk{i}.mp4")
 
         if chunk_path.exists():
@@ -207,7 +340,11 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
             "ffmpeg", "-y",
             "-ss", str(start),
             "-i", str(video_path),
-            "-t", str(chunk_seconds),
+        ]
+        if not is_last:
+            cmd += ["-t", str(chunk_seconds)]
+        # Last chunk: no -t flag → runs to end of video (handles smart merge)
+        cmd += [
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             "--", str(chunk_path),
@@ -242,8 +379,26 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
     file_size_mb = file_path.stat().st_size / (1024 * 1024)
     logger.info("Uploading video '%s' (%.1f MB) to Gemini (%s tier)...", file_path.name, file_size_mb, tier)
 
+    # Explicit mime type (Gemini can't auto-detect .ogg/.m4a)
+    suffix = file_path.suffix.lower()
+    mime_map = {
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+    }
+    mime_type = mime_map.get(suffix, "video/mp4")
+
     try:
-        uploaded_file = client.files.upload(file=str(file_path))
+        from google.genai import types as genai_types
+        uploaded_file = client.files.upload(
+            file=str(file_path),
+            config=genai_types.UploadFileConfig(mime_type=mime_type),
+        )
     except Exception as e:
         if not use_free and _is_quota_error(e) and GEMINI_API_KEY:
             logger.warning("Paid tier quota hit during upload: %s — switching to free tier", e)
@@ -317,6 +472,8 @@ def _log_gemini_cost(model: str, response: object, purpose: str) -> None:
             return
         input_tokens = getattr(usage, "prompt_token_count", 0) or 0
         output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        _raw_thoughts = getattr(usage, "thoughts_token_count", None)
+        thoughts_tokens = _raw_thoughts if isinstance(_raw_thoughts, int) else 0
         # Find cost rates for this model
         cost_rates = GEMINI_COST_DEFAULT
         for model_key, rates in GEMINI_COST_TABLE.items():
@@ -326,12 +483,26 @@ def _log_gemini_cost(model: str, response: object, purpose: str) -> None:
         input_cost = (input_tokens / 1_000_000) * cost_rates["input"]
         output_cost = (output_tokens / 1_000_000) * cost_rates["output"]
         total_cost = input_cost + output_cost
+        thinking_part = f" | thinking={thoughts_tokens} tokens" if thoughts_tokens > 0 else ""
         logger.info(
             "💰 Gemini cost [%s] model=%s | input=%d tokens ($%.4f) | "
-            "output=%d tokens ($%.4f) | total=$%.4f",
+            "output=%d tokens ($%.4f)%s | total=$%.4f",
             purpose, model, input_tokens, input_cost,
-            output_tokens, output_cost, total_cost,
+            output_tokens, output_cost, thinking_part, total_cost,
         )
+        try:
+            from tools.core.cost_tracker import record_cost
+            record_cost(
+                service="gemini",
+                model=model,
+                purpose=purpose,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=total_cost,
+                pipeline_key=_pipeline_key_var.get(),
+            )
+        except Exception:
+            pass  # cost tracking is non-fatal
     except Exception as e:
         logger.debug("Cost tracking failed for %s: %s", purpose, e)
 
@@ -353,38 +524,117 @@ def _generate_with_retry(
     purpose: str,
     max_output_tokens: int = 8192,
     use_free: bool = False,
+    disable_thinking: bool = False,
+    _recursion_depth: int = 0,
 ) -> str:
     """Call generate_content with retry logic and free-tier fallback.
 
     Primary: paid key. On quota/rate-limit errors, falls back to the free key.
     Returns the generated text.
     """
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, MAX_RETRIES_EMPTY + 1):
+        # Budget check before every attempt (including first)
+        try:
+            from tools.core.cost_tracker import check_lecture_budget
+            _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
+            if not _ok:
+                logger.error("BUDGET EXCEEDED: stopping retries for %s at attempt %d", purpose, attempt)
+                raise RuntimeError(f"Lecture budget exceeded during retry for {purpose}")
+        except (ImportError, NameError):
+            pass
         try:
             tier = "free" if use_free else "paid"
+            effective_max = MAX_RETRIES_EMPTY  # 0-token errors get all attempts
             logger.info("Generating %s with %s (attempt %d/%d, %s tier)...",
-                        purpose, model, attempt, MAX_RETRIES, tier)
+                        purpose, model, attempt, effective_max, tier)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
-                _future = _exec.submit(
-                    client.models.generate_content,
-                    model=model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=max_output_tokens,
-                    ),
+            _exec = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            _future = _exec.submit(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=max_output_tokens,
+                    **({"thinking_config": types.ThinkingConfig(thinking_budget=0)}
+                       if disable_thinking else {}),
+                ),
+            )
+            try:
+                response = _future.result(timeout=GEMINI_GENERATE_TIMEOUT)
+            except concurrent.futures.TimeoutError as te:
+                _exec.shutdown(wait=False, cancel_futures=True)
+                logger.warning(
+                    "PHANTOM BILLING: Gemini call for %s timed out after %d min. "
+                    "The API call may still complete in background and be billed by Google. "
+                    "Input tokens already sent will be charged.",
+                    purpose, GEMINI_GENERATE_TIMEOUT // 60,
                 )
+                # Record estimated phantom cost (Google bills input even on timeout)
                 try:
-                    response = _future.result(timeout=GEMINI_GENERATE_TIMEOUT)
-                except concurrent.futures.TimeoutError as te:
-                    raise TimeoutError(
-                        f"Gemini generate_content timed out after "
-                        f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
-                    ) from te
+                    from tools.core.cost_tracker import record_cost
+                    phantom_cost = 0.50  # Conservative estimate for a timed-out video chunk
+                    record_cost(
+                        service="gemini",
+                        model=model,
+                        purpose=f"PHANTOM_TIMEOUT {purpose}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        cost_usd=phantom_cost,
+                        pipeline_key=_pipeline_key_var.get(),
+                    )
+                    logger.warning(
+                        "Recorded $%.2f phantom billing estimate for timed-out call",
+                        phantom_cost,
+                    )
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"Gemini generate_content timed out after "
+                    f"{GEMINI_GENERATE_TIMEOUT // 60} min for {purpose}"
+                ) from te
+            else:
+                _exec.shutdown(wait=True)  # Clean shutdown — call already completed
 
             # Log cost for every generate_content call (even failed ones)
             _log_gemini_cost(model, response, purpose)
+
+            # Check for safety block BEFORE the 0-token check
+            # Safety blocks are deterministic — retrying wastes money
+            candidates = getattr(response, 'candidates', [])
+            if candidates:
+                finish_reason = getattr(candidates[0], 'finish_reason', None)
+                finish_str = str(finish_reason).upper() if finish_reason else ""
+                if "SAFETY" in finish_str or "RECITATION" in finish_str:
+                    raise ValueError(
+                        f"Gemini SAFETY FILTER blocked {purpose} "
+                        f"(finish_reason={finish_reason}). "
+                        f"This is deterministic — retrying will not help."
+                    )
+
+            # Detect 0 output tokens (Gemini charged for input but produced nothing)
+            usage = getattr(response, "usage_metadata", None)
+            output_tokens = getattr(usage, "candidates_token_count", 0) or 0 if usage else 0
+            if output_tokens == 0:
+                logger.warning(
+                    "Gemini returned 0 output tokens for %s (attempt %d/%d) — "
+                    "charged for input but produced nothing",
+                    purpose, attempt, MAX_RETRIES_EMPTY,
+                )
+                # Use longer delay for zero-token responses
+                delay = RETRY_EMPTY_RESPONSE_DELAY_LONG
+                if attempt < MAX_RETRIES_EMPTY:
+                    logger.info("Waiting %ds before retry (Gemini may need processing time)...", delay)
+                    time.sleep(delay)
+                    continue
+                input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                logger.warning(
+                    "COST WASTE: All %d retries exhausted for %s with 0 output tokens. "
+                    "~%d input tokens billed per attempt (%d total) with no usable output.",
+                    MAX_RETRIES_EMPTY, purpose, input_tokens,
+                    input_tokens * MAX_RETRIES_EMPTY,
+                )
+                raise ValueError(f"Gemini returned 0 output tokens for {purpose} after {MAX_RETRIES_EMPTY} attempts")
 
             # response.text raises ValueError if blocked by safety filters
             try:
@@ -411,6 +661,11 @@ def _generate_with_retry(
         except Exception as e:
             # If quota error on paid tier and free key exists — switch immediately
             if not use_free and _is_quota_error(e) and GEMINI_API_KEY:
+                if _recursion_depth >= 1:
+                    raise RuntimeError(
+                        f"Quota fallback exhausted for {purpose} "
+                        f"(depth={_recursion_depth})"
+                    ) from e
                 logger.warning(
                     "Paid tier quota hit for %s: %s — switching to free tier",
                     purpose, e,
@@ -419,14 +674,26 @@ def _generate_with_retry(
                 return _generate_with_retry(
                     free_client, model, contents, purpose,
                     max_output_tokens=max_output_tokens, use_free=True,
+                    _recursion_depth=_recursion_depth + 1,
                 )
 
-            if attempt == MAX_RETRIES:
+            # For non-empty-response errors, give up after MAX_RETRIES attempts
+            is_empty = _is_empty_response_error(e)
+            if not is_empty and attempt >= MAX_RETRIES:
                 raise RuntimeError(f"{purpose} failed after {MAX_RETRIES} attempts: {e}") from e
+
+            # For empty-response errors, give up after MAX_RETRIES_EMPTY attempts
+            if is_empty and attempt >= MAX_RETRIES_EMPTY:
+                raise RuntimeError(f"{purpose} failed after {MAX_RETRIES_EMPTY} attempts (empty responses): {e}") from e
+
+            # If MAX_RETRIES_EMPTY < MAX_RETRIES and this is a non-empty error on
+            # the last iteration, there are no more attempts — raise immediately.
+            if not is_empty and attempt >= MAX_RETRIES_EMPTY:
+                raise RuntimeError(f"{purpose} failed after {attempt} attempts: {e}") from e
 
             # Use longer delay for empty responses (Gemini may still be processing)
             # vs short exponential backoff for actual API errors
-            if _is_empty_response_error(e):
+            if is_empty:
                 delay = RETRY_EMPTY_RESPONSE_DELAY
                 logger.warning(
                     "%s attempt %d returned empty/insufficient — "
@@ -441,9 +708,10 @@ def _generate_with_retry(
                 )
             time.sleep(delay)
 
-    raise RuntimeError("Unreachable")
+    raise RuntimeError(f"{purpose} failed after {MAX_RETRIES_EMPTY} attempts (loop exhausted)")
 
 
+@resilient_api_call(service="gemini", operation="transcribe_video", max_attempts=1, gemini_quota_fallback=True)
 def transcribe_video(file_ref: object, use_free: bool = False,
                      chunk_number: int = 0, total_chunks: int = 1) -> str:
     """Transcribe a video chunk using Gemini 2.5 Pro (multimodal — sees slides/demos).
@@ -473,8 +741,9 @@ def transcribe_video(file_ref: object, use_free: bool = False,
         model=GEMINI_MODEL_TRANSCRIPTION,
         contents=[file_ref, prompt],
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
-        max_output_tokens=65536,
+        max_output_tokens=32768,  # Reduced from 65536 — prevents wasteful max-out
         use_free=use_free,
+        disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
     )
 
 
@@ -504,6 +773,8 @@ def transcribe_chunked_video(
     Returns:
         Tuple of (full transcript text, whether free tier was used).
     """
+    _pipeline_key_var.set(f"g{group}_l{lecture}" if group and lecture else "")
+
     chunks = split_video_chunks(video_path)
     total_chunks = len(chunks)
     transcripts: list[str] = []
@@ -532,20 +803,130 @@ def transcribe_chunked_video(
                     )
                     continue
 
+            # Pre-chunk budget check — stop before spending, not after
+            if i > 0:  # Skip check on first chunk (pre-flight already checked)
+                try:
+                    from tools.core.cost_tracker import check_lecture_budget, LECTURE_COST_LIMIT_USD
+                    pk = _pipeline_key_var.get()
+                    _budget_ok, _budget_remaining = check_lecture_budget(pk)
+                    estimated_cost = LECTURE_COST_LIMIT_USD - _budget_remaining
+                    if estimated_cost > MAX_COST_PER_LECTURE:
+                        full_transcript = "\n\n".join(transcripts)
+                        logger.error(
+                            "Cost budget EXCEEDED before chunk %d/%d: $%.2f > $%.2f limit. "
+                            "Stopping to prevent further spend. Partial transcript saved.",
+                            i + 1, total_chunks, estimated_cost, MAX_COST_PER_LECTURE,
+                        )
+                        if full_transcript:
+                            partial_path = TMP_DIR / f"{Path(video_path).stem}_partial_transcript.txt"
+                            partial_path.write_text(full_transcript, encoding="utf-8")
+                            logger.info("Partial transcript saved to %s", partial_path)
+                        raise RuntimeError(
+                            f"Gemini cost budget exceeded: ${estimated_cost:.2f} > ${MAX_COST_PER_LECTURE:.2f}"
+                        )
+                except (ImportError, NameError):
+                    pass
+
             logger.info(
                 "Processing chunk %d/%d: %s", i + 1, total_chunks, chunk_path.name,
             )
 
-            # Upload chunk to Gemini (only once — cache for retries)
-            file_ref, use_free = upload_video(chunk_path, use_free=use_free)
-            uploaded_gemini_files.append((file_ref.name, use_free))
+            # Check if a Gemini file ref exists from a previous crashed run
+            # (avoids re-uploading a video that's already on Google's servers)
+            # NOTE: _load_checkpoint rejects <100 chars, so we read directly.
+            _reused_upload = False
+            if use_checkpoints:
+                _ref_path = TMP_DIR / f"{prefix}_chunk{i}_fileref.txt"
+                if _ref_path.exists():
+                    _cached_ref = _ref_path.read_text(encoding="utf-8").strip()
+                    _parts = _cached_ref.split("|")
+                    if len(_parts) == 2:
+                        _old_name, _old_tier = _parts[0], _parts[1] == "True"
+                        try:
+                            _client = _get_client(use_free=_old_tier)
+                            _file_info = _client.files.get(name=_old_name)
+                            _state_str = str(getattr(_file_info, "state", "")).upper()
+                            if "ACTIVE" in _state_str:
+                                logger.info(
+                                    "Reusing Gemini file from previous run: %s (chunk %d/%d)",
+                                    _old_name, i + 1, total_chunks,
+                                )
+                                file_ref = _file_info
+                                use_free = _old_tier
+                                uploaded_gemini_files.append((_old_name, _old_tier))
+                                _reused_upload = True
+                            else:
+                                logger.info(
+                                    "Previous Gemini file %s no longer active (state=%s) — re-uploading",
+                                    _old_name, _state_str,
+                                )
+                        except Exception as e:
+                            logger.info(
+                                "Previous Gemini file %s not found — re-uploading: %s",
+                                _old_name, e,
+                            )
+
+            if not _reused_upload:
+                # Extract audio from video chunk (90% cost reduction)
+                try:
+                    audio_path = _extract_audio(chunk_path)
+                    upload_path = audio_path
+                    logger.info("Using audio-only for chunk %d/%d (cost saving)", i + 1, total_chunks)
+                except Exception as e:
+                    logger.warning("Audio extraction failed, falling back to video: %s", e)
+                    upload_path = chunk_path
+
+                # Upload to Gemini (only once — cache for retries)
+                file_ref, use_free = upload_video(upload_path, use_free=use_free)
+                uploaded_gemini_files.append((file_ref.name, use_free))
+
+                # Save Gemini file ref for crash recovery (avoid re-upload)
+                if use_checkpoints:
+                    _ref_path = TMP_DIR / f"{prefix}_chunk{i}_fileref.txt"
+                    _ref_path.write_text(
+                        f"{file_ref.name}|{use_free}", encoding="utf-8",
+                    )
 
             # Transcribe with chunk context — retries reuse the cached file_ref
-            # instead of re-uploading the video (saves $2-3 per retry)
-            transcript = transcribe_video(
-                file_ref, use_free=use_free,
-                chunk_number=i, total_chunks=total_chunks,
-            )
+            # instead of re-uploading the video (saves $2-3 per retry).
+            # If paid-tier quota is hit during transcription (not upload),
+            # the file_ref belongs to the paid key's namespace and is
+            # inaccessible from the free key — so we must re-upload.
+            file_ref_name = file_ref.name if hasattr(file_ref, 'name') else str(file_ref)
+            try:
+                transcript = transcribe_video(
+                    file_ref, use_free=use_free,
+                    chunk_number=i, total_chunks=total_chunks,
+                )
+            except Exception as exc:
+                if _is_quota_error(exc) and not use_free and GEMINI_API_KEY:
+                    logger.warning(
+                        "Paid tier quota hit during transcription of chunk %d — "
+                        "re-uploading with free key and retrying...", i,
+                    )
+                    # Clean up paid-key upload
+                    try:
+                        paid_client = _get_client(use_free=False)
+                        paid_client.files.delete(name=file_ref_name)
+                        uploaded_gemini_files.pop()  # Remove from cleanup list
+                        logger.info("Cleaned up paid-key Gemini file: %s", file_ref_name)
+                    except Exception as del_err:
+                        logger.warning("Failed to delete paid-key file %s: %s", file_ref_name, del_err)
+                    # Re-upload with free key
+                    file_ref, use_free = upload_video(chunk_path, use_free=True)
+                    uploaded_gemini_files.append((file_ref.name if hasattr(file_ref, 'name') else str(file_ref), True))
+                    # Update file ref checkpoint to reflect the new free-key upload
+                    if use_checkpoints:
+                        _ref_path = TMP_DIR / f"{prefix}_chunk{i}_fileref.txt"
+                        _ref_path.write_text(
+                            f"{file_ref.name}|{use_free}", encoding="utf-8",
+                        )
+                    transcript = transcribe_video(
+                        file_ref, use_free=True,
+                        chunk_number=i, total_chunks=total_chunks,
+                    )
+                else:
+                    raise
             transcripts.append(transcript)
 
             # Save chunk checkpoint immediately after successful transcription
@@ -558,6 +939,40 @@ def transcribe_chunked_video(
                 pct, i + 1, total_chunks, len(transcript),
             )
 
+            # Duration-based cost adjustment for video chunks.
+            # Google bills video input by duration (minutes), not tokens.
+            # Token-based estimates can undercount by 10-50x for video.
+            try:
+                chunk_duration = _get_video_duration_seconds(chunk_path)
+                if chunk_duration and chunk_duration > 0:
+                    # Audio-only: ~$0.00003/sec (32 tokens/sec × $1.00/M)
+                    # Video: ~$0.002/sec — but we extract audio now
+                    duration_cost = chunk_duration * 0.00003  # audio rate
+                    # Subtract a conservative token-based estimate already recorded
+                    # (avoids double-counting; $0.25 is a typical token-based estimate per chunk)
+                    adjustment = max(0.0, duration_cost - 0.25)
+                    if adjustment > 0:
+                        from tools.core.cost_tracker import record_cost
+                        pk = _pipeline_key_var.get()
+                        record_cost(
+                            service="gemini",
+                            model=GEMINI_MODEL_TRANSCRIPTION,
+                            purpose=f"video_duration_adjustment chunk {i + 1}/{total_chunks}",
+                            input_tokens=0,
+                            output_tokens=0,
+                            cost_usd=adjustment,
+                            pipeline_key=pk,
+                        )
+                        logger.info(
+                            "Duration cost adjustment: chunk %d is %.0fs → "
+                            "duration-based=$%.4f, adjustment recorded=$%.4f",
+                            i + 1, chunk_duration, duration_cost, adjustment,
+                        )
+            except Exception as _dur_err:
+                logger.debug("Duration cost adjustment skipped: %s", _dur_err)
+
+            # Budget check moved to top of loop (pre-chunk, not post-chunk)
+
             # Clean up Gemini file immediately (success path)
             try:
                 client = _get_client(use_free=use_free)
@@ -567,10 +982,14 @@ def transcribe_chunked_video(
             except Exception as e:
                 logger.warning("Failed to delete Gemini file %s: %s", file_ref.name, e)
 
-            # Clean up local chunk file (but not the original video)
+            # Clean up local chunk and audio files
             if chunk_path != Path(video_path) and chunk_path.exists():
                 chunk_path.unlink()
                 logger.info("Cleaned up local chunk: %s", chunk_path.name)
+            audio_candidate = chunk_path.with_suffix(".ogg")
+            if audio_candidate.exists():
+                audio_candidate.unlink()
+                logger.info("Cleaned up extracted audio: %s", audio_candidate.name)
 
     finally:
         # Clean up any remaining Gemini uploads on failure
@@ -631,6 +1050,14 @@ def _claude_reason(
 
     max_attempts = 5  # More attempts for rate limits
     for attempt in range(1, max_attempts + 1):
+        # Budget check before every attempt (including first)
+        try:
+            from tools.core.cost_tracker import check_lecture_budget
+            _ok, _rem = check_lecture_budget(_pipeline_key_var.get())
+            if not _ok:
+                raise RuntimeError(f"Lecture budget exceeded during Claude retry (attempt {attempt})")
+        except (ImportError, NameError):
+            pass
         try:
             response = client.messages.create(
                 model=ASSISTANT_CLAUDE_MODEL,
@@ -655,6 +1082,39 @@ def _claude_reason(
                 purpose, len(result),
                 response.usage.input_tokens, response.usage.output_tokens,
             )
+
+            # Log Claude API cost
+            try:
+                usage = getattr(response, 'usage', None)
+                if usage:
+                    input_tokens = getattr(usage, 'input_tokens', 0) or 0
+                    output_tokens = getattr(usage, 'output_tokens', 0) or 0
+                    # Sonnet 4.6 pricing: $3/M input, $15/M output
+                    input_cost = (input_tokens / 1_000_000) * 3.0
+                    output_cost = (output_tokens / 1_000_000) * 15.0
+                    total_cost = input_cost + output_cost
+                    logger.info(
+                        "💰 Claude cost [%s] | input=%d tokens ($%.4f) | "
+                        "output=%d tokens ($%.4f) | total=$%.4f",
+                        purpose, input_tokens, input_cost,
+                        output_tokens, output_cost, total_cost,
+                    )
+                    try:
+                        from tools.core.cost_tracker import record_cost
+                        record_cost(
+                            service="claude",
+                            model="claude-sonnet-4-6",
+                            purpose=purpose,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cost_usd=total_cost,
+                            pipeline_key=_pipeline_key_var.get(),
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             return result
 
         except anthropic.RateLimitError as e:
@@ -711,6 +1171,7 @@ def _gemini_write_georgian(claude_analysis: str, prompt: str, purpose: str, use_
         purpose=f"{purpose} (Georgian writing)",
         max_output_tokens=32768,
         use_free=use_free,
+        disable_thinking=False,  # Gemini 3.1 Pro requires thinking mode (Budget 0 is invalid)
     )
 
 
@@ -769,31 +1230,55 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         transcript,
         prompt=combined_prompt,
         purpose="combined analysis",
-        max_tokens=32000,
+        max_tokens=48000,
         budget_tokens=16000,
     )
 
-    # Parse the three sections
+    # Parse the three sections — robust against minor variations
+    import re
     sections: dict[str, str] = {}
     for key, header in [
         ("summary", "===SUMMARY==="),
         ("gap_analysis", "===GAP_ANALYSIS==="),
         ("deep_analysis", "===DEEP_ANALYSIS==="),
     ]:
-        start = raw.find(header)
-        if start == -1:
-            logger.warning("Section %s not found in Claude response", header)
-            sections[key] = ""
-            continue
-        start += len(header)
+        # Match exact header or regex variants (===SUMMARY=== or === SUMMARY ===)
+        pattern = rf'={3,}\s*{key.upper().replace("_", "[_ ]")}\s*={3,}'
+        match = re.search(pattern, raw)
+        if match is None:
+            # Fallback: try exact string match
+            start = raw.find(header)
+            if start == -1:
+                logger.warning("Section %s not found in Claude response", header)
+                sections[key] = ""
+                continue
+            start += len(header)
+        else:
+            start = match.end()
+
         # Find next section or end
-        next_headers = [raw.find(h, start) for h in ["===SUMMARY===", "===GAP_ANALYSIS===", "===DEEP_ANALYSIS==="] if raw.find(h, start) != -1]
-        end = min(next_headers) if next_headers else len(raw)
+        next_pattern = r'={3,}\s*(?:SUMMARY|GAP[_ ]ANALYSIS|DEEP[_ ]ANALYSIS)\s*={3,}'
+        next_match = re.search(next_pattern, raw[start:])
+        end = start + next_match.start() if next_match else len(raw)
         sections[key] = raw[start:end].strip()
+
+    # Validate: all three sections must be present and non-trivial
+    MIN_SECTION_CHARS = 100
+    missing = [k for k, v in sections.items() if len(v.strip()) < MIN_SECTION_CHARS]
+    if missing:
+        logger.error(
+            "Claude analysis has missing/empty sections: %s (lengths: %s)",
+            missing,
+            {k: len(v) for k, v in sections.items()},
+        )
+        raise ValueError(
+            f"Claude analysis incomplete — missing sections: {', '.join(missing)}"
+        )
 
     return sections
 
 
+@resilient_api_call(service="gemini", operation="generate_summary", max_attempts=1, gemini_quota_fallback=True)
 def generate_summary(transcript: str, use_free: bool = False) -> str:
     """Generate lecture summary: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
@@ -813,6 +1298,7 @@ def generate_summary(transcript: str, use_free: bool = False) -> str:
     return _gemini_write_georgian(claude_analysis, SUMMARIZATION_PROMPT, "summary", use_free)
 
 
+@resilient_api_call(service="gemini", operation="generate_gap_analysis", max_attempts=1, gemini_quota_fallback=True)
 def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
     """Generate gap analysis: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
@@ -833,6 +1319,7 @@ def generate_gap_analysis(transcript: str, use_free: bool = False) -> str:
     return _gemini_write_georgian(claude_analysis, GAP_ANALYSIS_PROMPT, "gap analysis", use_free)
 
 
+@resilient_api_call(service="gemini", operation="generate_deep_analysis", max_attempts=1, gemini_quota_fallback=True)
 def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
     """Generate deep analysis with global AI context: Claude reasons, Gemini writes Georgian."""
     claude_analysis = _claude_reason(
@@ -866,23 +1353,59 @@ def generate_deep_analysis(transcript: str, use_free: bool = False) -> str:
 # Safe wrappers (used inside analyze_lecture to avoid try/except boilerplate)
 # ---------------------------------------------------------------------------
 
-@safe_operation("Combined Claude analysis", alert=True, default={})
-def _safe_claude_reason_all(transcript: str) -> dict[str, str]:
-    """Run combined Claude reasoning, returning empty dict on failure."""
-    sections = _claude_reason_all(transcript)
-    logger.info(
-        "Combined Claude analysis complete: %s",
-        {k: len(v) for k, v in sections.items()},
-    )
-    return sections
+def _safe_claude_reason_all(transcript: str) -> dict[str, str] | None:
+    """Run combined Claude reasoning, returning None on failure (not empty dict)."""
+    try:
+        sections = _claude_reason_all(transcript)
+        logger.info(
+            "Combined Claude analysis complete: %s",
+            {k: len(v) for k, v in sections.items()},
+        )
+        return sections
+    except RuntimeError as e:
+        if "budget" in str(e).lower():
+            raise  # Budget errors must propagate — do not swallow
+        logger.error("Combined Claude analysis failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Combined Claude analysis FAILED: {e}")
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        logger.error("Combined Claude analysis failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Combined Claude analysis FAILED: {e}")
+        except Exception:
+            pass
+        return None
 
 
-@safe_operation("Georgian writing", alert=True, default="")
 def _safe_gemini_write_georgian(
     claude_text: str, prompt: str, label: str, *, use_free: bool = False,
 ) -> str:
     """Write Georgian text from Claude's English analysis, returning '' on failure."""
-    return _gemini_write_georgian(claude_text, prompt, label, use_free=use_free)
+    try:
+        return _gemini_write_georgian(claude_text, prompt, label, use_free=use_free)
+    except RuntimeError as e:
+        if "budget" in str(e).lower():
+            raise  # Budget errors must propagate — do not swallow
+        logger.error("Georgian writing failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Georgian writing FAILED: {e}")
+        except Exception:
+            pass
+        return ""
+    except Exception as e:
+        logger.error("Georgian writing failed: %s", e)
+        try:
+            from tools.integrations.whatsapp_sender import alert_operator
+            alert_operator(f"Georgian writing FAILED: {e}")
+        except Exception:
+            pass
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -896,21 +1419,32 @@ def _checkpoint_prefix(group: int | None, lecture: int | None) -> str:
     return ""
 
 
+MIN_CHECKPOINT_CHARS = 100  # Same as MIN_MEANINGFUL_RESPONSE_CHARS
+
+
 def _load_checkpoint(name: str) -> str | None:
-    """Load a checkpoint file from .tmp/ if it exists and is non-empty."""
+    """Load a checkpoint file from .tmp/ if it exists and has meaningful content."""
     path = TMP_DIR / name
     if path.exists():
         content = path.read_text(encoding="utf-8")
-        if content.strip():
+        if content and len(content.strip()) >= MIN_CHECKPOINT_CHARS:
+            logger.info("Loaded checkpoint: %s (%d chars)", name, len(content))
             return content
+        elif content:
+            logger.warning(
+                "Checkpoint %s too short (%d chars < %d) — will re-generate",
+                name, len(content.strip()), MIN_CHECKPOINT_CHARS,
+            )
     return None
 
 
 def _save_checkpoint(name: str, content: str) -> None:
-    """Save content to a checkpoint file in .tmp/."""
+    """Save content to a checkpoint file in .tmp/ using atomic write."""
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     path = TMP_DIR / name
-    path.write_text(content, encoding="utf-8")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)  # Atomic on POSIX; replace() also works on Windows
     logger.info("Checkpoint saved: %s (%d chars)", name, len(content))
 
 
@@ -962,9 +1496,37 @@ def analyze_lecture(
     Returns:
         Dict with keys: 'transcript', 'summary', 'gap_analysis', 'deep_analysis'
     """
+    _pipeline_key = f"g{group}_l{lecture}" if group and lecture else ""
+    _ctx_token = _pipeline_key_var.set(_pipeline_key)
+
+    # Pre-flight budget check (only when pipeline key is set)
+    if _pipeline_key:
+        try:
+            from tools.core.cost_tracker import check_daily_budget, check_lecture_budget
+            daily_ok, daily_remaining = check_daily_budget()
+            if not daily_ok:
+                raise RuntimeError(
+                    f"Daily budget exceeded ($0 remaining). Pipeline for G{group}/L{lecture} refused."
+                )
+            lecture_ok, lecture_remaining = check_lecture_budget(_pipeline_key)
+            if not lecture_ok:
+                raise RuntimeError(
+                    f"Lecture budget exceeded for {_pipeline_key}. Pipeline refused."
+                )
+            logger.info("Budget check passed: daily=$%.2f remaining, lecture=$%.2f remaining",
+                         daily_remaining, lecture_remaining)
+        except RuntimeError:
+            raise  # Budget exceeded — must propagate
+        except Exception:
+            pass  # cost_tracker not available or other non-fatal error
+
     file_path = Path(file_path)
     prefix = _checkpoint_prefix(group, lecture)
     use_checkpoints = bool(prefix)
+
+    import time as _time
+    _stage_times: dict[str, float] = {}
+    _pipeline_start = _time.monotonic()
 
     # Total pipeline steps for progress logging:
     # 1. Transcription (chunked)  2. Claude reasoning  3. Summary  4. Gap  5. Deep
@@ -977,85 +1539,109 @@ def analyze_lecture(
         pct = int(completed_steps / total_steps * 100)
         logger.info("Pipeline %d%% — %s complete", pct, step_name)
 
-    # --- Step 1: Transcription ---
-    if existing_transcript:
-        transcript = existing_transcript
-        logger.info("Using existing transcript (%d chars)", len(transcript))
-        _log_progress("transcription (pre-existing)")
-    elif use_checkpoints and (cached := _load_checkpoint(f"{prefix}_full_transcript.txt")):
-        transcript = cached
-        logger.info("Resuming from checkpoint: full transcript (%d chars)", len(transcript))
-        _log_progress("transcription (from checkpoint)")
-    else:
-        # Step 0+1: Split video into chunks and transcribe multimodally
-        transcript, _use_free = transcribe_chunked_video(
-            file_path, use_free=False, group=group, lecture=lecture,
-        )
-        logger.info("Full transcript length: %d chars", len(transcript))
-        if use_checkpoints:
-            _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
-        _log_progress("transcription")
+    try:
+        # --- Step 1: Transcription ---
+        _t0 = _time.monotonic()
+        if existing_transcript:
+            transcript = existing_transcript
+            logger.info("Using existing transcript (%d chars)", len(transcript))
+            _log_progress("transcription (pre-existing)")
+        elif use_checkpoints and (cached := _load_checkpoint(f"{prefix}_full_transcript.txt")):
+            transcript = cached
+            logger.info("Resuming from checkpoint: full transcript (%d chars)", len(transcript))
+            _log_progress("transcription (from checkpoint)")
+        else:
+            # Step 0+1: Split video into chunks and transcribe multimodally
+            transcript, _use_free = transcribe_chunked_video(
+                file_path, use_free=False, group=group, lecture=lecture,
+            )
+            logger.info("Full transcript length: %d chars", len(transcript))
+            if use_checkpoints:
+                _save_checkpoint(f"{prefix}_full_transcript.txt", transcript)
+            _log_progress("transcription")
 
-    results: dict[str, str] = {"transcript": transcript}
+        _stage_times["transcription"] = _time.monotonic() - _t0
+        results: dict[str, str] = {"transcript": transcript}
 
-    # --- Step 2: Single Claude call for all three analyses ---
-    claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
-    claude_sections: dict[str, str] = {}
+        # --- Step 2: Single Claude call for all three analyses ---
+        _t0 = _time.monotonic()
+        claude_checkpoint_name = f"{prefix}_claude_analysis.json" if use_checkpoints else ""
+        claude_sections: dict[str, str] = {}
 
-    if use_checkpoints and claude_checkpoint_name:
-        cached_json = _load_checkpoint(claude_checkpoint_name)
-        if cached_json:
-            import json
-            try:
-                claude_sections = json.loads(cached_json)
-                logger.info("Resuming from checkpoint: Claude analysis (%s)",
-                           {k: len(v) for k, v in claude_sections.items()})
-            except json.JSONDecodeError:
-                logger.warning("Corrupt Claude checkpoint — will re-run analysis")
-                claude_sections = {}
+        if use_checkpoints and claude_checkpoint_name:
+            cached_json = _load_checkpoint(claude_checkpoint_name)
+            if cached_json:
+                import json
+                try:
+                    claude_sections = json.loads(cached_json)
+                    logger.info("Resuming from checkpoint: Claude analysis (%s)",
+                               {k: len(v) for k, v in claude_sections.items()})
+                except json.JSONDecodeError:
+                    logger.warning("Corrupt Claude checkpoint — will re-run analysis")
+                    claude_sections = {}
 
-    if not claude_sections:
-        claude_sections = _safe_claude_reason_all(transcript)
-        if use_checkpoints and claude_sections:
-            import json
-            _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
+        if not claude_sections:
+            claude_sections = _safe_claude_reason_all(transcript)
+            if claude_sections is None:
+                logger.error(
+                    "Claude analysis failed completely — proceeding with empty sections "
+                    "(quality gate in transcribe_lecture.py will catch this)"
+                )
+                claude_sections = {"summary": "", "gap_analysis": "", "deep_analysis": ""}
+            if use_checkpoints and claude_sections:
+                import json
+                _save_checkpoint(claude_checkpoint_name, json.dumps(claude_sections, ensure_ascii=False))
 
-    _log_progress("Claude reasoning")
+        _stage_times["claude_reasoning"] = _time.monotonic() - _t0
+        _log_progress("Claude reasoning")
 
-    # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
-    analysis_configs = [
-        ("summary", SUMMARIZATION_PROMPT, "summary"),
-        ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
-        ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
-    ]
-    for key, prompt, label in analysis_configs:
-        checkpoint_name = f"{prefix}_{key}.txt" if use_checkpoints else ""
+        # --- Steps 3-5: Gemini writes Georgian from each Claude section ---
+        analysis_configs = [
+            ("summary", SUMMARIZATION_PROMPT, "summary"),
+            ("gap_analysis", GAP_ANALYSIS_PROMPT, "gap analysis"),
+            ("deep_analysis", DEEP_ANALYSIS_PROMPT, "deep analysis"),
+        ]
+        for key, prompt, label in analysis_configs:
+            checkpoint_name = f"{prefix}_{key}.txt" if use_checkpoints else ""
 
-        # Try checkpoint first
-        if use_checkpoints and checkpoint_name:
-            cached = _load_checkpoint(checkpoint_name)
-            if cached:
-                logger.info("Resuming from checkpoint: %s (%d chars)", label, len(cached))
-                results[key] = cached
-                _log_progress(label)
+            # Try checkpoint first
+            if use_checkpoints and checkpoint_name:
+                cached = _load_checkpoint(checkpoint_name)
+                if cached:
+                    logger.info("Resuming from checkpoint: %s (%d chars)", label, len(cached))
+                    results[key] = cached
+                    _log_progress(label)
+                    continue
+
+            claude_text = claude_sections.get(key, "")
+            if not claude_text:
+                logger.warning("Skipping %s — no Claude output", label)
+                results[key] = ""
+                _log_progress(f"{label} (skipped)")
                 continue
 
-        claude_text = claude_sections.get(key, "")
-        if not claude_text:
-            logger.warning("Skipping %s — no Claude output", label)
-            results[key] = ""
-            _log_progress(f"{label} (skipped)")
-            continue
+            _t0 = _time.monotonic()
+            georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
+            _stage_times["gemini_writing"] = _stage_times.get("gemini_writing", 0) + (_time.monotonic() - _t0)
+            results[key] = georgian_text
 
-        georgian_text = _safe_gemini_write_georgian(claude_text, prompt, label, use_free=False)
-        results[key] = georgian_text
+            if use_checkpoints and georgian_text:
+                _save_checkpoint(checkpoint_name, georgian_text)
 
-        if use_checkpoints and georgian_text:
-            _save_checkpoint(checkpoint_name, georgian_text)
+            _log_progress(label)
 
-        _log_progress(label)
+        total = _time.monotonic() - _pipeline_start
+        logger.info(
+            "⏱️ Analysis timing: total=%.0fs | %s",
+            total,
+            " | ".join(f"{k}={v:.0f}s" for k, v in _stage_times.items()),
+        )
 
-    return results
+        return results
+    finally:
+        # Reset the pipeline key for this context so it doesn't leak into
+        # any code that runs in the same thread/task after this function returns.
+        _pipeline_key_var.reset(_ctx_token)
 
 
 # ---------------------------------------------------------------------------

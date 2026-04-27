@@ -27,17 +27,27 @@ import tools.integrations.zoom_manager as zm
 # ===========================================================================
 
 def _patch_zoom_request(return_value: dict):
-    """Patch _zoom_request to return a fixed dict without network calls."""
-    return patch("tools.integrations.zoom_manager._zoom_request", return_value=return_value)
+    """Patch _zoom_request to return a fixed dict without network calls.
+
+    Uses patch.object on the module directly (not string path) to ensure
+    robustness against httpx stub pollution from other test modules.
+    """
+    return patch.object(zm, "_zoom_request", return_value=return_value)
 
 
 @pytest.fixture(autouse=True)
 def _mock_zoom_credentials():
-    """Ensure tests never attempt real Zoom API calls."""
+    """Ensure tests never attempt real Zoom API calls.
+
+    Also patches get_access_token to prevent real token requests
+    when _zoom_request patch is bypassed by other test modules
+    polluting sys.modules (test ordering issue).
+    """
     with (
         patch.object(zm, "ZOOM_ACCOUNT_ID", "test-account"),
         patch.object(zm, "ZOOM_CLIENT_ID", "test-client"),
         patch.object(zm, "ZOOM_CLIENT_SECRET", "test-secret"),
+        patch.object(zm, "get_access_token", return_value="mock-token"),
     ):
         yield
 
@@ -87,7 +97,7 @@ class TestListUserRecordings:
             captured_params.update(params or {})
             return {"meetings": []}
 
-        with patch("tools.integrations.zoom_manager._zoom_request", side_effect=_capture_request):
+        with patch.object(zm, "_zoom_request", side_effect=_capture_request):
             zm.list_user_recordings()
 
         assert captured_params.get("from") == today
@@ -101,7 +111,7 @@ class TestListUserRecordings:
             captured_params.update(params or {})
             return {"meetings": []}
 
-        with patch("tools.integrations.zoom_manager._zoom_request", side_effect=_capture_request):
+        with patch.object(zm, "_zoom_request", side_effect=_capture_request):
             zm.list_user_recordings("2026-03-10", "2026-03-15")
 
         assert captured_params["from"] == "2026-03-10"
@@ -115,7 +125,7 @@ class TestListUserRecordings:
             captured_params.update(params or {})
             return {"meetings": []}
 
-        with patch("tools.integrations.zoom_manager._zoom_request", side_effect=_capture_request):
+        with patch.object(zm, "_zoom_request", side_effect=_capture_request):
             zm.list_user_recordings("2026-03-01", "2026-03-07")
 
         assert captured_params.get("page_size") == 30
@@ -128,7 +138,7 @@ class TestListUserRecordings:
             captured_paths.append(path)
             return {"meetings": []}
 
-        with patch("tools.integrations.zoom_manager._zoom_request", side_effect=_capture_request):
+        with patch.object(zm, "_zoom_request", side_effect=_capture_request):
             zm.list_user_recordings("2026-03-13", "2026-03-13")
 
         assert any("/users/me/recordings" in p for p in captured_paths)
@@ -141,7 +151,7 @@ class TestListUserRecordings:
             captured_methods.append(method)
             return {"meetings": []}
 
-        with patch("tools.integrations.zoom_manager._zoom_request", side_effect=_capture_request):
+        with patch.object(zm, "_zoom_request", side_effect=_capture_request):
             zm.list_user_recordings()
 
         assert captured_methods == ["GET"]

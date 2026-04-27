@@ -56,7 +56,7 @@ Automatically processes Zoom recordings: downloads â†’ uploads to Google Drive â
 
 If the automated pipeline fails, use the CLI tool:
 ```bash
-python -m tools.process_recording /path/to/video.mp4 --group 1 --lecture 3
+python -m tools.app.process_recording /path/to/video.mp4 --group 1 --lecture 3
 ```
 
 Options:
@@ -74,7 +74,7 @@ Options:
 - Check server logs: `tail -f logs/training_agent.log`
 - Check launchd service: `launchctl list | grep training-agent`
 - Restart: `launchctl stop com.aipulsegeorgia.training-agent` (auto-restarts)
-- Manual start: `python -m tools.orchestrator` or `./start.sh`
+- Manual start: `python -m tools.app.orchestrator` or `./start.sh`
 
 ### Gemini analysis failing
 - Check GEMINI_API_KEY is valid

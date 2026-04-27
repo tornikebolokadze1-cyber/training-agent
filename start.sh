@@ -12,7 +12,7 @@
 #   2. Activates the .venv virtual environment
 #   3. Validates all required .env variables
 #   4. Tails logs to a rotating file (max 10 MB, keeps 3 archives)
-#   5. Starts python -m tools.orchestrator with proper signal forwarding
+#   5. Starts python -m tools.app.orchestrator with proper signal forwarding
 #   6. On SIGTERM/SIGINT: gracefully shuts the process down
 # =============================================================================
 

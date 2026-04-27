@@ -132,10 +132,13 @@ TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
 # Minimum meeting duration (minutes) to consider a meeting "really ended".
 # Below this threshold, a meeting.ended event is treated as a temporary
 # disconnect (break/reconnect) — the pipeline will NOT start.
+# Set to 110 min (not 120) because lectures are 2h but may end up to 10 min early.
+# A 76-min disconnect at the old threshold (75) would have triggered the full
+# irreversible pipeline prematurely.
 try:
-    MINIMUM_LECTURE_DURATION_MINUTES = int(_env("MINIMUM_LECTURE_DURATION_MINUTES", "120"))
+    MINIMUM_LECTURE_DURATION_MINUTES = int(_env("MINIMUM_LECTURE_DURATION_MINUTES", "110"))
 except (ValueError, TypeError):
-    MINIMUM_LECTURE_DURATION_MINUTES = 120
+    MINIMUM_LECTURE_DURATION_MINUTES = 110
 
 # ---------------------------------------------------------------------------
 # Group Definitions
@@ -180,6 +183,18 @@ GROUPS: dict[int, GroupConfig] = {
         "attendee_emails": _ATTENDEES.get("2", []),
     },
 }
+
+# Holiday/cancellation dates — lectures scheduled on these dates are skipped
+# Format: comma-separated ISO dates in env var, e.g., "2026-04-01,2026-04-15"
+_excluded_dates_str = os.environ.get("EXCLUDED_DATES", "2026-04-10,2026-04-13")
+EXCLUDED_DATES: frozenset[date] = frozenset(
+    date.fromisoformat(d.strip())
+    for d in _excluded_dates_str.split(",")
+    if d.strip()
+) if _excluded_dates_str else frozenset()
+
+if EXCLUDED_DATES:
+    logger.info("Excluded dates loaded: %s", sorted(EXCLUDED_DATES))
 
 TOTAL_LECTURES = 15
 
@@ -239,8 +254,22 @@ ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 PINECONE_API_KEY = _env("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = "training-course"
 
+OPERATOR_EMAIL = _env("OPERATOR_EMAIL")
+
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
+
+# --- Paperclip bridge ---
+# Separate secret for Paperclip task dispatch so we can rotate it independently
+# of WEBHOOK_SECRET (n8n). Falls back to WEBHOOK_SECRET for single-operator
+# setups where rotating both at once is fine.
+PAPERCLIP_WEBHOOK_SECRET = _env("PAPERCLIP_WEBHOOK_SECRET") or WEBHOOK_SECRET
+# PAPERCLIP_OPENCLAW_SECRET: Bearer token Paperclip sends on dispatch to the
+# OpenClaw / CRO gateway (`POST /query`). Rotated independently of the Training
+# Ops Lead bridge secret. Falls back to PAPERCLIP_WEBHOOK_SECRET so single-
+# operator setups keep working; production has its own key in .env.
+PAPERCLIP_OPENCLAW_SECRET = _env("PAPERCLIP_OPENCLAW_SECRET", PAPERCLIP_WEBHOOK_SECRET)
+PAPERCLIP_API_BASE = _env("PAPERCLIP_API_BASE", "http://127.0.0.1:3100").rstrip("/")
 
 SERVER_HOST = _env("SERVER_HOST", "0.0.0.0" if IS_RAILWAY else "127.0.0.1")
 try:
@@ -277,6 +306,21 @@ def validate_critical_config() -> list[str]:
     if not WHATSAPP_TORNIKE_PHONE:
         warnings.append("WHATSAPP_TORNIKE_PHONE not set — operator alerts disabled")
 
+    # These are HIGH-risk if missing — warn at startup
+    _warn_vars = [
+        ("ZOOM_WEBHOOK_SECRET_TOKEN", "Zoom webhooks will return 503"),
+        ("DRIVE_GROUP1_FOLDER_ID", "Group 1 Drive uploads will fail"),
+        ("DRIVE_GROUP2_FOLDER_ID", "Group 2 Drive uploads will fail"),
+        ("DRIVE_GROUP1_ANALYSIS_FOLDER_ID", "Group 1 analysis reports won't upload"),
+        ("DRIVE_GROUP2_ANALYSIS_FOLDER_ID", "Group 2 analysis reports won't upload"),
+        ("WHATSAPP_GROUP1_ID", "Group 1 WhatsApp notifications will fail"),
+        ("WHATSAPP_GROUP2_ID", "Group 2 WhatsApp notifications will fail"),
+    ]
+    for var_name, consequence in _warn_vars:
+        if not os.environ.get(var_name):
+            logger.warning("Missing %s — %s", var_name, consequence)
+            warnings.append(f"Missing {var_name} — {consequence}")
+
     # Log warnings
     for w in warnings:
         logger.warning("Config: %s", w)
@@ -293,8 +337,8 @@ def validate_critical_config() -> list[str]:
     return warnings
 
 
-# Run validation at import time
-_config_warnings = validate_critical_config()
+# Validation is now called explicitly by orchestrator.py at startup.
+# Removed auto-execution to prevent import-time side effects in tests.
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -309,7 +353,7 @@ TMP_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 
 # Hybrid model strategy: Pro for long video transcription, 3.1 Pro for Georgian text writing
-GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash"  # Multimodal transcription (cheaper, video chunked to fit 1M token limit)
+GEMINI_MODEL_TRANSCRIPTION = "gemini-2.5-flash-lite"  # 2.5-flash hit persistent 503 high-demand 2026-04-16 — switched to lite (different capacity pool)
 GEMINI_MODEL_ANALYSIS = "gemini-3.1-pro-preview"  # Smartest for Georgian text writing
 
 # Prompt templates moved to tools/core/prompts.py — re-exported for backward compatibility
@@ -326,8 +370,17 @@ ASSISTANT_NAME = "მრჩეველი"
 ASSISTANT_TRIGGER_WORD = "მრჩეველო"
 ASSISTANT_SIGNATURE = "AI ასისტენტი - მრჩეველი"
 ASSISTANT_COOLDOWN_SECONDS = 300  # 5 min between passive responses
-ASSISTANT_CLAUDE_MODEL = "claude-opus-4-6"
+ASSISTANT_CLAUDE_MODEL = "claude-sonnet-4-6"  # Was opus — Sonnet saves ~$150/course with minimal quality loss
 GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
+
+# Pinecone relevance score thresholds (cosine similarity).
+# Georgian text similarity scores are naturally lower than English.
+PINECONE_SCORE_THRESHOLD_DIRECT = float(
+    _env("PINECONE_SCORE_THRESHOLD_DIRECT", "0.3")
+)
+PINECONE_SCORE_THRESHOLD_PASSIVE = float(
+    _env("PINECONE_SCORE_THRESHOLD_PASSIVE", "0.4")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +394,8 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
     up to and including ``for_date``.
     """
     if for_date is None:
-        for_date = date.today()
+        from datetime import datetime
+        for_date = datetime.now(TBILISI_TZ).date()
 
     group = GROUPS[group_number]
     start = group["start_date"]
@@ -353,11 +407,13 @@ def get_lecture_number(group_number: int, for_date: date | None = None) -> int:
     count = 0
     current = start
     while current <= for_date:
-        if current.weekday() in meeting_days:
+        if current.weekday() in meeting_days and current not in EXCLUDED_DATES:
             count += 1
+            if count >= TOTAL_LECTURES:
+                break
         current += timedelta(days=1)
 
-    return min(count, TOTAL_LECTURES)
+    return count
 
 
 def get_group_for_weekday(weekday: int) -> int | None:

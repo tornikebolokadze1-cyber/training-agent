@@ -1,0 +1,212 @@
+{
+  "main": {
+    "id": "c2f970c405e3daf5",
+    "type": "split",
+    "children": [
+      {
+        "id": "c0bd8f4bfc75d1f5",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "a457e1b4aee88f6a",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "63d6546b2028dd34",
+    "type": "split",
+    "children": [
+      {
+        "id": "c1e6d6ac19e06f10",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4413ea195ee09709",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "051ab5ef8ae9ea05",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "tag:#AI",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "7ce6408ce36b990d",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "2e68f23de771c70e",
+    "type": "split",
+    "children": [
+      {
+        "id": "494b4c2d47f064c5",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "32f3e5ee422e4453",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "76c04f48ecc6eae2",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links"
+            }
+          },
+          {
+            "id": "a8e06a7875754007",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "4c3f955f883f1e68",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "5e2b5649d7ae904d",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "a457e1b4aee88f6a",
+  "lastOpenFiles": [
+    "MOC - ძირითადი თემები.md",
+    "WhatsApp დისკუსიები/ჯგუფი 2 -- ჩატი.md",
+    "WhatsApp დისკუსიები/ჯგუფი 1 -- ჩატი.md",
+    "კონცეფციები/Multi-model Validation.md",
+    "კონცეფციები/Artifacts.md",
+    "ინსტრუმენტები/Claude Projects.md",
+    "კონცეფციები/Hooks (AI Agent).md",
+    "კონცეფციები/Commands (AI Agent).md",
+    "კონცეფციები/Skills (AI Agent).md",
+    "ინსტრუმენტები/Claude Sonnet 3.5.md",
+    "კონცეფციები/mem repository.md",
+    "კონცეფციები/Data Analysis and Visualization.md",
+    "კონცეფციები/Knowledge Organization.md",
+    "კონცეფციები/Execute Mode.md",
+    "კონცეფციები/Plan Mode.md",
+    "კონცეფციები/setup` command.md",
+    "ინსტრუმენტები/Claude Browser Extension.md",
+    "კონცეფციები/AI Code Evaluation.md",
+    "ინსტრუმენტები/ChatGPT Atlas.md",
+    "კონცეფციები/Computer Use Mode.md",
+    "კონცეფციები/AI Agent (Agent Mode).md",
+    "კონცეფციები/App Connectors.md",
+    "კონცეფციები/Data Control (AI Models).md",
+    "კონცეფციები/Scheduling (AI Tasks).md",
+    "კონცეფციები/Token Economy.md",
+    "კონცეფციები/Playwright  Browser Automation.md",
+    "Untitled 2.canvas",
+    "Untitled.base",
+    "Untitled 1.canvas",
+    "Untitled.canvas"
+  ]
+}

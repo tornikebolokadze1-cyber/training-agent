@@ -13,8 +13,11 @@ Setup:
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -23,6 +26,7 @@ from tools.core.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     GROUPS,
+    TMP_DIR,
     WEBHOOK_SECRET,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
@@ -36,11 +40,209 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
 MESSAGE_MAX_LENGTH = 4096  # WhatsApp message character limit
 
+# Rate limiter: max 20 messages per 60 seconds
+RATE_LIMIT_MAX_MESSAGES = 20
+RATE_LIMIT_WINDOW_SECONDS = 60
+
+# DLQ retry config
+DLQ_MAX_RETRIES = 3
+
+MISSED_ALERTS_PATH = TMP_DIR / "missed_alerts.json"
+
 # Group ID mapping
 _GROUP_CHAT_IDS = {
     1: WHATSAPP_GROUP1_ID,
     2: WHATSAPP_GROUP2_ID,
 }
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+class _RateLimiter:
+    """Simple sliding-window rate limiter for WhatsApp sends.
+
+    Thread-safe. Tracks timestamps of recent sends and blocks when the
+    limit is hit, returning the wait time needed.
+    """
+
+    def __init__(self, max_messages: int = RATE_LIMIT_MAX_MESSAGES, window: int = RATE_LIMIT_WINDOW_SECONDS) -> None:
+        self._max = max_messages
+        self._window = window
+        self._timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> float:
+        """Try to acquire a send slot.
+
+        Returns:
+            0.0 if slot acquired, otherwise the number of seconds to wait.
+        """
+        now = time.monotonic()
+        with self._lock:
+            cutoff = now - self._window
+            self._timestamps = [t for t in self._timestamps if t > cutoff]
+            if len(self._timestamps) >= self._max:
+                wait = self._timestamps[0] - cutoff
+                return max(wait, 0.1)
+            self._timestamps.append(now)
+            return 0.0
+
+    def wait_and_acquire(self) -> None:
+        """Block until a send slot is available."""
+        while True:
+            wait = self.acquire()
+            if wait == 0.0:
+                return
+            logger.debug("Rate limit hit, waiting %.1fs", wait)
+            time.sleep(wait)
+
+
+_rate_limiter = _RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# DLQ (Dead Letter Queue) for failed notifications
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _DLQEntry:
+    chat_id: str
+    message: str
+    priority: str  # "alert" > "report" > "notification"
+    attempts: int = 0
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chat_id": self.chat_id,
+            "message": self.message,
+            "priority": self.priority,
+            "attempts": self.attempts,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> _DLQEntry:
+        return cls(
+            chat_id=d["chat_id"],
+            message=d["message"],
+            priority=d["priority"],
+            attempts=d.get("attempts", 0),
+            created_at=d.get("created_at", time.time()),
+        )
+
+
+class NotificationDLQ:
+    """Dead Letter Queue for failed WhatsApp notifications.
+
+    Thread-safe. Failed messages are enqueued and retried periodically.
+    After DLQ_MAX_RETRIES failures, messages are saved to missed_alerts.json.
+    """
+
+    def __init__(self) -> None:
+        self._queue: list[_DLQEntry] = []
+        self._lock = threading.Lock()
+
+    def enqueue(self, chat_id: str, message: str, priority: str = "notification") -> None:
+        """Add a failed message to the DLQ."""
+        entry = _DLQEntry(chat_id=chat_id, message=message, priority=priority)
+        with self._lock:
+            self._queue.append(entry)
+        logger.warning("Message enqueued to DLQ (priority=%s, chat=%s)", priority, chat_id[:20])
+
+    def process(self) -> dict[str, int]:
+        """Retry all queued messages. Called periodically (every 10 min).
+
+        Returns:
+            Dict with counts: {"sent": N, "retrying": N, "dead": N}
+        """
+        with self._lock:
+            to_process = list(self._queue)
+            self._queue.clear()
+
+        # Sort by priority: alert > report > notification
+        priority_order = {"alert": 0, "report": 1, "notification": 2}
+        to_process.sort(key=lambda e: priority_order.get(e.priority, 9))
+
+        sent = 0
+        retrying = 0
+        dead = 0
+
+        for entry in to_process:
+            entry.attempts += 1
+            try:
+                _rate_limiter.wait_and_acquire()
+                result = _send_request_raw("sendMessage", {"chatId": entry.chat_id, "message": entry.message}, f"DLQ retry #{entry.attempts}")
+                _validate_send_response(result, f"DLQ retry to {entry.chat_id[:20]}")
+                sent += 1
+                logger.info("DLQ message sent successfully after %d attempts", entry.attempts)
+            except Exception as exc:
+                if entry.attempts >= DLQ_MAX_RETRIES:
+                    dead += 1
+                    logger.error("DLQ message dead after %d attempts: %s", entry.attempts, exc)
+                    _save_missed_alert(entry)
+                else:
+                    retrying += 1
+                    with self._lock:
+                        self._queue.append(entry)
+
+        if sent or retrying or dead:
+            logger.info("DLQ processed: sent=%d, retrying=%d, dead=%d", sent, retrying, dead)
+        return {"sent": sent, "retrying": retrying, "dead": dead}
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+
+notification_dlq = NotificationDLQ()
+
+
+def _save_missed_alert(entry: _DLQEntry) -> None:
+    """Append a dead message to missed_alerts.json for later recovery."""
+    try:
+        MISSED_ALERTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing: list[dict[str, Any]] = []
+        if MISSED_ALERTS_PATH.exists():
+            try:
+                existing = json.loads(MISSED_ALERTS_PATH.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = []
+        existing.append(entry.to_dict())
+        MISSED_ALERTS_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Saved missed alert to %s", MISSED_ALERTS_PATH.name)
+    except Exception as exc:
+        logger.error("Failed to save missed alert to file: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Response validation
+# ---------------------------------------------------------------------------
+
+
+class WhatsAppSendError(RuntimeError):
+    """Raised when Green API returns 200 but no idMessage (silent failure)."""
+
+
+def _validate_send_response(data: dict[str, Any], purpose: str) -> None:
+    """Validate that a Green API send response actually delivered the message.
+
+    Green API may return 200 with an empty response or missing idMessage
+    when the message was NOT actually sent (e.g., phone disconnected).
+
+    Raises:
+        WhatsAppSendError: If idMessage is missing from the response.
+    """
+    if not data.get("idMessage"):
+        raise WhatsAppSendError(
+            f"{purpose}: API returned 200 but no idMessage — message NOT sent. "
+            f"Response: {data}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +259,8 @@ class _NonRetryableError(Exception):
     """Raised for HTTP 4xx errors (except 429) that should not be retried."""
 
 
-def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[str, Any]:
-    """Send a request to Green API with retry logic.
+def _send_request_raw(method: str, payload: dict[str, Any], purpose: str) -> dict[str, Any]:
+    """Send a request to Green API with retry logic (no response validation).
 
     Args:
         method: API method name (e.g. 'sendMessage', 'sendFileByUrl').
@@ -105,6 +307,51 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
         raise RuntimeError(
             f"{purpose} failed with non-retryable error: {exc}"
         ) from exc
+
+
+def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[str, Any]:
+    """Send a request to Green API with retry, rate limiting, and response validation.
+
+    Wraps _send_request_raw with:
+    1. Rate limiting (max 20 messages/minute)
+    2. Response validation (idMessage must be present)
+    3. DLQ enqueue on validation failure
+
+    Args:
+        method: API method name (e.g. 'sendMessage').
+        payload: Request body.
+        purpose: Human-readable description for logging.
+
+    Returns:
+        Green API response dict with confirmed idMessage.
+
+    Raises:
+        RuntimeError: If all retries are exhausted.
+        WhatsAppSendError: If response lacks idMessage after retry.
+    """
+    # Rate limiting: wait if needed, never fail pipeline for this
+    _rate_limiter.wait_and_acquire()
+
+    data = _send_request_raw(method, payload, purpose)
+
+    # Validate: idMessage must be present for sendMessage calls
+    if method == "sendMessage" and not data.get("idMessage"):
+        # Retry once — phone might have reconnected
+        logger.warning("%s: no idMessage in response, retrying once...", purpose)
+        time.sleep(2)
+        _rate_limiter.wait_and_acquire()
+        data = _send_request_raw(method, payload, f"{purpose} (validation retry)")
+        if not data.get("idMessage"):
+            # Enqueue to DLQ for later retry
+            chat_id = payload.get("chatId", "unknown")
+            message = payload.get("message", "")
+            notification_dlq.enqueue(chat_id, message, priority="notification")
+            raise WhatsAppSendError(
+                f"{purpose}: API returned 200 but no idMessage after retry — "
+                f"message enqueued to DLQ. Response: {data}"
+            )
+
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -237,25 +484,55 @@ def send_private_report(report_text: str) -> dict[str, Any]:
 def alert_operator(message: str) -> None:
     """Last-resort alert to Tornike when automated systems fail.
 
-    Tries to send a WhatsApp message. If that also fails, logs at CRITICAL
-    level (which goes to both console and the rotating log file). This
-    function NEVER raises — it is the safety net, not another failure point.
+    Tries to send a WhatsApp message. If that also fails:
+    1. Logs at CRITICAL level (console + rotating log file)
+    2. Saves to .tmp/missed_alerts.json for later recovery
+
+    This function NEVER raises — it is the safety net, not another failure
+    point. The entire body is wrapped in try/except to guarantee this.
 
     Args:
         message: Plain-text alert (keep it short and actionable).
     """
-    prefix = "⚠️ Training Agent ALERT\n\n"
     try:
-        if WHATSAPP_TORNIKE_PHONE and GREEN_API_INSTANCE_ID and GREEN_API_TOKEN:
-            chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
-            send_message_to_chat(chat_id, prefix + message)
-            logger.info("Operator alert sent via WhatsApp")
-            return
-    except BaseException as exc:
-        logger.error("Failed to send WhatsApp alert: %s", exc)
+        prefix = "⚠️ Training Agent ALERT\n\n"
+        full_message = prefix + message
 
-    # Fallback: CRITICAL log — appears in console + log file
-    logger.critical("OPERATOR ALERT (WhatsApp unavailable): %s", message)
+        # Attempt WhatsApp delivery
+        whatsapp_sent = False
+        try:
+            if WHATSAPP_TORNIKE_PHONE and GREEN_API_INSTANCE_ID and GREEN_API_TOKEN:
+                chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
+                send_message_to_chat(chat_id, full_message)
+                logger.info("Operator alert sent via WhatsApp")
+                whatsapp_sent = True
+        except BaseException as exc:
+            logger.error("Failed to send WhatsApp alert: %s", exc)
+
+        if not whatsapp_sent:
+            # Fallback 1: CRITICAL log
+            logger.critical("OPERATOR ALERT (WhatsApp unavailable): %s", message)
+
+            # Fallback 2: Save to missed_alerts.json for nightly health check
+            try:
+                entry = _DLQEntry(
+                    chat_id=f"{WHATSAPP_TORNIKE_PHONE or 'unknown'}@c.us",
+                    message=full_message,
+                    priority="alert",
+                )
+                _save_missed_alert(entry)
+            except BaseException as file_exc:
+                logger.error("Failed to save alert to file: %s", file_exc)
+
+    except BaseException as outer_exc:
+        # Ultimate safety net: if ANYTHING above raises, just log it
+        try:
+            logger.critical(
+                "alert_operator TOTAL FAILURE: original=%s, error=%s",
+                message, outer_exc,
+            )
+        except BaseException:
+            pass  # Truly nothing we can do
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +594,59 @@ def get_webhook_settings() -> dict[str, Any]:
 
     response.raise_for_status()
     return response.json()
+
+
+def get_chat_history(chat_id: str, count: int = 100) -> list[dict[str, Any]]:
+    """Fetch the last N messages of a chat from Green API.
+
+    Used by the assistant catch-up service to recover messages that were
+    missed by the live ``/whatsapp-incoming`` webhook (e.g. during a Railway
+    boot hang or a Green API webhook outage).
+
+    Returns the raw message list as Green API delivers it. Each item has at
+    minimum ``idMessage``, ``timestamp``, ``type`` ("incoming"/"outgoing"),
+    ``typeMessage``, ``senderId``, ``senderName``, and (when applicable)
+    ``textMessage`` / ``extendedTextMessage`` / ``quotedMessage`` blocks.
+
+    Args:
+        chat_id: WhatsApp chat ID, e.g. "120363XXX@g.us" or "995XXXXXXX@c.us".
+        count: Maximum number of messages to fetch (Green API caps near 100).
+
+    Returns:
+        List of raw Green API message dicts, newest first. Empty list on any
+        non-200 response or when the chat has no history.
+
+    Raises:
+        ValueError: If Green API credentials are not configured.
+    """
+    if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
+        raise ValueError("Green API not configured")
+
+    url = f"{_base_url()}/getChatHistory/{GREEN_API_TOKEN}"
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(url, json={"chatId": chat_id, "count": count})
+    except httpx.TransportError as exc:
+        logger.warning("get_chat_history transport error for %s: %s", chat_id, exc)
+        return []
+
+    if response.status_code != 200:
+        logger.warning(
+            "get_chat_history returned %d for %s: %s",
+            response.status_code, chat_id, response.text[:200],
+        )
+        return []
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.warning("get_chat_history returned non-JSON for %s", chat_id)
+        return []
+
+    if not isinstance(data, list):
+        return []
+    return data
 
 
 # ---------------------------------------------------------------------------

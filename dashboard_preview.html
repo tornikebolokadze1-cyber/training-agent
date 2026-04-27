@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI კურსი — Trainer Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+<style>
+:root {
+  --bg: #06080f;
+  --card: rgba(17,24,39,0.7);
+  --card-border: rgba(99,102,241,0.12);
+  --card-hover: rgba(99,102,241,0.25);
+  --accent: #6366f1;
+  --accent-glow: rgba(99,102,241,0.25);
+  --cyan: #22d3ee;
+  --good: #34d399;
+  --mid: #fbbf24;
+  --bad: #f87171;
+  --rose: #fb7185;
+  --text: #f1f5f9;
+  --text2: #cbd5e1;
+  --muted: #94a3b8;
+  --dim: #475569;
+  --surface: rgba(30,36,52,0.6);
+  --radius: 16px;
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+html { scroll-behavior:smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Noto Sans Georgian', 'Inter', system-ui, -apple-system, sans-serif;
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+  font-size: 14px; line-height: 1.5;
+}
+body::before {
+  content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -20%, rgba(99,102,241,0.1), transparent 70%),
+    radial-gradient(ellipse 60% 50% at 80% 100%, rgba(52,211,153,0.05), transparent 60%);
+}
+
+/* ── Layout ── */
+.wrap { max-width:1200px; margin:0 auto; padding:2rem clamp(1rem,3vw,2rem); display:flex; flex-direction:column; gap:1.5rem; }
+
+/* ── Cards ── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  transition: border-color 0.3s, box-shadow 0.3s;
+  position: relative; overflow: visible;
+}
+.card:hover { border-color: var(--card-hover); }
+
+.card-label {
+  font-size: 0.65rem; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--dim); margin-bottom: 0.75rem;
+}
+
+/* ── Section headings ── */
+h2.sec {
+  font-size: 0.95rem; font-weight: 700; color: var(--text);
+  display: flex; align-items: center; gap: 0.5rem; margin: 0;
+}
+h2.sec::before {
+  content:''; width:3px; height:1.1em; border-radius:2px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+}
+
+/* ── Header ── */
+.dash-header {
+  display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:1rem;
+  padding-bottom:0.5rem; border-bottom:1px solid rgba(99,102,241,0.08);
+}
+.dash-header h1 {
+  font-size:1.5rem; font-weight:800; letter-spacing:-0.02em;
+}
+.dash-header h1 span {
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+}
+.dash-header p { color:var(--muted); font-size:0.78rem; margin-top:0.2rem; }
+.header-right { display:flex; align-items:center; gap:0.75rem; }
+.live-dot { width:8px; height:8px; border-radius:50%; background:var(--good); }
+.live-dot { animation: livePulse 2s ease-in-out infinite; }
+@keyframes livePulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
+.refresh-label { font-size:0.72rem; color:var(--muted); }
+
+/* ── Hero: TPI Gauge + Level + Streak ── */
+.hero-row {
+  display:grid; grid-template-columns: 280px 200px 1fr; gap:1.25rem; align-items:stretch;
+}
+@media (max-width:900px) { .hero-row { grid-template-columns:1fr 1fr; } .hero-row .card:last-child { grid-column:1/-1; } }
+@media (max-width:640px) { .hero-row { grid-template-columns:1fr; } }
+
+.tpi-card { display:flex; flex-direction:column; align-items:center; text-align:center; padding:1.75rem 1rem; }
+.tpi-gauge { position:relative; width:140px; height:140px; margin-bottom:0.75rem; }
+.tpi-gauge svg { width:100%; height:100%; transform:rotate(-90deg); }
+.tpi-gauge .gauge-bg { fill:none; stroke:rgba(99,102,241,0.1); stroke-width:6; }
+.tpi-gauge .gauge-fg {
+  fill:none; stroke-width:6; stroke-linecap:round;
+  transition: stroke-dashoffset 1.5s cubic-bezier(0.4,0,0.2,1);
+}
+.tpi-center {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  text-align:center;
+}
+.tpi-value { font-size:2.2rem; font-weight:800; line-height:1; }
+.tpi-sub { font-size:0.65rem; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:0.05em; }
+.tpi-label { font-size:0.72rem; color:var(--muted); font-weight:500; }
+
+.level-card { display:flex; flex-direction:column; align-items:center; text-align:center; padding:1.5rem 1rem; }
+.level-icon { font-size:2.5rem; margin-bottom:0.5rem; }
+.level-name { font-size:1rem; font-weight:700; color:var(--accent); }
+.level-score { font-size:0.72rem; color:var(--muted); margin-top:0.2rem; }
+
+.streak-card { display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+.streak-flames { display:flex; align-items:flex-end; gap:3px; height:50px; margin-bottom:0.5rem; }
+.streak-flame {
+  width:16px; border-radius:50% 50% 50% 50% / 60% 60% 40% 40%;
+  background: linear-gradient(to top, var(--bad), var(--mid));
+  opacity:0.12;
+}
+.streak-flame.active {
+  opacity:1; box-shadow: 0 0 10px rgba(251,191,36,0.4);
+  animation: flicker 2s ease-in-out infinite alternate;
+}
+@keyframes flicker {
+  0% { transform:scaleY(1) scaleX(1); }
+  50% { transform:scaleY(1.06) scaleX(0.96); }
+  100% { transform:scaleY(0.95) scaleX(1.03); }
+}
+.streak-number {
+  font-size:2rem; font-weight:900; line-height:1;
+  background: linear-gradient(135deg, var(--mid), var(--bad));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+}
+.streak-label { font-size:0.7rem; color:var(--muted); margin-top:0.2rem; }
+
+/* ── Data Story ── */
+.narrative-card {
+  border-left:3px solid var(--accent);
+  padding:1rem 1.25rem;
+}
+.narrative-card .narrative-text { font-size:0.82rem; line-height:1.75; color:var(--text2); }
+
+/* ── Progress Timeline ── */
+.tl-section { display:flex; flex-direction:column; gap:1rem; }
+.tl-group-label { font-size:0.72rem; font-weight:600; color:var(--muted); margin-bottom:0.25rem; }
+.tl-track {
+  display:flex; align-items:center; gap:0; position:relative; padding:8px 0;
+}
+.tl-line {
+  position:absolute; top:50%; left:14px; right:14px; height:2px;
+  background:rgba(71,85,105,0.3); transform:translateY(-50%); z-index:0;
+}
+.tl-line-fill {
+  position:absolute; top:50%; left:14px; height:2px;
+  background:linear-gradient(90deg, var(--accent), var(--good));
+  transform:translateY(-50%); z-index:0; border-radius:1px;
+  transition:width 1s cubic-bezier(0.4,0,0.2,1);
+}
+.tl-dot {
+  flex:1; display:flex; align-items:center; justify-content:center;
+  width:26px; height:26px; min-width:26px; border-radius:50%;
+  font-size:0.58rem; font-weight:700; position:relative; z-index:1;
+  border:2px solid var(--dim); color:var(--dim); background:transparent;
+  transition:all 0.3s ease; cursor:default;
+}
+.tl-dot.completed {
+  border-color:transparent; color:var(--bg); font-weight:800;
+}
+.tl-dot.current {
+  animation: dotPulse 2s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%,100% { box-shadow:0 0 0 0 rgba(99,102,241,0.4); }
+  50% { box-shadow:0 0 0 6px rgba(99,102,241,0); }
+}
+.tl-dot.next {
+  border-color:var(--accent); color:var(--accent);
+  animation: dotPulse 2s ease-in-out infinite;
+}
+.tl-dot.upcoming {
+  border-color:rgba(100,116,139,0.3); color:rgba(100,116,139,0.4);
+}
+.tl-dot:hover { transform:scale(1.15); }
+
+/* ── Trainer Sub-Scores (mini gauges) ── */
+.sub-scores { display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; }
+@media (max-width:640px) { .sub-scores { grid-template-columns:repeat(2,1fr); } }
+.sub-card {
+  display:flex; flex-direction:column; align-items:center; text-align:center;
+  background:rgba(255,255,255,0.02); border-radius:12px; padding:1.25rem 0.5rem;
+  transition:background 0.2s;
+}
+.sub-card:hover { background:rgba(255,255,255,0.04); }
+.mg-wrap {
+  position:relative; width:44px; height:44px;
+  display:flex; align-items:center; justify-content:center;
+  margin-bottom:0.5rem;
+}
+.mg-wrap svg { position:absolute; inset:0; width:100%; height:100%; }
+.mg-val { position:relative; z-index:1; font-size:0.82rem; font-weight:700; }
+.mg-label { font-size:0.68rem; color:var(--muted); font-weight:500; overflow-wrap:break-word; word-break:break-word; line-height:1.3; max-width:100%; }
+
+/* ── Lecture Cards ── */
+.lec-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:1rem; }
+.lec-card { padding:1rem 1.25rem; }
+.lc-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; }
+.lc-num { font-size:0.88rem; font-weight:700; }
+.grp-badge { font-size:0.6rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:99px; white-space:nowrap; }
+.grp-badge.g1 { background:rgba(99,102,241,0.15); color:var(--accent); }
+.grp-badge.g2 { background:rgba(34,211,238,0.15); color:var(--cyan); }
+.lc-body { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem; }
+.lc-spark { flex:1; height:28px; }
+.lc-spark svg { width:100%; height:100%; overflow:visible; }
+.lc-score { display:flex; align-items:center; gap:0.4rem; flex-shrink:0; }
+.score-pill {
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:0.2rem 0.6rem; border-radius:99px; font-size:0.82rem; font-weight:700;
+  color:var(--bg);
+}
+.sc-bg-good { background:var(--good); }
+.sc-bg-mid { background:var(--mid); }
+.sc-bg-bad { background:var(--bad); }
+.sc-bg-na { background:var(--dim); color:var(--muted); }
+.delta-badge {
+  display:inline-flex; align-items:center; gap:1px;
+  padding:0.1rem 0.45rem; border-radius:99px;
+  font-size:0.68rem; font-weight:600; white-space:nowrap;
+}
+.delta-up { color:var(--good); background:rgba(52,211,153,0.12); }
+.delta-down { color:var(--bad); background:rgba(248,113,113,0.12); }
+.delta-flat { color:var(--muted); background:rgba(100,116,139,0.12); }
+.lc-heatmap {
+  display:grid; grid-template-columns:repeat(5,1fr); gap:3px;
+}
+.lc-hm-cell {
+  border-radius:4px; text-align:center; font-size:0.62rem; font-weight:600;
+  padding:3px 0; color:var(--bg);
+}
+
+/* ── Bullet Chart / Dimension Ranking ── */
+.bullet-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0; }
+.bullet-label { font-size:0.72rem; color:var(--text2); width:140px; flex-shrink:0; text-align:right; overflow-wrap:break-word; word-break:break-word; hyphens:auto; line-height:1.3; }
+.bullet-track {
+  flex:1; height:16px; border-radius:4px; position:relative; overflow:visible;
+  display:flex; background:rgba(30,41,59,0.6);
+}
+.bullet-range-low { width:40%; height:100%; background:rgba(248,113,113,0.08); }
+.bullet-range-mid { width:30%; height:100%; background:rgba(251,191,36,0.06); }
+.bullet-range-high { width:30%; height:100%; background:rgba(52,211,153,0.05); }
+.bullet-bar {
+  position:absolute; top:4px; left:0; height:8px; border-radius:2px;
+  transition:width 0.8s cubic-bezier(0.4,0,0.2,1);
+}
+.bullet-target {
+  position:absolute; top:1px; width:2px; height:14px;
+  background:var(--text); border-radius:1px; opacity:0.5;
+}
+.bullet-val { font-size:0.78rem; font-weight:700; width:32px; }
+.bullet-gap { font-size:0.62rem; font-weight:600; color:var(--bad); width:32px; }
+.bullet-over { font-size:0.62rem; font-weight:600; color:var(--good); width:32px; }
+
+/* ── Insights ── */
+.ins-cards-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; align-items:start; }
+@media (max-width:640px) { .ins-cards-grid { grid-template-columns:1fr; } }
+.ins-card { padding:1.25rem; }
+.group-header { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; }
+.group-dot { width:10px; height:10px; border-radius:50%; }
+.g1-dot { background:var(--accent); }
+.g2-dot { background:var(--cyan); }
+.group-name { font-size:0.85rem; font-weight:700; }
+.insights-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:0.4rem; margin:0.5rem 0; }
+@media (max-width:640px) { .insights-grid { grid-template-columns:repeat(3,1fr); } }
+.ins-stat { text-align:center; padding:0.4rem 0.15rem; background:rgba(255,255,255,0.02); border-radius:8px; min-height:3rem; overflow:visible; }
+.ins-num { font-size:1.3rem; font-weight:800; display:block; line-height:1; }
+.ins-lbl { font-size:0.6rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.2rem; display:block; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }
+.ins-quote { font-size:0.8rem; color:var(--text2); padding:0.6rem 0.75rem; margin:0.5rem 0; border-radius:8px; line-height:1.6; border-left:3px solid; }
+.ins-quote.good { border-color:var(--good); background:rgba(52,211,153,0.04); }
+.ins-quote.growth { border-color:var(--mid); background:rgba(251,191,36,0.04); }
+
+/* ── Expand/Collapse for insights text ── */
+.ins-quote.expandable { cursor:pointer; position:relative; }
+.ins-quote.expandable .expand-text { display:block; }
+.ins-quote.expandable.collapsed .expand-text {
+  display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden;
+}
+.ins-quote.expandable::after {
+  content:'ვრცლად ▼'; display:block; margin-top:0.35rem;
+  font-size:0.62rem; font-weight:600; color:var(--accent); text-align:right;
+}
+.ins-quote.expandable.collapsed::after { content:'ვრცლად ▼'; }
+.ins-quote.expandable:not(.collapsed)::after { content:'შეკვეცა ▲'; }
+.ins-quote.expandable.no-toggle { cursor:default; }
+.ins-quote.expandable.no-toggle::after { display:none; }
+
+/* ── Lecture Comparison Table ── */
+.cmp-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:0.75rem; }
+.cmp-table {
+  width:100%; border-collapse:collapse; font-size:0.78rem;
+  background:var(--card); border-radius:12px; overflow:hidden;
+}
+.cmp-table thead th {
+  background:var(--surface); color:var(--muted); font-weight:700;
+  font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em;
+  padding:0.65rem 0.5rem; text-align:center; white-space:normal;
+  border-bottom:1px solid var(--card-border); overflow-wrap:break-word; word-break:break-word;
+}
+.cmp-table thead th:first-child { text-align:left; padding-left:1rem; }
+.cmp-table tbody tr { border-bottom:1px solid rgba(255,255,255,0.03); transition:background 0.15s; }
+.cmp-table tbody tr:hover { background:rgba(99,102,241,0.06); }
+.cmp-table tbody td {
+  padding:0.55rem 0.5rem; text-align:center; font-weight:600;
+}
+.cmp-table tbody td:first-child { text-align:left; padding-left:1rem; font-weight:700; }
+.cmp-table .sc-cell {
+  display:inline-block; min-width:32px; padding:0.15rem 0.4rem;
+  border-radius:6px; font-size:0.72rem; font-weight:700; text-align:center;
+}
+.cmp-table .sc-cell.cell-good { background:rgba(52,211,153,0.18); color:var(--good); }
+.cmp-table .sc-cell.cell-mid { background:rgba(251,191,36,0.18); color:var(--mid); }
+.cmp-table .sc-cell.cell-bad { background:rgba(248,113,113,0.18); color:var(--bad); }
+.cmp-table .sc-cell.cell-comp { font-size:0.82rem; padding:0.2rem 0.55rem; }
+
+/* ── Charts: bar chart section ── */
+.charts-2col { display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }
+@media (max-width:900px) { .charts-2col { grid-template-columns:1fr; } }
+
+.just-details { margin-top:0.4rem; }
+.just-details summary { font-size:0.68rem; color:var(--accent); cursor:pointer; font-weight:600; }
+.just-details summary:hover { text-decoration:underline; }
+.just-item { font-size:0.68rem; color:var(--text2); padding:0.25rem 0; border-bottom:1px solid rgba(255,255,255,0.03); line-height:1.4; }
+.just-dim { font-weight:600; color:var(--muted); }
+
+.sc-good { color:var(--good)!important; }
+.sc-mid { color:var(--mid)!important; }
+.sc-bad { color:var(--bad)!important; }
+.sc-na { color:var(--muted)!important; }
+
+.sw-section { margin-bottom:0.75rem; }
+.sw-section h4 { font-size:0.65rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.35rem; }
+.sw-good { color:var(--good); }
+.sw-growth { color:var(--mid); }
+.sw-item { display:flex; align-items:center; gap:0.35rem; font-size:0.78rem; padding:0.2rem 0; color:var(--text2); }
+.sw-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+.sw-dot.good { background:var(--good); }
+.sw-dot.bad { background:var(--bad); }
+.empty-state { color:var(--muted); font-size:0.78rem; text-align:center; padding:1.5rem 1rem; }
+
+/* ── Achievement Badges ── */
+.badges-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:0.75rem; }
+@media (max-width:900px) { .badges-grid { grid-template-columns:repeat(3,1fr); } }
+@media (max-width:640px) { .badges-grid { grid-template-columns:repeat(2,1fr); } }
+.badge {
+  background:var(--card); border:1px solid var(--card-border); border-radius:14px;
+  padding:1.25rem 0.75rem; text-align:center; position:relative; overflow:hidden;
+  transition:all 0.3s cubic-bezier(0.4,0,0.2,1); cursor:default;
+}
+.badge::before {
+  content:''; position:absolute; inset:0;
+  background:radial-gradient(circle at 50% 0%, var(--accent-glow), transparent 70%);
+  opacity:0; transition:opacity 0.3s;
+}
+.badge:hover::before { opacity:1; }
+.badge.earned { border-color:rgba(99,102,241,0.25); }
+.badge.earned:hover { border-color:var(--accent); transform:translateY(-2px); box-shadow:0 6px 24px rgba(99,102,241,0.15); }
+.badge.locked { opacity:0.35; }
+.badge.locked:hover { opacity:0.5; }
+.badge-icon {
+  width:44px; height:44px; margin:0 auto 0.5rem; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:1.3rem; position:relative; z-index:1; transition:transform 0.3s;
+}
+.badge.earned .badge-icon { background:linear-gradient(135deg, rgba(99,102,241,0.2), rgba(99,102,241,0.05)); box-shadow:0 0 16px var(--accent-glow); }
+.badge.locked .badge-icon { background:var(--surface); filter:grayscale(1); }
+.badge.earned:hover .badge-icon { transform:scale(1.1); }
+.badge-name { font-size:0.68rem; font-weight:700; position:relative; z-index:1; margin-bottom:2px; }
+.badge-desc { font-size:0.58rem; color:var(--muted); position:relative; z-index:1; line-height:1.4; }
+.badge.locked .badge-name, .badge.locked .badge-desc { color:var(--dim); }
+.badge-check {
+  position:absolute; top:8px; right:8px;
+  width:16px; height:16px; border-radius:50%;
+  background:var(--good); display:flex; align-items:center; justify-content:center;
+  font-size:0.5rem; color:var(--bg); font-weight:900;
+  box-shadow:0 0 8px rgba(52,211,153,0.4); z-index:2;
+}
+.badge-lock {
+  position:absolute; top:8px; right:8px;
+  font-size:0.6rem; color:var(--dim); z-index:2;
+}
+
+/* ── Kirkpatrick Levels ── */
+.kirk-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:0.75rem; margin-top:0.75rem; }
+@media (max-width:640px) { .kirk-grid { grid-template-columns:repeat(2,1fr); } }
+.kirk-level { text-align:center; padding:1rem 0.5rem; background:var(--surface); border-radius:12px; border:1px solid var(--glass-border); }
+.kirk-num { font-size:0.6rem; font-weight:700; color:var(--accent); letter-spacing:0.1em; text-transform:uppercase; }
+.kirk-name { font-size:0.75rem; font-weight:600; color:var(--text); margin:0.25rem 0; overflow-wrap:break-word; word-break:break-word; }
+.kirk-score { font-size:1.8rem; font-weight:800; line-height:1; }
+.kirk-desc { font-size:0.6rem; color:var(--muted); margin-top:0.25rem; }
+
+/* ── Research Metrics Grid ── */
+.metrics-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-top:0.75rem; }
+@media (max-width:900px) { .metrics-grid { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:640px) { .metrics-grid { grid-template-columns:1fr; } }
+.metric-card {
+  background:var(--surface); border:1px solid var(--glass-border); border-radius:12px;
+  padding:1rem; display:flex; flex-direction:column; align-items:center; text-align:center;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.metric-card:hover { border-color:rgba(99,102,241,0.2); transform:translateY(-2px); }
+.metric-icon { font-size:1.5rem; margin-bottom:0.4rem; }
+.metric-value { font-size:1.6rem; font-weight:800; line-height:1; }
+.metric-name { font-size:0.7rem; font-weight:600; color:var(--text); margin-top:0.4rem; text-transform:uppercase; letter-spacing:0.05em; overflow-wrap:break-word; word-break:break-word; line-height:1.3; }
+.metric-detail { font-size:0.62rem; color:var(--muted); margin-top:0.2rem; line-height:1.3; }
+
+/* ── Cross-Group Comparison ── */
+.cross-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }
+@media (max-width:640px) { .cross-grid { grid-template-columns:1fr; } }
+.cross-summary { display:flex; flex-direction:column; gap:0.4rem; }
+.cross-item { display:flex; align-items:center; justify-content:space-between; padding:0.35rem 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+.cross-dim { font-size:0.78rem; color:var(--text2); overflow-wrap:break-word; word-break:break-word; }
+
+/* ── Charts ── */
+.chart-wrap { position:relative; height:300px; }
+@media (max-width:640px) { .chart-wrap { height:220px; } }
+
+/* ── Footer ── */
+.dash-footer {
+  padding:1rem 0; border-top:1px solid rgba(255,255,255,0.06);
+  color:var(--muted); font-size:0.68rem; text-align:center;
+  display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;
+}
+
+/* ── Animations ── */
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(16px); }
+  to { opacity:1; transform:translateY(0); }
+}
+.card { animation:fadeUp 0.5s ease both; }
+.card:nth-child(2) { animation-delay:0.05s; }
+.card:nth-child(3) { animation-delay:0.1s; }
+.card:nth-child(4) { animation-delay:0.15s; }
+.card:nth-child(5) { animation-delay:0.2s; }
+.card:nth-child(6) { animation-delay:0.25s; }
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:0.01ms!important; transition-duration:0.01ms!important; }
+}
+
+/* ── Tablet ── */
+@media (max-width:900px) {
+  .charts-2col { grid-template-columns:1fr; }
+  .cmp-table { font-size:0.72rem; }
+}
+
+/* ── Mobile ── */
+@media (max-width:640px) {
+  .wrap { padding:1rem 0.75rem; }
+  .dash-header { flex-direction:column; align-items:flex-start; }
+  .card { padding:1rem; }
+  h2.sec { font-size:0.85rem; }
+  .tl-dot { width:20px; height:20px; min-width:20px; font-size:0.5rem; }
+  .dash-footer { flex-direction:column; text-align:center; }
+  .bullet-label { width:80px; font-size:0.65rem; }
+  .cmp-table { font-size:0.65rem; }
+  .cmp-table thead th { padding:0.4rem 0.3rem; font-size:0.58rem; }
+  .cmp-table tbody td { padding:0.4rem 0.3rem; }
+  .cmp-table .sc-cell { min-width:24px; padding:0.1rem 0.25rem; font-size:0.62rem; }
+  .lec-grid { grid-template-columns:1fr; }
+  .chart-wrap { height:200px; }
+  .ins-quote { font-size:0.68rem; }
+}
+
+/* ── Focus ── */
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+
+/* ── Touch devices ── */
+@media (hover:none) and (pointer:coarse) {
+  .card { backdrop-filter:none; -webkit-backdrop-filter:none; background:rgba(17,24,39,0.92); }
+}
+
+/* ── Print ── */
+@media print {
+  body { background:#fff!important; color:#1e293b!important; }
+  body::before { display:none!important; }
+  .card { background:#fff!important; border:1px solid #e2e8f0!important; backdrop-filter:none!important; box-shadow:none!important; animation:none!important; break-inside:avoid; }
+  .sc-good { color:#059669!important; } .sc-mid { color:#d97706!important; } .sc-bad { color:#dc2626!important; }
+  * { animation:none!important; transition:none!important; }
+  .chart-print-img { width:100%; max-height:280px; object-fit:contain; display:block; }
+  .chart-wrap { height:auto!important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ════════ HEADER ════════ -->
+<div class="dash-header">
+  <div>
+    <h1><span>AI კურსი</span> — Trainer Analytics</h1>
+    <p>ტრენერის პერფორმანსის ანალიტიკა &middot; 2026-03-28 15:04 UTC</p>
+  </div>
+  <div class="header-right">
+    <div class="live-dot"></div>
+    <span class="refresh-label">Auto-sync &middot; 10/30 ლექცია</span>
+  </div>
+</div>
+
+<!-- ════════ 1. HERO: TPI GAUGE + LEVEL + STREAK ════════ -->
+<div class="hero-row">
+  <div class="card tpi-card">
+    <div class="card-label">Trainer Performance Index</div>
+    <div class="tpi-gauge">
+      <svg viewBox="0 0 100 100">
+        <defs>
+          <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#fbbf24"/>
+            <stop offset="100%" stop-color="var(--accent)"/>
+          </linearGradient>
+        </defs>
+        <circle class="gauge-bg" cx="50" cy="50" r="40"/>
+        <circle class="gauge-fg" cx="50" cy="50" r="40"
+          stroke="url(#gaugeGrad)"
+          stroke-dasharray="251.2"
+          stroke-dashoffset="108.5"/>
+      </svg>
+      <div class="tpi-center">
+        <div class="tpi-value" style="color:#fbbf24">5.7</div>
+        <div class="tpi-sub">/10</div>
+      </div>
+    </div>
+    <div class="tpi-label">ყველა ლექციის კომპოზიტი</div>
+  </div>
+
+  <div class="card level-card">
+    <div class="card-label">ტრენერის დონე</div>
+    <div class="level-icon">🌿</div>
+    <div class="level-name">Developing</div>
+    <div class="level-score">TPI: 5.7</div>
+  </div>
+
+  <div class="card streak-card">
+    <div class="card-label">გაუმჯობესების სერია</div>
+    <div class="streak-flames">
+      <div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div><div class="streak-flame" style="height:12px"></div>
+    </div>
+    <div class="streak-number">0</div>
+    <div class="streak-label">ზედიზედ გაუმჯობესება</div>
+  </div>
+</div>
+
+<!-- ════════ 2. DATA STORY ════════ -->
+<div class="card narrative-card">
+  <div class="card-label">მონაცემთა ისტორია</div>
+  <div class="narrative-text">📉 <strong>შენი პროგრესი:</strong> ბოლო 10 ლექციაში კომპოზიტური ქულა 6.4-დან 6.0-მდე შემცირდა (-6.3%). ყველაზე დიდი გაუმჯობესება <strong>მონაწილეების ჩართულობა</strong>ში მოხდა (6.0→7.0, +16.7%). ⚠️ <strong>ბაზრის რელევანტურობა</strong> შემცირდა (8.0→6.0, -25.0%). <strong>ბაზრის რელევანტურობა</strong> შენი ყველაზე ძლიერი მხარეა (საშ. 6.6/10). ფოკუსი საჭიროა <strong>შინაარსის სიღრმე</strong>ზე (საშ. 4.8/10) — ეს ყველაზე დაბალი განზომილებაა. 🎯 მიზანი ახლოსაა: კიდევ 0.32 ქულა და TPI 6.0-ს მიაღწევს!</div>
+</div>
+
+<!-- ════════ 3. PROGRESS TIMELINE ════════ -->
+<div class="card tl-section">
+  <h2 class="sec">პროგრესის დროშა</h2>
+  <div>
+    <div class="tl-group-label">ჯგუფი #1 &mdash; 5/15</div>
+    <div class="tl-track">
+            <div class="tl-line"></div>
+            <div class="tl-line-fill" style="width:33.33333333333333%"></div>
+            <div class="tl-dot completed" style="background:#fbbf24" title="ლ#1: 5.2">1</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#2: 6.4">2</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#3: 5.4">3</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#4: 5.8">4</div><div class="tl-dot completed current" style="background:#fbbf24" title="ლ#5: 6.0">5</div><div class="tl-dot next" title="შემდეგი">6</div><div class="tl-dot upcoming">7</div><div class="tl-dot upcoming">8</div><div class="tl-dot upcoming">9</div><div class="tl-dot upcoming">10</div><div class="tl-dot upcoming">11</div><div class="tl-dot upcoming">12</div><div class="tl-dot upcoming">13</div><div class="tl-dot upcoming">14</div><div class="tl-dot upcoming">15</div>
+        </div>
+  </div>
+  <div>
+    <div class="tl-group-label">ჯგუფი #2 &mdash; 5/15</div>
+    <div class="tl-track">
+            <div class="tl-line"></div>
+            <div class="tl-line-fill" style="width:33.33333333333333%"></div>
+            <div class="tl-dot completed" style="background:#fbbf24" title="ლ#1: 5.4">1</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#2: 6.0">2</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#3: 5.6">3</div><div class="tl-dot completed" style="background:#fbbf24" title="ლ#4: 5.6">4</div><div class="tl-dot completed current" style="background:#fbbf24" title="ლ#5: 5.4">5</div><div class="tl-dot next" title="შემდეგი">6</div><div class="tl-dot upcoming">7</div><div class="tl-dot upcoming">8</div><div class="tl-dot upcoming">9</div><div class="tl-dot upcoming">10</div><div class="tl-dot upcoming">11</div><div class="tl-dot upcoming">12</div><div class="tl-dot upcoming">13</div><div class="tl-dot upcoming">14</div><div class="tl-dot upcoming">15</div>
+        </div>
+  </div>
+</div>
+
+<!-- ════════ 4. TRAINER SUB-SCORES (MINI GAUGES) ════════ -->
+<div class="card">
+  <h2 class="sec">ტრენერის კომპეტენციის პროფილი</h2>
+  <div class="sub-scores">
+    <div class="sub-card">
+            <div class="mg-wrap"><svg viewBox="0 0 44 44" style="transform:rotate(-90deg)">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="3"/>
+                <circle cx="22" cy="22" r="18" fill="none" stroke="#fbbf24" stroke-width="3"
+                    stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="50.9"
+                    style="transition:stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)"/>
+            </svg><span class="mg-val" style="color:#fbbf24">5.5</span></div>
+            <div class="mg-label">პედაგოგიკა</div></div>
+    <div class="sub-card">
+            <div class="mg-wrap"><svg viewBox="0 0 44 44" style="transform:rotate(-90deg)">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="3"/>
+                <circle cx="22" cy="22" r="18" fill="none" stroke="#fbbf24" stroke-width="3"
+                    stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="56.5"
+                    style="transition:stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)"/>
+            </svg><span class="mg-val" style="color:#fbbf24">5.0</span></div>
+            <div class="mg-label">კონტენტის ხარისხი</div></div>
+    <div class="sub-card">
+            <div class="mg-wrap"><svg viewBox="0 0 44 44" style="transform:rotate(-90deg)">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="3"/>
+                <circle cx="22" cy="22" r="18" fill="none" stroke="#fbbf24" stroke-width="3"
+                    stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="50.9"
+                    style="transition:stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)"/>
+            </svg><span class="mg-val" style="color:#fbbf24">5.5</span></div>
+            <div class="mg-label">პრაქტ. ზეგავლენა</div></div>
+    <div class="sub-card">
+            <div class="mg-wrap"><svg viewBox="0 0 44 44" style="transform:rotate(-90deg)">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="3"/>
+                <circle cx="22" cy="22" r="18" fill="none" stroke="#34d399" stroke-width="3"
+                    stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="33.9"
+                    style="transition:stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)"/>
+            </svg><span class="mg-val" style="color:#34d399">7.0</span></div>
+            <div class="mg-label">ბალანსი</div></div>
+  </div>
+</div>
+
+<!-- ════════ 5. LECTURE-BY-LECTURE CARDS ════════ -->
+<h2 class="sec">ლექციების დეტალური ქულები</h2>
+<div class="lec-grid">
+  <div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #1</span>
+                <span class="grp-badge g1">ჯგ #1</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,16.0 22,14.0 40,14.0 58,14.0 76,10.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="10.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.2</span>
+                    <span class="delta-badge delta-flat">—</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="შინაარსის სიღრმე: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="მონაწილეების ჩართულობა: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="ბაზრის რელევანტურობა: 7.0">7.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #2</span>
+                <span class="grp-badge g1">ჯგ #1</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,10.0 40,12.0 58,12.0 76,8.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="8.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">6.4</span>
+                    <span class="delta-badge delta-up">↑+1.2</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="პრაქტიკული ღირებულება: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="მონაწილეების ჩართულობა: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="ბაზრის რელევანტურობა: 8.0">8.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #3</span>
+                <span class="grp-badge g1">ჯგ #1</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,12.0 40,16.0 58,12.0 76,12.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="12.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.4</span>
+                    <span class="delta-badge delta-down">↓-1.0</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="მონაწილეების ჩართულობა: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ბაზრის რელევანტურობა: 6.0">6.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #4</span>
+                <span class="grp-badge g1">ჯგ #1</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,10.0 40,16.0 58,12.0 76,10.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="10.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.8</span>
+                    <span class="delta-badge delta-up">↑+0.4</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="პრაქტიკული ღირებულება: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="მონაწილეების ჩართულობა: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="ბაზრის რელევანტურობა: 7.0">7.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #5</span>
+                <span class="grp-badge g1">ჯგ #1</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,12.0 40,10.0 58,12.0 76,12.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="12.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">6.0</span>
+                    <span class="delta-badge delta-up">↑+0.2</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="მონაწილეების ჩართულობა: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ბაზრის რელევანტურობა: 6.0">6.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #1</span>
+                <span class="grp-badge g2">ჯგ #2</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,16.0 22,12.0 40,14.0 58,14.0 76,10.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="10.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.4</span>
+                    <span class="delta-badge delta-flat">—</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="შინაარსის სიღრმე: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="მონაწილეების ჩართულობა: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="ბაზრის რელევანტურობა: 7.0">7.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #2</span>
+                <span class="grp-badge g2">ჯგ #2</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,12.0 40,10.0 58,14.0 76,10.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="10.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">6.0</span>
+                    <span class="delta-badge delta-up">↑+0.6</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="მონაწილეების ჩართულობა: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="ბაზრის რელევანტურობა: 7.0">7.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #3</span>
+                <span class="grp-badge g2">ჯგ #2</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,12.0 22,10.0 40,16.0 58,14.0 76,12.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="12.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.6</span>
+                    <span class="delta-badge delta-down">↓-0.4</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="პრაქტიკული ღირებულება: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="მონაწილეების ჩართულობა: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ბაზრის რელევანტურობა: 6.0">6.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #4</span>
+                <span class="grp-badge g2">ჯგ #2</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,14.0 22,12.0 40,10.0 58,16.0 76,12.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="12.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.6</span>
+                    <span class="delta-badge delta-flat">– 0.0</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="შინაარსის სიღრმე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 6.0">6.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="მონაწილეების ჩართულობა: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="ტექნიკური სიზუსტე: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ბაზრის რელევანტურობა: 6.0">6.0</div></div>
+        </div><div class="lec-card card">
+            <div class="lc-header">
+                <span class="lc-num">ლექცია #5</span>
+                <span class="grp-badge g2">ჯგ #2</span>
+            </div>
+            <div class="lc-body">
+                <div class="lc-spark">
+                    <svg viewBox="0 0 80 28" preserveAspectRatio="none" role="img" aria-label="ქულების ტრენდი">
+                        <polyline points="4,16.0 22,14.0 40,10.0 58,14.0 76,12.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="76" cy="12.0" r="2" fill="#fbbf24"/>
+                    </svg>
+                </div>
+                <div class="lc-score">
+                    <span class="score-pill sc-bg-mid">5.4</span>
+                    <span class="delta-badge delta-down">↓-0.2</span>
+                </div>
+            </div>
+            <div class="lc-heatmap"><div class="lc-hm-cell" style="background:rgba(248,113,113,0.5)" title="შინაარსის სიღრმე: 4.0">4.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="პრაქტიკული ღირებულება: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(52,211,153,0.6)" title="მონაწილეების ჩართულობა: 7.0">7.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ტექნიკური სიზუსტე: 5.0">5.0</div><div class="lc-hm-cell" style="background:rgba(251,191,36,0.5)" title="ბაზრის რელევანტურობა: 6.0">6.0</div></div>
+        </div>
+</div>
+
+<!-- ════════ 6. DIMENSION RANKING (BULLET CHART) ════════ -->
+<div class="card">
+  <h2 class="sec">განზომილებების რეიტინგი vs სამიზნე 7.0</h2>
+  <div class="bullet-row">
+            <span class="bullet-label">ბაზრის რელევანტურობა</span>
+            <div class="bullet-track">
+                <div class="bullet-range-low"></div>
+                <div class="bullet-range-mid"></div>
+                <div class="bullet-range-high"></div>
+                <div class="bullet-bar" style="width:66.0%;background:#fbbf24"></div>
+                <div class="bullet-target" style="left:70%"></div>
+            </div>
+            <span class="bullet-val sc-mid">6.6</span>
+            <span class="bullet-gap">-0.4</span>
+        </div><div class="bullet-row">
+            <span class="bullet-label">პრაქტიკული ღირებულება</span>
+            <div class="bullet-track">
+                <div class="bullet-range-low"></div>
+                <div class="bullet-range-mid"></div>
+                <div class="bullet-range-high"></div>
+                <div class="bullet-bar" style="width:61.0%;background:#fbbf24"></div>
+                <div class="bullet-target" style="left:70%"></div>
+            </div>
+            <span class="bullet-val sc-mid">6.1</span>
+            <span class="bullet-gap">-0.9</span>
+        </div><div class="bullet-row">
+            <span class="bullet-label">მონაწილეების ჩართულობა</span>
+            <div class="bullet-track">
+                <div class="bullet-range-low"></div>
+                <div class="bullet-range-mid"></div>
+                <div class="bullet-range-high"></div>
+                <div class="bullet-bar" style="width:56.0%;background:#fbbf24"></div>
+                <div class="bullet-target" style="left:70%"></div>
+            </div>
+            <span class="bullet-val sc-mid">5.6</span>
+            <span class="bullet-gap">-1.4</span>
+        </div><div class="bullet-row">
+            <span class="bullet-label">ტექნიკური სიზუსტე</span>
+            <div class="bullet-track">
+                <div class="bullet-range-low"></div>
+                <div class="bullet-range-mid"></div>
+                <div class="bullet-range-high"></div>
+                <div class="bullet-bar" style="width:53.0%;background:#fbbf24"></div>
+                <div class="bullet-target" style="left:70%"></div>
+            </div>
+            <span class="bullet-val sc-mid">5.3</span>
+            <span class="bullet-gap">-1.7</span>
+        </div><div class="bullet-row">
+            <span class="bullet-label">შინაარსის სიღრმე</span>
+            <div class="bullet-track">
+                <div class="bullet-range-low"></div>
+                <div class="bullet-range-mid"></div>
+                <div class="bullet-range-high"></div>
+                <div class="bullet-bar" style="width:48.0%;background:#f87171"></div>
+                <div class="bullet-target" style="left:70%"></div>
+            </div>
+            <span class="bullet-val sc-bad">4.8</span>
+            <span class="bullet-gap">-2.2</span>
+        </div>
+  <div style="font-size:0.58rem;color:var(--muted);text-align:right;margin-top:0.35rem">| = სამიზნე 7.0/10</div>
+</div>
+
+<!-- ════════ 7. AI INSIGHTS ════════ -->
+<h2 class="sec">AI უკუკავშირის ანალიზი</h2>
+<div class="ins-cards-grid"><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g1-dot"></div>
+                <span class="group-name">ჯგ #1 — ლექცია #1</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">2</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">3</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">3</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">0</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ლექტორს აქვს გულწრფელი ვნება AI ტექნოლოგიების მიმართ და პრაქტიკული გამოცდილება აგენტების შექმნაში.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">ლექცია არასტრუქტურირებულია — არ არის დღის წესრიგი, სასწავლო მიზნები და შეჯამება.</span></div></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g1-dot"></div>
+                <span class="group-name">ჯგ #1 — ლექცია #2</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">5</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">1</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">4</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ეს კურსის ყველაზე ძლიერი განზომილებაა. ქართულენოვანი AI-ის შეფასება, ლოკალური პლატფორმების ინტეგრაცია და აგენტებზე ორიენტირებული მიდგომა უაღრესად რელევანტურია სამიზნე აუდიტორიისთვის და თანხვედრაშია 2025 წლის ტრენდებთან.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">შთამბეჭდავი მასშტაბია — 5 მოდელის, პერსონალიზაციის, ღრმა კვლევის, აგენტების, კონექტორების, n8n-ის, VS Code-ის და ა.შ. დაფარვა ერთ სესიაზე. თუმცა, სიღრმე ნებისმიერ ცალკეულ თემაზე არასაკმარისი იყო. შედეგი არის &quot;ექსკურსია&quot; და არა განათლება. მონაწილეები წავიდნენ იმის ცოდნით, რომ ეს რაღაცები არსებობს, მა</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> შთამბეჭდავი მასშტაბია — 5 მოდელის, პერსონალიზაციის, ღრმა კვლევის, აგენტების, კონექტორების, n8n-ის, VS Code-ის და ა.შ. დაფარვა ერთ სესიაზე. თუმცა, სიღრმე ნებისმიერ ცალკეულ თემაზე არასაკმარისი იყო. შედეგი არის &quot;ექსკურსია&quot; და არა განათლება. მონაწილეები წავიდნენ იმის ცოდნით, რომ ეს რაღაცები არსებობს, მა</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> მაღალი პრაქტიკული ღირებულება კონკრეტულად ქართული კონტექსტისთვის (mymarket.ge, ეროვნული ბანკი, Airtable CRM). თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობა ნიშნავს, რომ მონაწილეებმა პრაქტიკული გამოყენება თავად უნდა ისწავლონ. ფასების შესახებ ინფორმაციის არარსებობაც ამცირებს პრაქტიკულ ღირებულებას.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> კარგი Q&amp;A დინამიკა — ლექტორი იცნობს მონაწილეებს სახელებით და იშველიებს მათ ინდუსტრიებს. თუ
+ს შესახებ ინფორმაციის არარსებობაც ამცირებს პრაქტიკულ ღირებულებას.</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> ძირითადი კონცეფციები მაღალ დონეზე სწორად არის წარმოდგენილი. თუმცა, ChatGPT vs Claude შედარება ზედმეტად გამარტივებული იყო, Manus AI-ის მტკიცება გადამოწმებას საჭიროებს, ხოლო API-ს დეფინიციის &quot;ბლა ბლა ბლა&quot;-თი მოგერიება უზუსტობაზე და არაპროფესიონალიზმზე მიუთითებს.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ეს კურსის ყველაზე ძლიერი განზომილებაა. ქართულენოვანი AI-ის შეფასება, ლოკალური პლატფორმების ინტეგრაცია და აგენტებზე ორიენტირებული მიდგომა უაღრესად რელევანტურია სამიზნე აუდიტორიისთვის და თანხვედრაშია 2025 წლის ტრენდებთან.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g1-dot"></div>
+                <span class="group-name">ჯგ #1 — ლექცია #3</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">3</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">4</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">0</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">პრაქტიკული ინსტრუქციები (VS Code-ის დაყენება, Claude-ის დაკავშირება) ნამდვილად სასარგებლოა, მაგრამ ნაპრალი &quot;აი, დააკოპირე ეს პრომპტი&quot;-სა და &quot;აი, როგორ ააგო შენი საკუთარი აგენტი შენი ბიზნესისთვის&quot; შორის უზარმაზარია და ამოუვსები.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">8-9 მონაწილედან მხოლოდ 3-4 იყო აქტიური. ლექტორის კითხვას &quot;არის კითხვები?&quot; ძირითადად სიჩუმე მოსდევდა, რაც უფრო დაბნეულობაზე მიუთითებს, ვიდრე გაგებაზე. არ ყოფილა გამოყენებული ჩართულობის სტრუქტურირებული ტექნიკები.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექცია ფარავს თემების შთამბეჭდავ სპექტრს, მაგრამ სიღრმე ეწირება თითოეულ მათგანს. არცერთი თემა არ არის დამუშავებული იმ დონეზე, რომ მონაწილემ დამოუკიდებლად გაიმეოროს ნაჩვენები. HR აგენტის დემო შთამბეჭდავია, მაგრამ წარმოდგენილია როგორც &quot;მიყურე როგორ ვაკეთებ&quot; და არა &quot;ისწავლე როგორ გააკეთო&quot;.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> პრაქტიკული ინსტრუქციები (VS Code-ის დაყენება, Claude-ის დაკავშირება) ნამდვილად სასარგებლოა, მაგრამ ნაპრალი &quot;აი, დააკოპირე ეს პრომპტი&quot;-სა და &quot;აი, როგორ ააგო შენი საკუთარი აგენტი შენი ბიზნესისთვის&quot; შორის უზარმაზარია და ამოუვსები.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> 8-9 მონაწილედან მხოლოდ 3-4 იყო აქტიური. ლექტორის კითხვას &quot;არის კითხვები?&quot; ძირითადად სიჩუმე მოსდევდა, რაც უფრო დაბნეულობაზე მიუთითებს, ვიდრე გაგებაზე. არ ყოფილა გამოყენებული ჩართულობის სტრუქტურირებული ტექნიკები.</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> საბაზისო კონცეფციები სწორია, მაგრამ ზედმეტი გამარტივებები, უსაფრთხოების რისკების გამოტოვება და მტკიცება, რომ &quot;კოდირების ცოდნა არ არის საჭირო&quot; მაშინ, როცა გენერირდება React/Node.js კოდი — შეცდომაში შემყვანია. მონაწილეებს ადრე თუ გვიან მოუწევთ დებაგინგი, რისი კონტექსტიც არ გააჩნიათ.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ძლიერი რელევანტურობა აქვს HR ქეისსა და სკრეპინგს ქართული ბაზრისთვის, ასევე უფასო/ღია კოდის ხელსაწყოების გამოყენებას. თუმცა, სტრატეგიული კონტექსტის, ადგილობრივი რეგულაციებისა და ცვლილებების მართვის არარსებობა მნიშვნელოვნად ამცირებს პრაქტიკულ გამოყენებადობას.</div><div class="just-item"><span class="just-dim">overall_score:</span> კურსი არის შთამაგონებელი, მაგრამ ქაოტური შეხება უახლეს ინსტრუმენტებთან, რომ
+ებისა და ცვლილებების მართვის არარსებობა მნიშვნელოვნად ამცირებს პრაქტიკულ გამოყენებადობას.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g1-dot"></div>
+                <span class="group-name">ჯგ #1 — ლექცია #4</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">3</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">3</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">0</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ინფრასტრუქტურის აწყობის რეპოზიტორიუმი ნამდვილად ღირებულია და მონაწილეებს რეალურ დროს უზოგავს. NotebookLM-ის დემონსტრაცია პრაქტიკული და პირდაპირ გამოსადეგი იყო. Skills სისტემის მაგალითებიც უაღრესად რელევანტურია. თუმცა, მონაწილეთა პრაქტიკული დროის უქონლობის გამო, ამ ღირებულების დიდი ნაწილი დაიკარგება — მონაწილეები უყურებდნენ, მაგრამ თავად არაფერი გაუკეთებიათ.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">მთელი სესიის განმავლობაში კითხვა მხოლოდ 3-4-მა მონაწილემ დასვა (უმეტესობა ლაშასგან მოდიოდა, რომელიც ყველაზე გამოცდილია). არ ყოფილა სავარჯიშოები, გამოკითხვები ან ჯგუფური აქტივობები. სესიის უმეტესი დრო ლექტორი ესაუბრებოდა *მათ* და არა *მათთან ერთად*. ინდივიდუალური ყურადღება დაეთმოთ (შორენა, ნინო, კესო, კობა, ლაშა), მაგრამ მხოლოდ რეაქტიულად.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ბევრი თემა მხოლოდ ზედაპირულად იქნა წარმოდგენილი. Git/GitHub-ს დაეთმო 3 წუთი, რაც დამოუკიდებელი გამოყენებისთვის არასაკმარისია. Skills კონცეპტუალურად კარგად აიხსნა, მაგრამ შექმნის პროცესი მხოლოდ ერთხელ აჩვენეს და ისიც ბოლომდე არ მისულა. NotebookLM ყველაზე სიღრმისეულად განიხილეს, მაგრამ მაინც აკლდა სტრუქტურირებული სწავლება იმის შესახებ, თუ როდის/რატომ უნდა გამოვიყენოთ თითოეული ფუნქცია.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> ინფრასტრუქტურის აწყობის რეპოზიტორიუმი ნამდვილად ღირებულია და მონაწილეებს რეალურ დროს უზოგავს. NotebookLM-ის დემონსტრაცია პრაქტიკული და პირდაპირ გამოსადეგი იყო. Skills სისტემის მაგალითებიც უაღრესად რელევანტურია. თუმცა, მონაწილეთა პრაქტიკული დროის უქონლობის გამო, ამ ღირებულების დიდი ნაწილი დაიკარგება — მონაწილეები უყურებდნენ, მაგრამ თავად არაფერი გაუკეთებიათ.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> მთელი სესიის განმავლობაში კითხვა მხოლოდ 3-4-მა მონაწილემ დასვა (უმეტესობა ლაშასგან მოდიოდა, რომელიც ყველაზე გამოცდილია). არ ყოფილა სავარჯიშოები, გამოკითხვები ან ჯგუფური აქტივობები. სესიის უმეტესი დრო ლექტორი ესაუბრებოდა *მათ* და არა *მათთან ერთად*. ინდივიდუალური ყურადღება დაეთმოთ (შორენა, ნინო, კესო, კობა, ლაშა), მაგრამ მხოლოდ რეაქტიულად.</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> ძირითადი კონცეფციები სწორად აიხსნა, მაგრამ შემაშფოთებელი გამარტივებებით. CLI-Anything-ის პრეზენტაციამ შექმნა ზედმეტი მოლოდინები. პროგნოზი, რომ &quot;Computer Use ყველაფერს ჩაანაცვლებს&quot;, სპეკულაციურია. ფაქტობრივი შეცდომები არ ყოფილა, მაგრამ რამდენიმე განცხადება შეცდომაში შემყვანად ოპტიმისტური იყო.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ქართული სპეციფიკის ელემენტები ძლიერია: ქართულენოვანი NotebookLM, ქართული კანონები, ქართული ბაზრის ფასების მონიტორინგი. ლექტორს აშკარად ესმის ადგილობრივი ბაზარი. თუმცა, კრიტიკული ბიზნეს-თემების (ROI, AI მმართველობა, ხარჯები, no-code ავტომატიზაცია) არარსებობა ზღუდავს კურსის დაუყოვნებლივ ბიზნეს-გამოყენებადობას ქართველი მენეჯერებისთვის.</div><div class="just-item"><span class="just-dim">overall_score:</span> კურსს აქვს უზარმაზარი პოტენციალი და ლექტორი ფლობს ძლიერ ტექნიკურ ცოდნას, თუმცა პედაგოგიური სტრუქტურისა და პრაქტიკული ჩართულობის სრული არარსებობა კრიტიკულად აფერხებს სწავლის შედეგებს.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g1-dot"></div>
+                <span class="group-name">ჯგ #1 — ლექცია #5</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">4</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">1</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">5</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ლექტორი გულწრფელად ერთვება თითოეული მონაწილის ინდივიდუალურ სიტუაციაში. კითხვები წახალისებულია და პასუხგაცემული. თუმცა, ჩართულობა არის რეაქტიული (პრობლემებზე რეაგირება) და არა პროაქტიული (აქტივობების დაგეგმვა, რაც უზრუნველყოფს მასალის გაგებას). არ არის ქვიზები, გამოკითხვები ან წყვილებში მუშაობა.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">ლექცია ფარავს ბევრ ინსტრუმენტს ზედაპირულად და თითქმის არცერთს — სიღრმისეულად. 3-ნაბიჯიანი setup ყველაზე ძლიერი ნაწილი იყო. ჩინური მოდელების მიმოხილვა ზედმეტად ზედაპირული იყო პრაქტიკული გამოყენებისთვის. კრიტიკული კონცეფციები (MCP, RAG, პრომპტები) გამოტოვებულია. ფასიანი კურსისთვის, რომელიც აგენტების შექმნას ასწავლის, სიღრმე არასაკმარისია.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექცია ფარავს ბევრ ინსტრუმენტს ზედაპირულად და თითქმის არცერთს — სიღრმისეულად. 3-ნაბიჯიანი setup ყველაზე ძლიერი ნაწილი იყო. ჩინური მოდელების მიმოხილვა ზედმეტად ზედაპირული იყო პრაქტიკული გამოყენებისთვის. კრიტიკული კონცეფციები (MCP, RAG, პრომპტები) გამოტოვებულია. ფასიანი კურსისთვის, რომელიც აგენტების შექმნას ასწავლის, სიღრმე არასაკმარისია.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> Setup-ის სამუშაო პროცესი ნამდვილად სასარგებლოა. ჩინური მოდელების გაცნობას აქვს პრაქტიკული ღირებულება ცნობიერების ამაღლების კუთხით. თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობის გამო, მონაწილეთა უმეტესობას გაუჭირდება ნანახის დამოუკიდებლად გამეორება.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> ლექტორი გულწრფელად ერთვება თითოეული მონაწილის ინდივიდუალურ სიტუაციაში. კითხვები წახალისებულია და პასუხგაცემული. თუმცა, ჩართულობა არის რეაქტიული (პრობლემებზე რეაგირება) და არა პროაქტიული (აქტივობების დაგეგმვა, რაც უზრუნველყოფს მასალის გაგებას). არ არის ქვიზები, გამოკითხვები ან წყვილებში მუშაობა.</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> ინფორმაციის უმეტესობა პრაქტიკულ დონეზე სწორია. თუმცა, რამდენიმე გამარტივებამ შეიძლება შეცდომაში შეიყვანოს მსმენელი. Git/GitHub-ის ახსნა ზუსტი და კარგად გადმოცემული იყო. API-სა და Computer Use-ს შორის სხვაობის ახსნას ზედმეტად ბევრი მცდელობა დასჭირდა სიცხადისთვის.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> არადეველოპერებისთვის აგენტების შექმნის სწავლება საქართველოს ბაზრისთვის უაღრესად რელევანტურია. ინსტრუმენტების არჩევანიც ადეკვატურია. თუმცა, 2025 წლის კრიტიკული თემების (RAG, MCP, AI მმართველობა) გამოტოვება ამცირებს კურსის სამომავლო ღირებულებას. ქართული კონტექსტის (ენა, კანონმდებლობა) არარსებობა ასუსტებს პრაქტიკულ გამოყენებადობას.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g2-dot"></div>
+                <span class="group-name">ჯგ #2 — ლექცია #1</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">5</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">5</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">8</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">8</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">1</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">7</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">თორნიკე ავლენს გულწრფელ ვნებას და პიროვნულ დაინტერესებას AI ტექნოლოგიების მიმართ. ის აშკარად იყენებს ამ ინსტრუმენტებს ყოველდღიურად და თავად ქმნის აგენტებს, რაც მას ავთენტურ სანდოობას სძენს.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">ლექცია უკიდურესად არასტრუქტურირებულია. არ არსებობს მკაფიო დღის წესრიგი, დასაწყისში არ არის გაცხადებული სწავლის მიზნები და ბოლოს არ ხდება შეჯამება.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექცია შეეცადა დაეფარა AI ისტორია, ტრადიციული პროგრამირება vs AI, ML-ის 3 მეთოდი, deep learning, ტრანსფორმერები, LLM-ები, აგენტები, API და computer use — ყველაფერი ერთ სესიაში. შედეგად, არაფერი დაფარულა საკმარისი სიღრმით. კრიტიკული კონცეფციები (RAG, ტოკენები, პრომპტინგი) სრულად გამოტოვებულია.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> აგენტის ლაივ-დემონსტრაცია ნამდვილად ღირებული იყო და შექმნა მოტივაციისთვის საჭირო &quot;wow ეფექტი&quot;. თუმცა, პრაქტიკული ღირებულება მცირდება მონაწილეებისთვის პრაქტიკული სავარჯიშოების, საშინაო დავალებისა და მკაფიო &quot;შემდეგი ნაბიჯების&quot; არარსებობის გამო.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> გაცნობის ნაწილი კარგი იყო, მაგრამ ლექცია უკიდურესად ცალმხრივი აღმოჩნდა. თორნიკე საუბრობდა დროის უდიდესი ნაწილი სტრუქტურირებული ინტერაქციის, გამოკითხვების ან სავარჯიშოების გარეშე. ლექტორის განცხადება, რომ Q&amp;A-ს
+ნაწილი კარგი იყო, მაგრამ ლექცია უკიდურესად ცალმხრივი აღმოჩნდა. თორნიკე საუბრობდა დროის უდი</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> ფუნდამენტური კონცეფციები სწორად იყო ახსნილი გამარტივებულ დონეზე. თუმცა, მოდელის არასწორი სახელი (&quot;ChatGPT 5.4&quot;), პრომპტ ინჟინერიის უარყოფა, API-სა და MCP-ის გაიგივება და რადიკალური განცხადებები ერთი ინსტრუმენტის დომინაციაზე აზიანებს ლექტორის სანდოობას.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ეს ყველაზე ძლიერი განზომილებაა. კურსი აშკარად მორგებულია ქართულ ბიზნეს-პროფესიონალებზე, მონაწილეთა მიქსი იდეალურია და პრაქტიკაზე ფოკუსირება ემთხვევა ბაზრის საჭიროებებს. ქულები დააკლდა ქართული ენის შესაძლებლობების, ლოკალური რეგულაციებისა და ხარჯების ანალიზის უგულებელყოფის გამო.</div><div class="just-item"><span class="just-dim">overall_score:</span> ლექტორს აქვს უზარმაზარი პოტენციალი და რეალური პრაქტიკული გამოცდილება, მაგრამ სჭირდება სერიოზული პედაგოგიური სტრუქტურირება და ფოკუსირება, რათა კურსი გლობალურ სტანდარტებს გაუტოლდეს.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g2-dot"></div>
+                <span class="group-name">ჯგ #2 — ლექცია #2</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">5</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">2</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">6</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ეს კურსის ძლიერი მხარეა. მონაწილეები სვამდნენ კითხვებს, ლექტორი იყო ენერგიული და რეალური პროექტის (სასტუმრო) გამოყენება შესანიშნავი იყო. ქულა დააკლდა ქაოსურობის გამო და იმის გამო, რომ რამდენიმე მონაწილე აშკარად დაიკარგა (ერთ-ერთმა თქვა &quot;შოკში ვარ&quot;).</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">ლექცია შეეხო შთამბეჭდავად ბევრ თემას, მაგრამ არცერთს იმ სიღრმით, რომ მონაწილეებმა დამოუკიდებლად შეძლონ მათი გამოყენება. &quot;სიგანე სიღრმის ხარჯზე&quot; მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექცია შეეხო შთამბეჭდავად ბევრ თემას, მაგრამ არცერთს იმ სიღრმით, რომ მონაწილეებმა დამოუკიდებლად შეძლონ მათი გამოყენება. &quot;სიგანე სიღრმის ხარჯზე&quot; მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> ლაივ-დემონსტრა
+დამოუკიდებლად შეძლონ მათი გამოყენება. &quot;სიგანე სიღრმის ხარჯზე&quot; მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> ეს კურსის ძლიერი მხარეა. მონაწილეები სვამდნენ კითხვებს, ლექტორი იყო ენერგიული და რეალური პროექტის (სასტუმრო) გამოყენება შესანიშნავი იყო. ქულა დააკლდა ქაოსურობის გამო და იმის გამო, რომ რამდენიმე მონაწილე აშკარად დაიკარგა (ერთ-ერთმა თქვა &quot;შოკში ვარ&quot;).</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> გადაჭარბებული შეფასებები (&quot;მაიმუნობა&quot;) აზიანებს სანდოობას ტექნიკურ მსმენელებთან. CLI-სა და Desktop აპლიკაციის აღრევა, API გასაღებების ეკრანზე გამოჩენა და ტელეფონის რეგისტრაციის გაუტესტავი პრობლემები სერიოზული ხარვეზებია.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> წარმოდგენილი ინსტრუმენტები (n8n, Claude) უაღრესად რელევანტურია. ტურიზმის მაგალითი იდეალურია საქართველოსთვის. ქულა აკლდება ლოკალური სარეგულაციო კონტექსტის, ROI ჩარჩოსა და იაფი ალტერნატივების უგულებელყოფის გამო.</div><div class="just-item"><span class="just-dim">overall_score:</span> კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ცოდნისა და ენერგიის ხარჯზე, მაგრამ ამჟამად სერიოზულად ზარალდება სტრუქტურის, ფოკუსისა და პრაქტიკული პედაგოგიკის ნაკლებობით.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g2-dot"></div>
+                <span class="group-name">ჯგ #2 — ლექცია #3</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">3</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">3</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">0</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ეს ლექციის ყველაზე ძლიერი მხარეა. ლაივ-დემოები ქართულ საიტებზე, MCP სერვერი, კოდის განხილვა და Claude-ის &quot;Teach&quot; ფუნქცია დაუყოვნებლივ გამოსადეგია. ქულა დააკლდა რადგან: არ იყო სავარჯიშოები, რამდენიმე დემოს ტექნიკური ხარვეზი ჰქონდა და პრაქტიკული ღირებულება დამოკიდებულია ფასიან გამოწერებზე, რომლებიც მკ</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">ლექცია არსებითად იყო 2+ საათიანი მონოლოგი, სადაც მხოლოდ 2-3 გამოცდილი მონაწილე (მიშო, ნიკა, გიორგი) სვამდა კითხვებს. უმეტესობა ჩუმად იყო. არ ყოფილა გამოკითხვები (polls), სავარჯიშოები ან ჯგუფური აქტივობები. მაიას კითხვა მონაცემთა კონტროლზე იყო ერთადერთი დამწყები დონის კითხვა, რაც
+მიშო, ნიკა, გიორგი) </span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექციამ დაფარა შთამბეჭდავი რაოდენობის თემები, მაგრამ თითოეულის სიღრმის ხარჯზე. მოდელების შედარება ზედაპირული იყო (კონკრეტული ბენჩმარკების გარეშე). MCP მეტაფორით აიხსნა, მაგრამ ტექნიკური სიცხადე აკლდა. Google Docs მასალები შესანიშნავია, მაგრამ მონაწილეებს არ უნდა სჭირდებოდეთ 30+ გვერდის წაკითხვა იმის</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> ეს ლექციის ყველაზე ძლიერი მხარეა. ლაივ-დემოები ქართულ საიტებზე, MCP სერვერი, კოდის განხილვა და Claude-ის &quot;Teach&quot; ფუნქცია დაუყოვნებლივ გამოსადეგია. ქულა დააკლდა რადგან: არ იყო სავარჯიშოები, რამდენიმე დემოს ტექნიკური ხარვეზი ჰქონდა და პრაქტიკული ღირებულება დამოკიდებულია ფასიან გამოწერებზე, რომლებიც მკ</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> ლექცია არსებითად იყო 2+ საათიანი მონოლოგი, სადაც მხოლოდ 2-3 გამოცდილი მონაწილე (მიშო, ნიკა, გიორგი) სვამდა კითხვებს. უმეტესობა ჩუმად იყო. არ ყოფილა გამოკითხვები (polls), სავარჯიშოები ან ჯგუფური აქტივობები. მაიას კითხვა მონაცემთა კონტროლზე იყო ერთადერთი დამწყები დონის კითხვა, რაც
+მიშო, ნიკა, გიორგი) </div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> დაფიქსირდა მრავალი გადაჭარბებული განცხადება (Claude ყველგან ლიდერობს, Make.com მოკვდა), გაუგებარი ვერსიის ხსენება (ChatGPT &quot;5.4&quot;), სპეკულაციური უსაფრთხოების რისკები წარმოდგენილი როგორც ფაქტი და ვალიდური ინსტრუმენტების დაწუნება. ლექტორის პირადი სიმპათიები (Claude-ის მიმართ) ხშირად ჩრდილავს ობიექტურ შ</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ქართული საიტების დემოები და MCP ავტომატიზაცია SMB-სთვის რელევანტურია. თუმცა: არ არის ქართული ბიზნეს-ქეისები, ლოკალური ფასების ანალიზი, ქართულენოვანი AI შედარება, ინდუსტრიული გზამკვლევი და იმის აღიარება, რომ ქართული ბიზნესების უმეტესობა &quot;ნულოვან&quot; ეტაპზეა (საერთოდ არ იყენებს AI-ს) და არა მე-5 ეტაპზე (</div><div class="just-item"><span class="just-dim">overall_score:</span> ლექტორს აქვს უზარმაზარი პოტენციალი და ღრმა პრაქტიკული ცოდნა, მაგრამ ამჟამინდელი ფორმატი არის ქაოსური დემონსტრაცია და არა სტრუქტურირებული სწავლება.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g2-dot"></div>
+                <span class="group-name">ჯგ #2 — ლექცია #4</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">4</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">3</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">0</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ეს ლექციის ყველაზე ძლიერი მხარეა. ლექტორი კომუნიკაბელური და წამახალისებელია. თუმცა, ჩართულობა შემოიფარგლება მხოლოდ 4-5 ყველაზე აქტიური მონაწილით. არ არსებობს მექანიზმი უფრო ჩუმი მსმენელების ჩასართავად (არც გამოკითხვები, არც პრაქტიკული სამუშაოები).</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">Manus AI/Meta-ს შესყიდვის მტკიცება ფაქტობრივად მცდარია და ბიზნეს-გადაწყვეტილებებისთვის შეცდომაში შემყვანი. ტერმინოლოგია ხშირად არეულია. ლექტორი ხშირად იყენებს ფრაზებს &quot;არ ვარ დარწმუნებული&quot; ან &quot;მგონი&quot;, რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> ლექცია ეხება შთამბეჭდავი რაოდენობის ინსტრუმენტებს (სიგანე), მაგრამ თითქმის არცერთში არ შედის სიღრმეში. ლექტორს აშკარად აქვს ღრმა პერსონალური ცოდნა, მაგრამ ვერ ახერხებს მის სისტემურ გადაცემას.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> გაზიარდა რამდენიმე დაუყოვნებლივ გამოსადეგი რჩევა, თუმცა მონაწილეებს არ მიეცათ პრაქტიკის დრო, არ მიწოდებიათ ნაბიჯ-ნაბიჯ სახელმძღვანელოები და ჩავარდნილმა დემოებმა შეამცირა პრაქტიკული სარგებელი. პერსონალური რჩევები (მაგ. მარისთან) ნამდვილად ღირებული იყო.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> ეს ლექციის ყველაზე ძლიერი მხარეა. ლექტორი კომუნიკაბელური და წამახალისებელია. თუმცა, ჩართულობა შემოიფარგლება მხოლოდ 4-5 ყველაზე აქტიური მონაწილით. არ არსებობს მექანიზმი უფრო ჩუმი მსმენელების ჩასართავად (არც გამოკითხვები, არც პრაქტიკული სამუშაოები).</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> Manus AI/Meta-ს შესყიდვის მტკიცება ფაქტობრივად მცდარია და ბიზნეს-გადაწყვეტილებებისთვის შეცდომაში შემყვანი. ტერმინოლოგია ხშირად არეულია. ლექტორი ხშირად იყენებს ფრაზებს &quot;არ ვარ დარწმუნებული&quot; ან &quot;მგონი&quot;, რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> განხილული ინსტრუმენტები ნამდვილად რელევანტურია ქართველი პროფესიონალებისთვის. თუმცა, სრულად იგნორირებულია ქართულ
+ი&quot;, რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.</div><div class="just-item"><span class="just-dim">overall_score:</span> კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ექსპერტიზის გამო, მაგრამ ამჟამად ის არის ქაოსური და პედაგოგიკურად გაუმართავი.</div></details></div><div class="card ins-card">
+              <div class="group-header"><div class="group-dot g2-dot"></div>
+                <span class="group-name">ჯგ #2 — ლექცია #5</span></div>
+              <div class="insights-grid">
+                <div class="ins-stat"><span class="ins-num sc-good">2</span><span class="ins-lbl">ძლიერი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">4</span><span class="ins-lbl">სუსტი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-mid">5</span><span class="ins-lbl">ხარვეზი</span></div>
+                <div class="ins-stat"><span class="ins-num" style="color:var(--rose)">1</span><span class="ins-lbl">ბრმა წერტილი</span></div>
+                <div class="ins-stat"><span class="ins-num sc-good">0</span><span class="ins-lbl">ტექ. ✓</span></div>
+                <div class="ins-stat"><span class="ins-num sc-bad">0</span><span class="ins-lbl">ტექ. ⚠</span></div>
+              </div><div class="ins-quote good expandable"><strong>ძლიერი:</strong> <span class="expand-text">ეს კურსის ყველაზე ძლიერი მხარეა. ლექტორს აქვს კარგი პერსონალური ურთიერთობა სტუდენტებთან და ზრუნავს მათზე. თუმცა, ჩართულობა ძირითადად 4-5 აქტიურ მონაწილეზე მოდის, დანარჩენები კი უკან რჩებიან.</span></div><div class="ins-quote growth expandable"><strong>განვითარება:</strong> <span class="expand-text">განხილული ინსტრუმენტების სპექტრი შთამბეჭდავია, მაგრამ თითქმის არაფერია ახსნილი იმ სიღრმით, რომ სტუდენტმა დამოუკიდებლად გამოიყენოს. კურსი სიღრმეს წირავს ბევრი ინსტრუმენტის ზედაპირული გაცნობის ხარჯზე.</span></div><details class="just-details"><summary>ქულების დასაბუთება</summary><div class="just-item"><span class="just-dim">შინაარსის სიღრმე:</span> განხილული ინსტრუმენტების სპექტრი შთამბეჭდავია, მაგრამ თითქმის არაფერია ახსნილი იმ სიღრმით, რომ სტუდენტმა დამოუკიდებლად გამოიყენოს. კურსი სიღრმეს წირავს ბევრი ინსტრუმენტის ზედაპირული გაცნობის ხარჯზე.</div><div class="just-item"><span class="just-dim">პრაქტიკული ღირებულება:</span> გაზიარებული რესურსები ნამდვილად ღირებულია, მაგრამ სტრუქტურირებული დემონსტრაციებისა და შაბლონების გარეშე, სტუდენტების უმეტესობას გაუჭირდება მათი რეალურ პროექტებად ქცევა.</div><div class="just-item"><span class="just-dim">მონაწილეების ჩართულობა:</span> ეს კურსის ყველაზე ძლიერი მხარეა. ლექტორს აქვს კარგი პერსონალური ურთიერთობა სტუდენტებთან და ზრუნავს მათზე. თუმცა, ჩართულობა ძირითადად 4-5 აქტიურ მონაწილეზე მოდის, დანარჩენები კი უკან რჩებიან.</div><div class="just-item"><span class="just-dim">ტექნიკური სიზუსტე:</span> ინფორმაციის უმეტესობა მიმართულებითად სწორია, მაგრამ უზუსტო. მტკიცებები &quot;შეზღუდვების არარსებობაზე&quot; შეცდომაში შემყვანია. ლექტორი უნდა მოერიდოს კვალიფიკაციის გარეშე გაკეთებულ აბსოლუტურ განცხადებებს.</div><div class="just-item"><span class="just-dim">ბაზრის რელევანტურობა:</span> ინსტრუმენტების ეკოსისტემა რელევანტურია, მაგრამ აკლია ქართული კონტექსტი — არ არის ლოკალური ქეისები, ქართული ენის სპეციფიკის განხილვა და ROI ანალიზი. კურსი ნელ-ნელა ემსგავსება დეველოპერების ბუთქემფს და არა ბიზნეს AI ტრენინგს.</div><div class="just-item"><span class="just-dim">overall_score:</span> კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ენთუზიაზმის ხარჯზე, მაგრამ სასწრაფოდ საჭიროებს პედაგოგიკურ სტრუქტურირებასა და პრაქტიკულ დემონსტრაციებზე გადასვლას.</div></details></div></div>
+
+<!-- ════════ 8. ACHIEVEMENT BADGES ════════ -->
+<div class="card">
+  <h2 class="sec">მიღწევები</h2>
+  <div class="badges-grid">
+    <div class="badge earned">
+                <div class="badge-check">✓</div>
+                <div class="badge-icon">🎬</div>
+                <div class="badge-name">პირველი ლექცია</div>
+                <div class="badge-desc">პირველი ლექციის ანალიზი</div>
+            </div><div class="badge locked">
+                <div class="badge-lock">🔒</div>
+                <div class="badge-icon">🌟</div>
+                <div class="badge-name">ამომავალი ვარსკვლავი</div>
+                <div class="badge-desc">2+ ზედიზედ გაუმჯობესება</div>
+            </div><div class="badge locked">
+                <div class="badge-lock">🔒</div>
+                <div class="badge-icon">🏆</div>
+                <div class="badge-name">სამიზნე მიღწეულია</div>
+                <div class="badge-desc">კომპოზიტი >= 7.0</div>
+            </div><div class="badge locked">
+                <div class="badge-lock">🔒</div>
+                <div class="badge-icon">🎯</div>
+                <div class="badge-name">ჩართულობის მასტერი</div>
+                <div class="badge-desc">ჩართულობა > 8</div>
+            </div><div class="badge earned">
+                <div class="badge-check">✓</div>
+                <div class="badge-icon">🏃</div>
+                <div class="badge-name">მარათონელი</div>
+                <div class="badge-desc">5+ ლექცია დამუშავებული</div>
+            </div><div class="badge earned">
+                <div class="badge-check">✓</div>
+                <div class="badge-icon">📊</div>
+                <div class="badge-name">თანმიმდევრული</div>
+                <div class="badge-desc">სტდ. გადახრა < 1.0</div>
+            </div>
+  </div>
+</div>
+
+<!-- ════════ NEW: RESEARCH-BACKED INSIGHTS ════════ -->
+<h2 class="sec">სიღრმისეული ანალიზი (კვლევაზე დაფუძნებული)</h2>
+
+<!-- Kirkpatrick 4-Level Assessment -->
+<div class="card" style="margin-bottom:1rem">
+  <div class="card-label">Kirkpatrick-ის 4-დონიანი შეფასება</div>
+  <div class="kirk-grid">
+    <div class="kirk-level">
+      <div class="kirk-num">L1</div>
+      <div class="kirk-name">რეაქცია</div>
+      <div class="kirk-score sc-good">7.0</div>
+      <div class="kirk-desc">ჩართულობა</div>
+    </div>
+    <div class="kirk-level">
+      <div class="kirk-num">L2</div>
+      <div class="kirk-name">სწავლება</div>
+      <div class="kirk-score sc-bad">4.5</div>
+      <div class="kirk-desc">სიღრმე + სიზუსტე</div>
+    </div>
+    <div class="kirk-level">
+      <div class="kirk-num">L3</div>
+      <div class="kirk-name">ქცევა</div>
+      <div class="kirk-score sc-mid">5.0</div>
+      <div class="kirk-desc">პრაქტიკული ღირ.</div>
+    </div>
+    <div class="kirk-level">
+      <div class="kirk-num">L4</div>
+      <div class="kirk-name">შედეგი</div>
+      <div class="kirk-score sc-mid">6.0</div>
+      <div class="kirk-desc">ბაზრის რელევანტ.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Research Metrics Grid -->
+<div class="metrics-grid">
+  <div class="metric-card">
+    <div class="metric-icon">🎯</div>
+    <div class="metric-value sc-mid">-1.6</div>
+    <div class="metric-name">ინდუსტრიის ბენჩმარკი</div>
+    <div class="metric-detail">vs ATD/SHRM სტანდარტი (7.0)</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-icon">📐</div>
+    <div class="metric-value">0.8</div>
+    <div class="metric-name">თეორია/პრაქტიკა</div>
+    <div class="metric-detail">იდეალური: 0.43 (30/70)</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-icon">🚀</div>
+    <div class="metric-value">-0.0</div>
+    <div class="metric-name">გაუმჯობ. სიჩქარე</div>
+    <div class="metric-detail">სტაბილური / ლექციაზე</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-icon">📊</div>
+    <div class="metric-value">—</div>
+    <div class="metric-name">ლექცია სამიზნემდე</div>
+    <div class="metric-detail">ვერ ითვლება</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-icon">✅</div>
+    <div class="metric-value sc-good">1/5</div>
+    <div class="metric-name">რეკომენდაციის შესრულება</div>
+    <div class="metric-detail">განზომილება გაუმჯობესდა ბოლო ლექციაში</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-icon">⚠️</div>
+    <div class="metric-value sc-bad">2</div>
+    <div class="metric-name">რისკის ზონა</div>
+    <div class="metric-detail">შინაარსის სიღრმე, პრაქტიკული ღირებულება</div>
+  </div>
+</div>
+
+<!-- ════════ 8b. LECTURE COMPARISON TABLE ════════ -->
+<div class="card">
+  <h2 class="sec">ლექციების შედარების ცხრილი</h2>
+  <div class="cmp-table-wrap">
+    <table class="cmp-table">
+      <thead><tr><th>ლექცია</th><th>შინაარსის სიღრმე</th><th>პრაქტიკული ღირებულება</th><th>ჩართულობა</th><th>ტექნიკური სიზუსტე</th><th>ბაზრის რელევანტურობა</th><th>კომპოზიტური</th></tr></thead>
+      <tbody><tr><td><span class="grp-badge g1">ჯგ #1</span> ლექცია #1</td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.2</span></td></tr><tr><td><span class="grp-badge g1">ჯგ #1</span> ლექცია #2</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">8.0</span></td><td><span class="sc-cell cell-comp cell-mid">6.4</span></td></tr><tr><td><span class="grp-badge g1">ჯგ #1</span> ლექცია #3</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.4</span></td></tr><tr><td><span class="grp-badge g1">ჯგ #1</span> ლექცია #4</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.8</span></td></tr><tr><td><span class="grp-badge g1">ჯგ #1</span> ლექცია #5</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-comp cell-mid">6.0</span></td></tr><tr><td><span class="grp-badge g2">ჯგ #2</span> ლექცია #1</td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.4</span></td></tr><tr><td><span class="grp-badge g2">ჯგ #2</span> ლექცია #2</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-comp cell-mid">6.0</span></td></tr><tr><td><span class="grp-badge g2">ჯგ #2</span> ლექცია #3</td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.6</span></td></tr><tr><td><span class="grp-badge g2">ჯგ #2</span> ლექცია #4</td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.6</span></td></tr><tr><td><span class="grp-badge g2">ჯგ #2</span> ლექცია #5</td><td><span class="sc-cell cell-bad">4.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-good">7.0</span></td><td><span class="sc-cell cell-mid">5.0</span></td><td><span class="sc-cell cell-mid">6.0</span></td><td><span class="sc-cell cell-comp cell-mid">5.4</span></td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════ 8c. BAR CHART: DIMENSION COMPARISON ════════ -->
+<div class="card">
+  <h2 class="sec">განზომილებების შედარება (ჯგუფები)</h2>
+  <div class="card-label">საშუალო ქულები განზომილებების მიხედვით</div>
+  <div class="chart-wrap"><canvas id="barDimensions" role="img" aria-label="განზომილებების შედარება"></canvas></div>
+</div>
+
+<!-- ════════ 9. CROSS-GROUP COMPARISON ════════ -->
+<h2 class="sec">ჯგუფების შედარება</h2>
+<div class="cross-grid">
+  <div class="card">
+    <div class="card-label">კომპეტენციის რადარი</div>
+    <div class="chart-wrap"><canvas id="radar" role="img" aria-label="კომპეტენციის რადარი"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-label">დელტა ჯგუფებშ (ჯგ#2 - ჯგ#1)</div>
+    <div class="cross-summary">
+      <div class="cross-item"><span class="cross-dim">შინაარსის სიღრმე</span><span class="delta-badge delta-flat">0.0</span></div><div class="cross-item"><span class="cross-dim">პრაქტიკული ღირებულება</span><span class="delta-badge delta-down">-0.2</span></div><div class="cross-item"><span class="cross-dim">მონაწილეების ჩართულობა</span><span class="delta-badge delta-up">+0.8</span></div><div class="cross-item"><span class="cross-dim">ტექნიკური სიზუსტე</span><span class="delta-badge delta-down">-1.0</span></div><div class="cross-item"><span class="cross-dim">ბაზრის რელევანტურობა</span><span class="delta-badge delta-down">-0.4</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 10. TREND CHART (COMBINED) ════════ -->
+<div class="card">
+  <h2 class="sec">განვითარების ტენდენცია</h2>
+  <div class="card-label">კომპოზიტური ქულა — ორივე ჯგუფი</div>
+  <div class="chart-wrap"><canvas id="trendCombined" role="img" aria-label="განვითარების ტენდენცია"></canvas></div>
+</div>
+
+<!-- ════════ FOOTER ════════ -->
+<div class="dash-footer">
+  <span>Training Agent Analytics v4.0</span>
+  <span>Auto-refresh: 5 წთ &middot; 2026-03-28 15:04 UTC</span>
+</div>
+
+</div><!-- .wrap -->
+
+<script>
+const DATA = {"generated_at": "2026-03-28 15:04 UTC", "total_processed": 10, "groups": {"1": {"lecture_count": 5, "scores": [{"id": 27, "group_number": 1, "lecture_number": 1, "content_depth": 4.0, "practical_value": 5.0, "engagement": 5.0, "technical_accuracy": 5.0, "market_relevance": 7.0, "overall_score": 5.2, "composite": 5.2, "raw_score_text": "Approximate scores based on G2L1 deep analysis (same lecture content). Video recording corrupted.", "processed_at": "2026-03-20T20:34:47.941708+00:00"}, {"id": 22, "group_number": 1, "lecture_number": 2, "content_depth": 5.0, "practical_value": 7.0, "engagement": 6.0, "technical_accuracy": 6.0, "market_relevance": 8.0, "overall_score": null, "composite": 6.4, "raw_score_text": "| განზომილება | ქულა | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | **5/10** | შთამბეჭდავი მასშტაბია — 5 მოდელის, პერსონალიზაციის, ღრმა კვლევის, აგენტების, კონექტორების, n8n-ის, VS Code-ის და ა.შ. დაფარვა ერთ სესიაზე. თუმცა, სიღრმე ნებისმიერ ცალკეულ თემაზე არასაკმარისი იყო. შედეგი არის \"ექსკურსია\" და არა განათლება. მონაწილეები წავიდნენ იმის ცოდნით, რომ ეს რაღაცები არსებობს, მაგრამ არა იმის ცოდნით, თუ როგორ გამოიყენონ ისინი ეფექტურად. |\n| **პრაქტიკული ღირებულება** | **7/10** | მაღალი პრაქტიკული ღირებულება კონკრეტულად ქართული კონტექსტისთვის (mymarket.ge, ეროვნული ბანკი, Airtable CRM). თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობა ნიშნავს, რომ მონაწილეებმა პრაქტიკული გამოყენება თავად უნდა ისწავლონ. ფასების შესახებ ინფორმაციის არარსებობაც ამცირებს პრაქტიკულ ღირებულებას. |\n| **მონაწილეების ჩართულობა** | **6/10** | კარგი Q&A დინამიკა — ლექტორი იცნობს მონაწილეებს სახელებით და იშველიებს მათ ინდუსტრიებს. თუ\n", "processed_at": "2026-03-20T20:34:37.821668+00:00"}, {"id": 23, "group_number": 1, "lecture_number": 3, "content_depth": 5.0, "practical_value": 6.0, "engagement": 4.0, "technical_accuracy": 6.0, "market_relevance": 6.0, "overall_score": 5.4, "composite": 5.4, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | 5/10 | ლექცია ფარავს თემების შთამბეჭდავ სპექტრს, მაგრამ სიღრმე ეწირება თითოეულ მათგანს. არცერთი თემა არ არის დამუშავებული იმ დონეზე, რომ მონაწილემ დამოუკიდებლად გაიმეოროს ნაჩვენები. HR აგენტის დემო შთამბეჭდავია, მაგრამ წარმოდგენილია როგორც \"მიყურე როგორ ვაკეთებ\" და არა \"ისწავლე როგორ გააკეთო\". |\n| **პრაქტიკული ღირებულება** | 6/10 | პრაქტიკული ინსტრუქციები (VS Code-ის დაყენება, Claude-ის დაკავშირება) ნამდვილად სასარგებლოა, მაგრამ ნაპრალი \"აი, დააკოპირე ეს პრომპტი\"-სა და \"აი, როგორ ააგო შენი საკუთარი აგენტი შენი ბიზნესისთვის\" შორის უზარმაზარია და ამოუვსები. |\n| **მონაწილეების ჩართულობა** | 4/10 | 8-9 მონაწილედან მხოლოდ 3-4 იყო აქტიური. ლექტორის კითხვას \"არის კითხვები?\" ძირითადად სიჩუმე მოსდევდა, რაც უფრო დაბნეულობაზე მიუთითებს, ვიდრე გაგებაზე. არ ყოფილა გამოყენებული ჩართულობის სტრუქტურირებული ტექნიკები. |\n| **ტექნიკური სიზუსტე** | 6/10 | საბაზისო კონცეფციები სწორია, მაგრამ ზედმეტი გამარტივებები, უსაფრთხოების რისკების გამოტოვება და მტკიცება, რომ \"კოდირების ცოდნა არ არის საჭირო\" მაშინ, როცა გენერირდება React/Node.js კოდი — შეცდომაში შემყვანია. მონაწილეებს ადრე თუ გვიან მოუწევთ დებაგინგი, რისი კონტექსტიც არ გააჩნიათ. |\n| **ბაზრის რელევანტურობა** | 6/10 | ძლიერი რელევანტურობა აქვს HR ქეისსა და სკრეპინგს ქართული ბაზრისთვის, ასევე უფასო/ღია კოდის ხელსაწყოების გამოყენებას. თუმცა, სტრატეგიული კონტექსტის, ადგილობრივი რეგულაციებისა და ცვლილებების მართვის არარსებობა მნიშვნელოვნად ამცირებს პრაქტიკულ გამოყენებადობას. |\n| **საერთო შეფასება** | 5.4/10 | კურსი არის შთამაგონებელი, მაგრამ ქაოტური შეხება უახლეს ინსტრუმენტებთან, რომ\n", "processed_at": "2026-03-20T20:34:39.317450+00:00"}, {"id": 28, "group_number": 1, "lecture_number": 4, "content_depth": 5.0, "practical_value": 7.0, "engagement": 4.0, "technical_accuracy": 6.0, "market_relevance": 7.0, "overall_score": 5.8, "composite": 5.8, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | 5/10 | ბევრი თემა მხოლოდ ზედაპირულად იქნა წარმოდგენილი. Git/GitHub-ს დაეთმო 3 წუთი, რაც დამოუკიდებელი გამოყენებისთვის არასაკმარისია. Skills კონცეპტუალურად კარგად აიხსნა, მაგრამ შექმნის პროცესი მხოლოდ ერთხელ აჩვენეს და ისიც ბოლომდე არ მისულა. NotebookLM ყველაზე სიღრმისეულად განიხილეს, მაგრამ მაინც აკლდა სტრუქტურირებული სწავლება იმის შესახებ, თუ როდის/რატომ უნდა გამოვიყენოთ თითოეული ფუნქცია. |\n| **პრაქტიკული ღირებულება** | 7/10 | ინფრასტრუქტურის აწყობის რეპოზიტორიუმი ნამდვილად ღირებულია და მონაწილეებს რეალურ დროს უზოგავს. NotebookLM-ის დემონსტრაცია პრაქტიკული და პირდაპირ გამოსადეგი იყო. Skills სისტემის მაგალითებიც უაღრესად რელევანტურია. თუმცა, მონაწილეთა პრაქტიკული დროის უქონლობის გამო, ამ ღირებულების დიდი ნაწილი დაიკარგება — მონაწილეები უყურებდნენ, მაგრამ თავად არაფერი გაუკეთებიათ. |\n| **მონაწილეების ჩართულობა** | 4/10 | მთელი სესიის განმავლობაში კითხვა მხოლოდ 3-4-მა მონაწილემ დასვა (უმეტესობა ლაშასგან მოდიოდა, რომელიც ყველაზე გამოცდილია). არ ყოფილა სავარჯიშოები, გამოკითხვები ან ჯგუფური აქტივობები. სესიის უმეტესი დრო ლექტორი ესაუბრებოდა *მათ* და არა *მათთან ერთად*. ინდივიდუალური ყურადღება დაეთმოთ (შორენა, ნინო, კესო, კობა, ლაშა), მაგრამ მხოლოდ რეაქტიულად. |\n| **ტექნიკური სიზუსტე** | 6/10 | ძირითადი კონცეფციები სწორად აიხსნა, მაგრამ შემაშფოთებელი გამარტივებებით. CLI-Anything-ის პრეზენტაციამ შექმნა ზედმეტი მოლოდინები. პროგნოზი, რომ \"Computer Use ყველაფერს ჩაანაცვლებს\", სპეკულაციურია. ფაქტობრივი შეცდომები არ ყოფილა, მაგრამ რამდენიმე განცხადება შეცდომაში შემყვანად ოპტიმისტური იყო. |\n| **ბაზრის რელევანტურობა** | 7/10 | ქართული სპეციფიკის ელემენტები ძლიერია: ქართულენოვანი NotebookLM, ქართული კანონები, ქართული ბაზრის ფასების მონიტორინგი. ლექტორს აშკარად ესმის ადგილობრივი ბაზარი. თუმცა, კრიტიკული ბიზნეს-თემების (ROI, AI მმართველობა, ხარჯები, no-code ავტომატიზაცია) არარსებობა ზღუდავს კურსის დაუყოვნებლივ ბიზნეს-გამოყენებადობას ქართველი მენეჯერებისთვის. |\n| **საერთო შეფასება** | 5.8/10 | კურსს აქვ", "processed_at": "2026-03-25T13:10:34.414103+00:00"}, {"id": 31, "group_number": 1, "lecture_number": 5, "content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 6.0, "market_relevance": 6.0, "overall_score": null, "composite": 6.0, "raw_score_text": "| განზომილება | ქულა | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | **5/10** | ლექცია ფარავს ბევრ ინსტრუმენტს ზედაპირულად და თითქმის არცერთს — სიღრმისეულად. 3-ნაბიჯიანი setup ყველაზე ძლიერი ნაწილი იყო. ჩინური მოდელების მიმოხილვა ზედმეტად ზედაპირული იყო პრაქტიკული გამოყენებისთვის. კრიტიკული კონცეფციები (MCP, RAG, პრომპტები) გამოტოვებულია. ფასიანი კურსისთვის, რომელიც აგენტების შექმნას ასწავლის, სიღრმე არასაკმარისია. |\n| **პრაქტიკული ღირებულება** | **6/10** | Setup-ის სამუშაო პროცესი ნამდვილად სასარგებლოა. ჩინური მოდელების გაცნობას აქვს პრაქტიკული ღირებულება ცნობიერების ამაღლების კუთხით. თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობის გამო, მონაწილეთა უმეტესობას გაუჭირდება ნანახის დამოუკიდებლად გამეორება. |\n| **მონაწილეების ჩართულობა** | **7/10** | ლექტორი გულწრფელად ერთვება თითოეული მონაწილის ინდივიდუალურ სიტუაციაში. კითხვები წახალისებულია და პასუხგაცემული. თუმცა, ჩართულობა არის რეაქტიული (პრობლემებზე რეაგირება) და არა პროაქტიული (აქტივობების დაგეგმვა, რაც უზრუნველყოფს მასალის გაგებას). არ არის ქვიზები, გამოკითხვები ან წყვილებში მუშაობა. |\n| **ტექნიკური სიზუსტე** | **6/10** | ინფორმაციის უმეტესობა პრაქტიკულ დონეზე სწორია. თუმცა, რამდენიმე გამარტივებამ შეიძლება შეცდომაში შეიყვანოს მსმენელი. Git/GitHub-ის ახსნა ზუსტი და კარგად გადმოცემული იყო. API-სა და Computer Use-ს შორის სხვაობის ახსნას ზედმეტად ბევრი მცდელობა დასჭირდა სიცხადისთვის. |\n| **ბაზრის რელევანტურობა** | **6/10** | არადეველოპერებისთვის აგენტების შექმნის სწავლება საქართველოს ბაზრისთვის უაღრესად რელევანტურია. ინსტრუმენტების არჩევანიც ადეკვატურია. თუმცა, 2025 წლის კრიტიკული თემების (RAG, MCP, AI მმართველობა) გამოტოვება ამცირებს კურსის სამომავლო ღირებულებას. ქართული კონტექსტის (ენა, კანონმდებლობა) არარსებობა ასუსტებს პრაქტიკულ გამოყენებადობას. |\n", "processed_at": "2026-03-28T08:19:11.541734+00:00"}], "stats": {"content_depth": {"mean": 4.8, "median": 5.0, "std_dev": 0.45, "min": 4.0, "max": 5.0, "p25": 5.0, "p75": 5.0, "trend_slope": 0.2, "rolling_avg_3": 5.0, "improvement_rate": 0.25, "trend_label": "📈 იზრდება"}, "practical_value": {"mean": 6.2, "median": 6.0, "std_dev": 0.84, "min": 5.0, "max": 7.0, "p25": 6.0, "p75": 7.0, "trend_slope": 0.2, "rolling_avg_3": 6.33, "improvement_rate": 0.25, "trend_label": "📈 იზრდება"}, "engagement": {"mean": 5.2, "median": 5.0, "std_dev": 1.3, "min": 4.0, "max": 7.0, "p25": 4.0, "p75": 6.0, "trend_slope": 0.2, "rolling_avg_3": 5.0, "improvement_rate": 0.5, "trend_label": "📈 იზრდება"}, "technical_accuracy": {"mean": 5.8, "median": 6.0, "std_dev": 0.45, "min": 5.0, "max": 6.0, "p25": 6.0, "p75": 6.0, "trend_slope": 0.2, "rolling_avg_3": 6.0, "improvement_rate": 0.25, "trend_label": "📈 იზრდება"}, "market_relevance": {"mean": 6.8, "median": 7.0, "std_dev": 0.84, "min": 6.0, "max": 8.0, "p25": 6.0, "p75": 7.0, "trend_slope": -0.3, "rolling_avg_3": 6.33, "improvement_rate": -0.25, "trend_label": "📉 მცირდება"}, "composite": {"mean": 5.76, "median": 5.8, "std_dev": 0.48, "min": 5.2, "max": 6.4, "p25": 5.4, "p75": 6.0, "trend_slope": 0.1, "rolling_avg_3": 5.73, "improvement_rate": 0.2, "trend_label": "📈 იზრდება"}}, "best_lecture": {"number": 2, "composite": 6.4}, "worst_lecture": {"number": 1, "composite": 5.2}, "composite_series": [5.2, 6.4, 5.4, 5.8, 6.0], "lecture_labels": ["ლექცია #1", "ლექცია #2", "ლექცია #3", "ლექცია #4", "ლექცია #5"], "dimension_series": {"content_depth": [4.0, 5.0, 5.0, 5.0, 5.0], "practical_value": [5.0, 7.0, 6.0, 7.0, 6.0], "engagement": [5.0, 6.0, 4.0, 4.0, 7.0], "technical_accuracy": [5.0, 6.0, 6.0, 6.0, 6.0], "market_relevance": [7.0, 8.0, 6.0, 7.0, 6.0]}, "heatmap": [{"lecture": 1, "scores": {"content_depth": 4.0, "practical_value": 5.0, "engagement": 5.0, "technical_accuracy": 5.0, "market_relevance": 7.0}, "composite": 5.2}, {"lecture": 2, "scores": {"content_depth": 5.0, "practical_value": 7.0, "engagement": 6.0, "technical_accuracy": 6.0, "market_relevance": 8.0}, "composite": 6.4}, {"lecture": 3, "scores": {"content_depth": 5.0, "practical_value": 6.0, "engagement": 4.0, "technical_accuracy": 6.0, "market_relevance": 6.0}, "composite": 5.4}, {"lecture": 4, "scores": {"content_depth": 5.0, "practical_value": 7.0, "engagement": 4.0, "technical_accuracy": 6.0, "market_relevance": 7.0}, "composite": 5.8}, {"lecture": 5, "scores": {"content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 6.0, "market_relevance": 6.0}, "composite": 6.0}], "strengths": [{"dim": "market_relevance", "mean": 6.8}, {"dim": "practical_value", "mean": 6.2}], "weaknesses": [{"dim": "engagement", "mean": 5.2}, {"dim": "content_depth", "mean": 4.8}], "consistency": 9.22, "pedagogy_score": 6.0, "content_quality": 5.7, "impact_score": 6.0, "balance_score": 8.0, "target_gap": 1.0, "insights": [{"id": 33, "group_number": 1, "lecture_number": 1, "strengths_count": 2, "weaknesses_count": 3, "gaps_count": 3, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 0, "top_strength": "ლექტორს აქვს გულწრფელი ვნება AI ტექნოლოგიების მიმართ და პრაქტიკული გამოცდილება აგენტების შექმნაში.", "top_weakness": "ლექცია არასტრუქტურირებულია — არ არის დღის წესრიგი, სასწავლო მიზნები და შეჯამება.", "key_recommendation": null, "score_justifications": null, "extracted_at": "2026-03-20T20:34:47.941778+00:00"}, {"id": 28, "group_number": 1, "lecture_number": 2, "strengths_count": 5, "weaknesses_count": 1, "gaps_count": 4, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ეს კურსის ყველაზე ძლიერი განზომილებაა. ქართულენოვანი AI-ის შეფასება, ლოკალური პლატფორმების ინტეგრაცია და აგენტებზე ორიენტირებული მიდგომა უაღრესად რელევანტურია სამიზნე აუდიტორიისთვის და თანხვედრაშია 2025 წლის ტრენდებთან.", "top_weakness": "შთამბეჭდავი მასშტაბია — 5 მოდელის, პერსონალიზაციის, ღრმა კვლევის, აგენტების, კონექტორების, n8n-ის, VS Code-ის და ა.შ. დაფარვა ერთ სესიაზე. თუმცა, სიღრმე ნებისმიერ ცალკეულ თემაზე არასაკმარისი იყო. შედეგი არის \"ექსკურსია\" და არა განათლება. მონაწილეები წავიდნენ იმის ცოდნით, რომ ეს რაღაცები არსებობს, მა", "key_recommendation": "თორნიკე, შენი ყველაზე დიდი ძლიერი მხარე — ენციკლოპედიური ცოდნა და AI-ის მიმართ ენთუზიაზმი — სწავლების კონტექსტში შენივე ყველაზე დიდი სისუსტეა.", "score_justifications": "{\"content_depth\": \"შთამბეჭდავი მასშტაბია — 5 მოდელის, პერსონალიზაციის, ღრმა კვლევის, აგენტების, კონექტორების, n8n-ის, VS Code-ის და ა.შ. დაფარვა ერთ სესიაზე. თუმცა, სიღრმე ნებისმიერ ცალკეულ თემაზე არასაკმარისი იყო. შედეგი არის \\\"ექსკურსია\\\" და არა განათლება. მონაწილეები წავიდნენ იმის ცოდნით, რომ ეს რაღაცები არსებობს, მა\", \"practical_value\": \"მაღალი პრაქტიკული ღირებულება კონკრეტულად ქართული კონტექსტისთვის (mymarket.ge, ეროვნული ბანკი, Airtable CRM). თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობა ნიშნავს, რომ მონაწილეებმა პრაქტიკული გამოყენება თავად უნდა ისწავლონ. ფასების შესახებ ინფორმაციის არარსებობაც ამცირებს პრაქტიკულ ღირებულებას.\", \"engagement\": \"კარგი Q&A დინამიკა — ლექტორი იცნობს მონაწილეებს სახელებით და იშველიებს მათ ინდუსტრიებს. თუ\\nს შესახებ ინფორმაციის არარსებობაც ამცირებს პრაქტიკულ ღირებულებას.\", \"technical_accuracy\": \"ძირითადი კონცეფციები მაღალ დონეზე სწორად არის წარმოდგენილი. თუმცა, ChatGPT vs Claude შედარება ზედმეტად გამარტივებული იყო, Manus AI-ის მტკიცება გადამოწმებას საჭიროებს, ხოლო API-ს დეფინიციის \\\"ბლა ბლა ბლა\\\"-თი მოგერიება უზუსტობაზე და არაპროფესიონალიზმზე მიუთითებს.\", \"market_relevance\": \"ეს კურსის ყველაზე ძლიერი განზომილებაა. ქართულენოვანი AI-ის შეფასება, ლოკალური პლატფორმების ინტეგრაცია და აგენტებზე ორიენტირებული მიდგომა უაღრესად რელევანტურია სამიზნე აუდიტორიისთვის და თანხვედრაშია 2025 წლის ტრენდებთან.\"}", "extracted_at": "2026-03-20T20:34:37.829117+00:00"}, {"id": 29, "group_number": 1, "lecture_number": 3, "strengths_count": 3, "weaknesses_count": 4, "gaps_count": 0, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "პრაქტიკული ინსტრუქციები (VS Code-ის დაყენება, Claude-ის დაკავშირება) ნამდვილად სასარგებლოა, მაგრამ ნაპრალი \"აი, დააკოპირე ეს პრომპტი\"-სა და \"აი, როგორ ააგო შენი საკუთარი აგენტი შენი ბიზნესისთვის\" შორის უზარმაზარია და ამოუვსები.", "top_weakness": "8-9 მონაწილედან მხოლოდ 3-4 იყო აქტიური. ლექტორის კითხვას \"არის კითხვები?\" ძირითადად სიჩუმე მოსდევდა, რაც უფრო დაბნეულობაზე მიუთითებს, ვიდრე გაგებაზე. არ ყოფილა გამოყენებული ჩართულობის სტრუქტურირებული ტექნიკები.", "key_recommendation": "ტემპი და დროის მართვა", "score_justifications": "{\"content_depth\": \"ლექცია ფარავს თემების შთამბეჭდავ სპექტრს, მაგრამ სიღრმე ეწირება თითოეულ მათგანს. არცერთი თემა არ არის დამუშავებული იმ დონეზე, რომ მონაწილემ დამოუკიდებლად გაიმეოროს ნაჩვენები. HR აგენტის დემო შთამბეჭდავია, მაგრამ წარმოდგენილია როგორც \\\"მიყურე როგორ ვაკეთებ\\\" და არა \\\"ისწავლე როგორ გააკეთო\\\".\", \"practical_value\": \"პრაქტიკული ინსტრუქციები (VS Code-ის დაყენება, Claude-ის დაკავშირება) ნამდვილად სასარგებლოა, მაგრამ ნაპრალი \\\"აი, დააკოპირე ეს პრომპტი\\\"-სა და \\\"აი, როგორ ააგო შენი საკუთარი აგენტი შენი ბიზნესისთვის\\\" შორის უზარმაზარია და ამოუვსები.\", \"engagement\": \"8-9 მონაწილედან მხოლოდ 3-4 იყო აქტიური. ლექტორის კითხვას \\\"არის კითხვები?\\\" ძირითადად სიჩუმე მოსდევდა, რაც უფრო დაბნეულობაზე მიუთითებს, ვიდრე გაგებაზე. არ ყოფილა გამოყენებული ჩართულობის სტრუქტურირებული ტექნიკები.\", \"technical_accuracy\": \"საბაზისო კონცეფციები სწორია, მაგრამ ზედმეტი გამარტივებები, უსაფრთხოების რისკების გამოტოვება და მტკიცება, რომ \\\"კოდირების ცოდნა არ არის საჭირო\\\" მაშინ, როცა გენერირდება React/Node.js კოდი — შეცდომაში შემყვანია. მონაწილეებს ადრე თუ გვიან მოუწევთ დებაგინგი, რისი კონტექსტიც არ გააჩნიათ.\", \"market_relevance\": \"ძლიერი რელევანტურობა აქვს HR ქეისსა და სკრეპინგს ქართული ბაზრისთვის, ასევე უფასო/ღია კოდის ხელსაწყოების გამოყენებას. თუმცა, სტრატეგიული კონტექსტის, ადგილობრივი რეგულაციებისა და ცვლილებების მართვის არარსებობა მნიშვნელოვნად ამცირებს პრაქტიკულ გამოყენებადობას.\", \"overall_score\": \"კურსი არის შთამაგონებელი, მაგრამ ქაოტური შეხება უახლეს ინსტრუმენტებთან, რომ\\nებისა და ცვლილებების მართვის არარსებობა მნიშვნელოვნად ამცირებს პრაქტიკულ გამოყენებადობას.\"}", "extracted_at": "2026-03-20T20:34:39.321805+00:00"}, {"id": 34, "group_number": 1, "lecture_number": 4, "strengths_count": 3, "weaknesses_count": 3, "gaps_count": 0, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ინფრასტრუქტურის აწყობის რეპოზიტორიუმი ნამდვილად ღირებულია და მონაწილეებს რეალურ დროს უზოგავს. NotebookLM-ის დემონსტრაცია პრაქტიკული და პირდაპირ გამოსადეგი იყო. Skills სისტემის მაგალითებიც უაღრესად რელევანტურია. თუმცა, მონაწილეთა პრაქტიკული დროის უქონლობის გამო, ამ ღირებულების დიდი ნაწილი დაიკარგება — მონაწილეები უყურებდნენ, მაგრამ თავად არაფერი გაუკეთებიათ.", "top_weakness": "მთელი სესიის განმავლობაში კითხვა მხოლოდ 3-4-მა მონაწილემ დასვა (უმეტესობა ლაშასგან მოდიოდა, რომელიც ყველაზე გამოცდილია). არ ყოფილა სავარჯიშოები, გამოკითხვები ან ჯგუფური აქტივობები. სესიის უმეტესი დრო ლექტორი ესაუბრებოდა *მათ* და არა *მათთან ერთად*. ინდივიდუალური ყურადღება დაეთმოთ (შორენა, ნინო, კესო, კობა, ლაშა), მაგრამ მხოლოდ რეაქტიულად.", "key_recommendation": null, "score_justifications": "{\"content_depth\": \"ბევრი თემა მხოლოდ ზედაპირულად იქნა წარმოდგენილი. Git/GitHub-ს დაეთმო 3 წუთი, რაც დამოუკიდებელი გამოყენებისთვის არასაკმარისია. Skills კონცეპტუალურად კარგად აიხსნა, მაგრამ შექმნის პროცესი მხოლოდ ერთხელ აჩვენეს და ისიც ბოლომდე არ მისულა. NotebookLM ყველაზე სიღრმისეულად განიხილეს, მაგრამ მაინც აკლდა სტრუქტურირებული სწავლება იმის შესახებ, თუ როდის/რატომ უნდა გამოვიყენოთ თითოეული ფუნქცია.\", \"practical_value\": \"ინფრასტრუქტურის აწყობის რეპოზიტორიუმი ნამდვილად ღირებულია და მონაწილეებს რეალურ დროს უზოგავს. NotebookLM-ის დემონსტრაცია პრაქტიკული და პირდაპირ გამოსადეგი იყო. Skills სისტემის მაგალითებიც უაღრესად რელევანტურია. თუმცა, მონაწილეთა პრაქტიკული დროის უქონლობის გამო, ამ ღირებულების დიდი ნაწილი დაიკარგება — მონაწილეები უყურებდნენ, მაგრამ თავად არაფერი გაუკეთებიათ.\", \"engagement\": \"მთელი სესიის განმავლობაში კითხვა მხოლოდ 3-4-მა მონაწილემ დასვა (უმეტესობა ლაშასგან მოდიოდა, რომელიც ყველაზე გამოცდილია). არ ყოფილა სავარჯიშოები, გამოკითხვები ან ჯგუფური აქტივობები. სესიის უმეტესი დრო ლექტორი ესაუბრებოდა *მათ* და არა *მათთან ერთად*. ინდივიდუალური ყურადღება დაეთმოთ (შორენა, ნინო, კესო, კობა, ლაშა), მაგრამ მხოლოდ რეაქტიულად.\", \"technical_accuracy\": \"ძირითადი კონცეფციები სწორად აიხსნა, მაგრამ შემაშფოთებელი გამარტივებებით. CLI-Anything-ის პრეზენტაციამ შექმნა ზედმეტი მოლოდინები. პროგნოზი, რომ \\\"Computer Use ყველაფერს ჩაანაცვლებს\\\", სპეკულაციურია. ფაქტობრივი შეცდომები არ ყოფილა, მაგრამ რამდენიმე განცხადება შეცდომაში შემყვანად ოპტიმისტური იყო.\", \"market_relevance\": \"ქართული სპეციფიკის ელემენტები ძლიერია: ქართულენოვანი NotebookLM, ქართული კანონები, ქართული ბაზრის ფასების მონიტორინგი. ლექტორს აშკარად ესმის ადგილობრივი ბაზარი. თუმცა, კრიტიკული ბიზნეს-თემების (ROI, AI მმართველობა, ხარჯები, no-code ავტომატიზაცია) არარსებობა ზღუდავს კურსის დაუყოვნებლივ ბიზნეს-გამოყენებადობას ქართველი მენეჯერებისთვის.\", \"overall_score\": \"კურსს აქვს უზარმაზარი პოტენციალი და ლექტორი ფლობს ძლიერ ტექნიკურ ცოდნას, თუმცა პედაგოგიური სტრუქტურისა და პრაქტიკული ჩართულობის სრული არარსებობა კრიტიკულად აფერხებს სწავლის შედეგებს.\"}", "extracted_at": "2026-03-25T13:10:34.426629+00:00"}, {"id": 37, "group_number": 1, "lecture_number": 5, "strengths_count": 4, "weaknesses_count": 1, "gaps_count": 5, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ლექტორი გულწრფელად ერთვება თითოეული მონაწილის ინდივიდუალურ სიტუაციაში. კითხვები წახალისებულია და პასუხგაცემული. თუმცა, ჩართულობა არის რეაქტიული (პრობლემებზე რეაგირება) და არა პროაქტიული (აქტივობების დაგეგმვა, რაც უზრუნველყოფს მასალის გაგებას). არ არის ქვიზები, გამოკითხვები ან წყვილებში მუშაობა.", "top_weakness": "ლექცია ფარავს ბევრ ინსტრუმენტს ზედაპირულად და თითქმის არცერთს — სიღრმისეულად. 3-ნაბიჯიანი setup ყველაზე ძლიერი ნაწილი იყო. ჩინური მოდელების მიმოხილვა ზედმეტად ზედაპირული იყო პრაქტიკული გამოყენებისთვის. კრიტიკული კონცეფციები (MCP, RAG, პრომპტები) გამოტოვებულია. ფასიანი კურსისთვის, რომელიც აგენტების შექმნას ასწავლის, სიღრმე არასაკმარისია.", "key_recommendation": "კურსი იხრჩობა თემების სიმრავლეში და განიცდის სიღრმის კრიტიკულ შიმშილს.", "score_justifications": "{\"content_depth\": \"ლექცია ფარავს ბევრ ინსტრუმენტს ზედაპირულად და თითქმის არცერთს — სიღრმისეულად. 3-ნაბიჯიანი setup ყველაზე ძლიერი ნაწილი იყო. ჩინური მოდელების მიმოხილვა ზედმეტად ზედაპირული იყო პრაქტიკული გამოყენებისთვის. კრიტიკული კონცეფციები (MCP, RAG, პრომპტები) გამოტოვებულია. ფასიანი კურსისთვის, რომელიც აგენტების შექმნას ასწავლის, სიღრმე არასაკმარისია.\", \"practical_value\": \"Setup-ის სამუშაო პროცესი ნამდვილად სასარგებლოა. ჩინური მოდელების გაცნობას აქვს პრაქტიკული ღირებულება ცნობიერების ამაღლების კუთხით. თუმცა, სტრუქტურირებული სავარჯიშოების არარსებობის გამო, მონაწილეთა უმეტესობას გაუჭირდება ნანახის დამოუკიდებლად გამეორება.\", \"engagement\": \"ლექტორი გულწრფელად ერთვება თითოეული მონაწილის ინდივიდუალურ სიტუაციაში. კითხვები წახალისებულია და პასუხგაცემული. თუმცა, ჩართულობა არის რეაქტიული (პრობლემებზე რეაგირება) და არა პროაქტიული (აქტივობების დაგეგმვა, რაც უზრუნველყოფს მასალის გაგებას). არ არის ქვიზები, გამოკითხვები ან წყვილებში მუშაობა.\", \"technical_accuracy\": \"ინფორმაციის უმეტესობა პრაქტიკულ დონეზე სწორია. თუმცა, რამდენიმე გამარტივებამ შეიძლება შეცდომაში შეიყვანოს მსმენელი. Git/GitHub-ის ახსნა ზუსტი და კარგად გადმოცემული იყო. API-სა და Computer Use-ს შორის სხვაობის ახსნას ზედმეტად ბევრი მცდელობა დასჭირდა სიცხადისთვის.\", \"market_relevance\": \"არადეველოპერებისთვის აგენტების შექმნის სწავლება საქართველოს ბაზრისთვის უაღრესად რელევანტურია. ინსტრუმენტების არჩევანიც ადეკვატურია. თუმცა, 2025 წლის კრიტიკული თემების (RAG, MCP, AI მმართველობა) გამოტოვება ამცირებს კურსის სამომავლო ღირებულებას. ქართული კონტექსტის (ენა, კანონმდებლობა) არარსებობა ასუსტებს პრაქტიკულ გამოყენებადობას.\"}", "extracted_at": "2026-03-28T08:19:11.590978+00:00"}], "kirkpatrick": {"L1_reaction": 7.0, "L2_learning": 5.5, "L3_behavior": 6.0, "L4_results": 6.0}, "velocity": 0.1, "velocity_label": "სტაბილური", "volatility": {"content_depth": 0.25, "practical_value": 1.25, "engagement": 1.5, "technical_accuracy": 0.25, "market_relevance": 1.25}, "recommendation_followthrough": 1, "theory_practice_ratio": 0.87, "benchmark_gap": -1.0, "benchmark_percentile": 60, "at_risk_dims": [{"dim": "practical_value", "drop": 1.0, "current": 6.0}, {"dim": "market_relevance", "drop": 1.0, "current": 6.0}], "lectures_to_target": 10}, "2": {"lecture_count": 5, "scores": [{"id": 24, "group_number": 2, "lecture_number": 1, "content_depth": 4.0, "practical_value": 6.0, "engagement": 5.0, "technical_accuracy": 5.0, "market_relevance": 7.0, "overall_score": 5.4, "composite": 5.4, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | 4/10 | ლექცია შეეცადა დაეფარა AI ისტორია, ტრადიციული პროგრამირება vs AI, ML-ის 3 მეთოდი, deep learning, ტრანსფორმერები, LLM-ები, აგენტები, API და computer use — ყველაფერი ერთ სესიაში. შედეგად, არაფერი დაფარულა საკმარისი სიღრმით. კრიტიკული კონცეფციები (RAG, ტოკენები, პრომპტინგი) სრულად გამოტოვებულია. |\n| **პრაქტიკული ღირებულება** | 6/10 | აგენტის ლაივ-დემონსტრაცია ნამდვილად ღირებული იყო და შექმნა მოტივაციისთვის საჭირო \"wow ეფექტი\". თუმცა, პრაქტიკული ღირებულება მცირდება მონაწილეებისთვის პრაქტიკული სავარჯიშოების, საშინაო დავალებისა და მკაფიო \"შემდეგი ნაბიჯების\" არარსებობის გამო. |\n| **მონაწილეების ჩართულობა** | 5/10 | გაცნობის ნაწილი კარგი იყო, მაგრამ ლექცია უკიდურესად ცალმხრივი აღმოჩნდა. თორნიკე საუბრობდა დროის უდიდესი ნაწილი სტრუქტურირებული ინტერაქციის, გამოკითხვების ან სავარჯიშოების გარეშე. ლექტორის განცხადება, რომ Q&A-ს\n", "processed_at": "2026-03-20T20:34:43.555103+00:00"}, {"id": 25, "group_number": 2, "lecture_number": 2, "content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 5.0, "market_relevance": 7.0, "overall_score": 6.0, "composite": 6.0, "raw_score_text": "| **პრაქტიკული ღირებულება** | 6/10 | ლაივ-დემონსტრაციები (Playwright სკრეპინგი, ტარიელის პროექტი) ნამდვილად ღირებული იყო. თუმცა, ქულა აკლდება იმის გამო, რომ ლექციის განმავლობაში არცერთ მონაწილეს პრაქტიკულად არაფერი გაუკეთებია და არც დამოუკიდებელი მუშაობისთვის მიუღიათ ინსტრუქცია. |\n| **მონაწილეების ჩართულობა** | 7/10 | ეს კურსის ძლიერი მხარეა. მონაწილეები სვამდნენ კითხვებს, ლექტორი იყო ენერგიული და რეალური პროექტის (სასტუმრო) გამოყენება შესანიშნავი იყო. ქულა დააკლდა ქაოსურობის გამო და იმის გამო, რომ რამდენიმე მონაწილე აშკარად დაიკარგა (ერთ-ერთმა თქვა \"შოკში ვარ\"). |\n| **ტექნიკური სიზუსტე** | 5/10 | გადაჭარბებული შეფასებები (\"მაიმუნობა\") აზიანებს სანდოობას ტექნიკურ მსმენელებთან. CLI-სა და Desktop აპლიკაციის აღრევა, API გასაღებების ეკრანზე გამოჩენა და ტელეფონის რეგისტრაციის გაუტესტავი პრობლემები სერიოზული ხარვეზებია. |\n| **ბაზრის რელევანტურობა** | 7/10 | წარმოდგენილი ინსტრუმენტები (n8n, Claude) უაღრესად რელევანტურია. ტურიზმის მაგალითი იდეალურია საქართველოსთვის. ქულა აკლდება ლოკალური სარეგულაციო კონტექსტის, ROI ჩარჩოსა და იაფი ალტერნატივების უგულებელყოფის გამო. |\n| **საერთო შეფასება** | 6/10 | კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ცოდნისა და ენერგიის ხარჯზე, მაგრამ ამჟამად სერიოზულად ზარალდება სტრუქტურის, ფოკუსისა და პრაქტიკული პედაგოგიკის ნაკლებობით. |\n", "processed_at": "2026-03-20T20:34:44.614479+00:00"}, {"id": 26, "group_number": 2, "lecture_number": 3, "content_depth": 6.0, "practical_value": 7.0, "engagement": 4.0, "technical_accuracy": 5.0, "market_relevance": 6.0, "overall_score": 5.6, "composite": 5.6, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | 6/10 | ლექციამ დაფარა შთამბეჭდავი რაოდენობის თემები, მაგრამ თითოეულის სიღრმის ხარჯზე. მოდელების შედარება ზედაპირული იყო (კონკრეტული ბენჩმარკების გარეშე). MCP მეტაფორით აიხსნა, მაგრამ ტექნიკური სიცხადე აკლდა. Google Docs მასალები შესანიშნავია, მაგრამ მონაწილეებს არ უნდა სჭირდებოდეთ 30+ გვერდის წაკითხვა იმის გასაგებად, რაც სიტყვიერად ითქვა. |\n| **პრაქტიკული ღირებულება** | 7/10 | ეს ლექციის ყველაზე ძლიერი მხარეა. ლაივ-დემოები ქართულ საიტებზე, MCP სერვერი, კოდის განხილვა და Claude-ის \"Teach\" ფუნქცია დაუყოვნებლივ გამოსადეგია. ქულა დააკლდა რადგან: არ იყო სავარჯიშოები, რამდენიმე დემოს ტექნიკური ხარვეზი ჰქონდა და პრაქტიკული ღირებულება დამოკიდებულია ფასიან გამოწერებზე, რომლებიც მკაფიოდ არ ყოფილა რეკომენდებული. |\n| **მონაწილეების ჩართულობა** | 4/10 | ლექცია არსებითად იყო 2+ საათიანი მონოლოგი, სადაც მხოლოდ 2-3 გამოცდილი მონაწილე (მიშო, ნიკა, გიორგი) სვამდა კითხვებს. უმეტესობა ჩუმად იყო. არ ყოფილა გამოკითხვები (polls), სავარჯიშოები ან ჯგუფური აქტივობები. მაიას კითხვა მონაცემთა კონტროლზე იყო ერთადერთი დამწყები დონის კითხვა, რაც\n", "processed_at": "2026-03-20T20:34:45.748935+00:00"}, {"id": 29, "group_number": 2, "lecture_number": 4, "content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 4.0, "market_relevance": 6.0, "overall_score": 5.6, "composite": 5.6, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | **5/10** | ლექცია ეხება შთამბეჭდავი რაოდენობის ინსტრუმენტებს (სიგანე), მაგრამ თითქმის არცერთში არ შედის სიღრმეში. ლექტორს აშკარად აქვს ღრმა პერსონალური ცოდნა, მაგრამ ვერ ახერხებს მის სისტემურ გადაცემას. |\n| **პრაქტიკული ღირებულება** | **6/10** | გაზიარდა რამდენიმე დაუყოვნებლივ გამოსადეგი რჩევა, თუმცა მონაწილეებს არ მიეცათ პრაქტიკის დრო, არ მიწოდებიათ ნაბიჯ-ნაბიჯ სახელმძღვანელოები და ჩავარდნილმა დემოებმა შეამცირა პრაქტიკული სარგებელი. პერსონალური რჩევები (მაგ. მარისთან) ნამდვილად ღირებული იყო. |\n| **მონაწილეების ჩართულობა** | **7/10** | ეს ლექციის ყველაზე ძლიერი მხარეა. ლექტორი კომუნიკაბელური და წამახალისებელია. თუმცა, ჩართულობა შემოიფარგლება მხოლოდ 4-5 ყველაზე აქტიური მონაწილით. არ არსებობს მექანიზმი უფრო ჩუმი მსმენელების ჩასართავად (არც გამოკითხვები, არც პრაქტიკული სამუშაოები). |\n| **ტექნიკური სიზუსტე** | **4/10** | Manus AI/Meta-ს შესყიდვის მტკიცება ფაქტობრივად მცდარია და ბიზნეს-გადაწყვეტილებებისთვის შეცდომაში შემყვანი. ტერმინოლოგია ხშირად არეულია. ლექტორი ხშირად იყენებს ფრაზებს \"არ ვარ დარწმუნებული\" ან \"მგონი\", რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს. |\n| **ბაზრის რელევანტურობა** | **6/10** | განხილული ინსტრუმენტები ნამდვილად რელევანტურია ქართველი პროფესიონალებისთვის. თუმცა, სრულად იგნორირებულია ქართულ\n", "processed_at": "2026-03-27T06:24:48.272057+00:00"}, {"id": 30, "group_number": 2, "lecture_number": 5, "content_depth": 4.0, "practical_value": 5.0, "engagement": 7.0, "technical_accuracy": 5.0, "market_relevance": 6.0, "overall_score": 5.4, "composite": 5.4, "raw_score_text": "| განზომილება | ქულა (1-10) | დასაბუთება |\n|---|---|---|\n| **შინაარსის სიღრმე** | 4/10 | განხილული ინსტრუმენტების სპექტრი შთამბეჭდავია, მაგრამ თითქმის არაფერია ახსნილი იმ სიღრმით, რომ სტუდენტმა დამოუკიდებლად გამოიყენოს. კურსი სიღრმეს წირავს ბევრი ინსტრუმენტის ზედაპირული გაცნობის ხარჯზე. |\n| **პრაქტიკული ღირებულება** | 5/10 | გაზიარებული რესურსები ნამდვილად ღირებულია, მაგრამ სტრუქტურირებული დემონსტრაციებისა და შაბლონების გარეშე, სტუდენტების უმეტესობას გაუჭირდება მათი რეალურ პროექტებად ქცევა. |\n| **მონაწილეების ჩართულობა** | 7/10 | ეს კურსის ყველაზე ძლიერი მხარეა. ლექტორს აქვს კარგი პერსონალური ურთიერთობა სტუდენტებთან და ზრუნავს მათზე. თუმცა, ჩართულობა ძირითადად 4-5 აქტიურ მონაწილეზე მოდის, დანარჩენები კი უკან რჩებიან. |\n| **ტექნიკური სიზუსტე** | 5/10 | ინფორმაციის უმეტესობა მიმართულებითად სწორია, მაგრამ უზუსტო. მტკიცებები \"შეზღუდვების არარსებობაზე\" შეცდომაში შემყვანია. ლექტორი უნდა მოერიდოს კვალიფიკაციის გარეშე გაკეთებულ აბსოლუტურ განცხადებებს. |\n| **ბაზრის რელევანტურობა** | 6/10 | ინსტრუმენტების ეკოსისტემა რელევანტურია, მაგრამ აკლია ქართული კონტექსტი — არ არის ლოკალური ქეისები, ქართული ენის სპეციფიკის განხილვა და ROI ანალიზი. კურსი ნელ-ნელა ემსგავსება დეველოპერების ბუთქემფს და არა ბიზნეს AI ტრენინგს. |\n| **საერთო შეფასება** | 5.4/10 | კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ენთუზიაზმის ხარჯზე, მაგრამ სასწრაფოდ საჭიროებს პედაგოგიკურ სტრუქტურირებასა და პრაქტიკულ დემონსტრაციებზე გადასვლას. |\n", "processed_at": "2026-03-27T15:42:27.016226+00:00"}], "stats": {"content_depth": {"mean": 4.8, "median": 5.0, "std_dev": 0.84, "min": 4.0, "max": 6.0, "p25": 4.0, "p75": 5.0, "trend_slope": 0.0, "rolling_avg_3": 5.0, "improvement_rate": 0.0, "trend_label": "➡️ სტაბილური"}, "practical_value": {"mean": 6.0, "median": 6.0, "std_dev": 0.71, "min": 5.0, "max": 7.0, "p25": 6.0, "p75": 6.0, "trend_slope": -0.2, "rolling_avg_3": 6.0, "improvement_rate": -0.25, "trend_label": "📉 მცირდება"}, "engagement": {"mean": 6.0, "median": 7.0, "std_dev": 1.41, "min": 4.0, "max": 7.0, "p25": 5.0, "p75": 7.0, "trend_slope": 0.4, "rolling_avg_3": 6.0, "improvement_rate": 0.5, "trend_label": "📈 იზრდება"}, "technical_accuracy": {"mean": 4.8, "median": 5.0, "std_dev": 0.45, "min": 4.0, "max": 5.0, "p25": 5.0, "p75": 5.0, "trend_slope": -0.1, "rolling_avg_3": 4.67, "improvement_rate": 0.0, "trend_label": "📉 მცირდება"}, "market_relevance": {"mean": 6.4, "median": 6.0, "std_dev": 0.55, "min": 6.0, "max": 7.0, "p25": 6.0, "p75": 7.0, "trend_slope": -0.3, "rolling_avg_3": 6.0, "improvement_rate": -0.25, "trend_label": "📉 მცირდება"}, "composite": {"mean": 5.6, "median": 5.6, "std_dev": 0.24, "min": 5.4, "max": 6.0, "p25": 5.4, "p75": 5.6, "trend_slope": -0.04, "rolling_avg_3": 5.53, "improvement_rate": 0.0, "trend_label": "➡️ სტაბილური"}}, "best_lecture": {"number": 2, "composite": 6.0}, "worst_lecture": {"number": 1, "composite": 5.4}, "composite_series": [5.4, 6.0, 5.6, 5.6, 5.4], "lecture_labels": ["ლექცია #1", "ლექცია #2", "ლექცია #3", "ლექცია #4", "ლექცია #5"], "dimension_series": {"content_depth": [4.0, 5.0, 6.0, 5.0, 4.0], "practical_value": [6.0, 6.0, 7.0, 6.0, 5.0], "engagement": [5.0, 7.0, 4.0, 7.0, 7.0], "technical_accuracy": [5.0, 5.0, 5.0, 4.0, 5.0], "market_relevance": [7.0, 7.0, 6.0, 6.0, 6.0]}, "heatmap": [{"lecture": 1, "scores": {"content_depth": 4.0, "practical_value": 6.0, "engagement": 5.0, "technical_accuracy": 5.0, "market_relevance": 7.0}, "composite": 5.4}, {"lecture": 2, "scores": {"content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 5.0, "market_relevance": 7.0}, "composite": 6.0}, {"lecture": 3, "scores": {"content_depth": 6.0, "practical_value": 7.0, "engagement": 4.0, "technical_accuracy": 5.0, "market_relevance": 6.0}, "composite": 5.6}, {"lecture": 4, "scores": {"content_depth": 5.0, "practical_value": 6.0, "engagement": 7.0, "technical_accuracy": 4.0, "market_relevance": 6.0}, "composite": 5.6}, {"lecture": 5, "scores": {"content_depth": 4.0, "practical_value": 5.0, "engagement": 7.0, "technical_accuracy": 5.0, "market_relevance": 6.0}, "composite": 5.4}], "strengths": [{"dim": "market_relevance", "mean": 6.4}, {"dim": "practical_value", "mean": 6.0}], "weaknesses": [{"dim": "content_depth", "mean": 4.8}, {"dim": "technical_accuracy", "mean": 4.8}], "consistency": 9.21, "pedagogy_score": 5.5, "content_quality": 5.0, "impact_score": 5.5, "balance_score": 7.0, "target_gap": 1.6, "insights": [{"id": 30, "group_number": 2, "lecture_number": 1, "strengths_count": 5, "weaknesses_count": 5, "gaps_count": 8, "recommendations_count": 0, "tech_correct_count": 1, "tech_problematic_count": 7, "blind_spots_count": 8, "top_strength": "თორნიკე ავლენს გულწრფელ ვნებას და პიროვნულ დაინტერესებას AI ტექნოლოგიების მიმართ. ის აშკარად იყენებს ამ ინსტრუმენტებს ყოველდღიურად და თავად ქმნის აგენტებს, რაც მას ავთენტურ სანდოობას სძენს.", "top_weakness": "ლექცია უკიდურესად არასტრუქტურირებულია. არ არსებობს მკაფიო დღის წესრიგი, დასაწყისში არ არის გაცხადებული სწავლის მიზნები და ბოლოს არ ხდება შეჯამება.", "key_recommendation": null, "score_justifications": "{\"content_depth\": \"ლექცია შეეცადა დაეფარა AI ისტორია, ტრადიციული პროგრამირება vs AI, ML-ის 3 მეთოდი, deep learning, ტრანსფორმერები, LLM-ები, აგენტები, API და computer use — ყველაფერი ერთ სესიაში. შედეგად, არაფერი დაფარულა საკმარისი სიღრმით. კრიტიკული კონცეფციები (RAG, ტოკენები, პრომპტინგი) სრულად გამოტოვებულია.\", \"practical_value\": \"აგენტის ლაივ-დემონსტრაცია ნამდვილად ღირებული იყო და შექმნა მოტივაციისთვის საჭირო \\\"wow ეფექტი\\\". თუმცა, პრაქტიკული ღირებულება მცირდება მონაწილეებისთვის პრაქტიკული სავარჯიშოების, საშინაო დავალებისა და მკაფიო \\\"შემდეგი ნაბიჯების\\\" არარსებობის გამო.\", \"engagement\": \"გაცნობის ნაწილი კარგი იყო, მაგრამ ლექცია უკიდურესად ცალმხრივი აღმოჩნდა. თორნიკე საუბრობდა დროის უდიდესი ნაწილი სტრუქტურირებული ინტერაქციის, გამოკითხვების ან სავარჯიშოების გარეშე. ლექტორის განცხადება, რომ Q&A-ს\\nნაწილი კარგი იყო, მაგრამ ლექცია უკიდურესად ცალმხრივი აღმოჩნდა. თორნიკე საუბრობდა დროის უდი\", \"technical_accuracy\": \"ფუნდამენტური კონცეფციები სწორად იყო ახსნილი გამარტივებულ დონეზე. თუმცა, მოდელის არასწორი სახელი (\\\"ChatGPT 5.4\\\"), პრომპტ ინჟინერიის უარყოფა, API-სა და MCP-ის გაიგივება და რადიკალური განცხადებები ერთი ინსტრუმენტის დომინაციაზე აზიანებს ლექტორის სანდოობას.\", \"market_relevance\": \"ეს ყველაზე ძლიერი განზომილებაა. კურსი აშკარად მორგებულია ქართულ ბიზნეს-პროფესიონალებზე, მონაწილეთა მიქსი იდეალურია და პრაქტიკაზე ფოკუსირება ემთხვევა ბაზრის საჭიროებებს. ქულები დააკლდა ქართული ენის შესაძლებლობების, ლოკალური რეგულაციებისა და ხარჯების ანალიზის უგულებელყოფის გამო.\", \"overall_score\": \"ლექტორს აქვს უზარმაზარი პოტენციალი და რეალური პრაქტიკული გამოცდილება, მაგრამ სჭირდება სერიოზული პედაგოგიური სტრუქტურირება და ფოკუსირება, რათა კურსი გლობალურ სტანდარტებს გაუტოლდეს.\"}", "extracted_at": "2026-03-20T20:34:43.559844+00:00"}, {"id": 31, "group_number": 2, "lecture_number": 2, "strengths_count": 5, "weaknesses_count": 2, "gaps_count": 6, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ეს კურსის ძლიერი მხარეა. მონაწილეები სვამდნენ კითხვებს, ლექტორი იყო ენერგიული და რეალური პროექტის (სასტუმრო) გამოყენება შესანიშნავი იყო. ქულა დააკლდა ქაოსურობის გამო და იმის გამო, რომ რამდენიმე მონაწილე აშკარად დაიკარგა (ერთ-ერთმა თქვა \"შოკში ვარ\").", "top_weakness": "ლექცია შეეხო შთამბეჭდავად ბევრ თემას, მაგრამ არცერთს იმ სიღრმით, რომ მონაწილეებმა დამოუკიდებლად შეძლონ მათი გამოყენება. \"სიგანე სიღრმის ხარჯზე\" მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.", "key_recommendation": "რელევანტურობის ხარვეზები:", "score_justifications": "{\"content_depth\": \"ლექცია შეეხო შთამბეჭდავად ბევრ თემას, მაგრამ არცერთს იმ სიღრმით, რომ მონაწილეებმა დამოუკიდებლად შეძლონ მათი გამოყენება. \\\"სიგანე სიღრმის ხარჯზე\\\" მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.\", \"practical_value\": \"ლაივ-დემონსტრა\\nდამოუკიდებლად შეძლონ მათი გამოყენება. \\\"სიგანე სიღრმის ხარჯზე\\\" მიდგომის გამო, მონაწილეებს აქვთ ზედაპირული წარმოდგენა, მაგრამ არ აქვთ სამუშაო ცოდნა.\", \"engagement\": \"ეს კურსის ძლიერი მხარეა. მონაწილეები სვამდნენ კითხვებს, ლექტორი იყო ენერგიული და რეალური პროექტის (სასტუმრო) გამოყენება შესანიშნავი იყო. ქულა დააკლდა ქაოსურობის გამო და იმის გამო, რომ რამდენიმე მონაწილე აშკარად დაიკარგა (ერთ-ერთმა თქვა \\\"შოკში ვარ\\\").\", \"technical_accuracy\": \"გადაჭარბებული შეფასებები (\\\"მაიმუნობა\\\") აზიანებს სანდოობას ტექნიკურ მსმენელებთან. CLI-სა და Desktop აპლიკაციის აღრევა, API გასაღებების ეკრანზე გამოჩენა და ტელეფონის რეგისტრაციის გაუტესტავი პრობლემები სერიოზული ხარვეზებია.\", \"market_relevance\": \"წარმოდგენილი ინსტრუმენტები (n8n, Claude) უაღრესად რელევანტურია. ტურიზმის მაგალითი იდეალურია საქართველოსთვის. ქულა აკლდება ლოკალური სარეგულაციო კონტექსტის, ROI ჩარჩოსა და იაფი ალტერნატივების უგულებელყოფის გამო.\", \"overall_score\": \"კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ცოდნისა და ენერგიის ხარჯზე, მაგრამ ამჟამად სერიოზულად ზარალდება სტრუქტურის, ფოკუსისა და პრაქტიკული პედაგოგიკის ნაკლებობით.\"}", "extracted_at": "2026-03-20T20:34:44.618451+00:00"}, {"id": 32, "group_number": 2, "lecture_number": 3, "strengths_count": 3, "weaknesses_count": 3, "gaps_count": 0, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ეს ლექციის ყველაზე ძლიერი მხარეა. ლაივ-დემოები ქართულ საიტებზე, MCP სერვერი, კოდის განხილვა და Claude-ის \"Teach\" ფუნქცია დაუყოვნებლივ გამოსადეგია. ქულა დააკლდა რადგან: არ იყო სავარჯიშოები, რამდენიმე დემოს ტექნიკური ხარვეზი ჰქონდა და პრაქტიკული ღირებულება დამოკიდებულია ფასიან გამოწერებზე, რომლებიც მკ", "top_weakness": "ლექცია არსებითად იყო 2+ საათიანი მონოლოგი, სადაც მხოლოდ 2-3 გამოცდილი მონაწილე (მიშო, ნიკა, გიორგი) სვამდა კითხვებს. უმეტესობა ჩუმად იყო. არ ყოფილა გამოკითხვები (polls), სავარჯიშოები ან ჯგუფური აქტივობები. მაიას კითხვა მონაცემთა კონტროლზე იყო ერთადერთი დამწყები დონის კითხვა, რაც\nმიშო, ნიკა, გიორგი) ", "key_recommendation": null, "score_justifications": "{\"content_depth\": \"ლექციამ დაფარა შთამბეჭდავი რაოდენობის თემები, მაგრამ თითოეულის სიღრმის ხარჯზე. მოდელების შედარება ზედაპირული იყო (კონკრეტული ბენჩმარკების გარეშე). MCP მეტაფორით აიხსნა, მაგრამ ტექნიკური სიცხადე აკლდა. Google Docs მასალები შესანიშნავია, მაგრამ მონაწილეებს არ უნდა სჭირდებოდეთ 30+ გვერდის წაკითხვა იმის\", \"practical_value\": \"ეს ლექციის ყველაზე ძლიერი მხარეა. ლაივ-დემოები ქართულ საიტებზე, MCP სერვერი, კოდის განხილვა და Claude-ის \\\"Teach\\\" ფუნქცია დაუყოვნებლივ გამოსადეგია. ქულა დააკლდა რადგან: არ იყო სავარჯიშოები, რამდენიმე დემოს ტექნიკური ხარვეზი ჰქონდა და პრაქტიკული ღირებულება დამოკიდებულია ფასიან გამოწერებზე, რომლებიც მკ\", \"engagement\": \"ლექცია არსებითად იყო 2+ საათიანი მონოლოგი, სადაც მხოლოდ 2-3 გამოცდილი მონაწილე (მიშო, ნიკა, გიორგი) სვამდა კითხვებს. უმეტესობა ჩუმად იყო. არ ყოფილა გამოკითხვები (polls), სავარჯიშოები ან ჯგუფური აქტივობები. მაიას კითხვა მონაცემთა კონტროლზე იყო ერთადერთი დამწყები დონის კითხვა, რაც\\nმიშო, ნიკა, გიორგი) \", \"technical_accuracy\": \"დაფიქსირდა მრავალი გადაჭარბებული განცხადება (Claude ყველგან ლიდერობს, Make.com მოკვდა), გაუგებარი ვერსიის ხსენება (ChatGPT \\\"5.4\\\"), სპეკულაციური უსაფრთხოების რისკები წარმოდგენილი როგორც ფაქტი და ვალიდური ინსტრუმენტების დაწუნება. ლექტორის პირადი სიმპათიები (Claude-ის მიმართ) ხშირად ჩრდილავს ობიექტურ შ\", \"market_relevance\": \"ქართული საიტების დემოები და MCP ავტომატიზაცია SMB-სთვის რელევანტურია. თუმცა: არ არის ქართული ბიზნეს-ქეისები, ლოკალური ფასების ანალიზი, ქართულენოვანი AI შედარება, ინდუსტრიული გზამკვლევი და იმის აღიარება, რომ ქართული ბიზნესების უმეტესობა \\\"ნულოვან\\\" ეტაპზეა (საერთოდ არ იყენებს AI-ს) და არა მე-5 ეტაპზე (\", \"overall_score\": \"ლექტორს აქვს უზარმაზარი პოტენციალი და ღრმა პრაქტიკული ცოდნა, მაგრამ ამჟამინდელი ფორმატი არის ქაოსური დემონსტრაცია და არა სტრუქტურირებული სწავლება.\"}", "extracted_at": "2026-03-20T20:34:45.755058+00:00"}, {"id": 35, "group_number": 2, "lecture_number": 4, "strengths_count": 4, "weaknesses_count": 3, "gaps_count": 0, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ეს ლექციის ყველაზე ძლიერი მხარეა. ლექტორი კომუნიკაბელური და წამახალისებელია. თუმცა, ჩართულობა შემოიფარგლება მხოლოდ 4-5 ყველაზე აქტიური მონაწილით. არ არსებობს მექანიზმი უფრო ჩუმი მსმენელების ჩასართავად (არც გამოკითხვები, არც პრაქტიკული სამუშაოები).", "top_weakness": "Manus AI/Meta-ს შესყიდვის მტკიცება ფაქტობრივად მცდარია და ბიზნეს-გადაწყვეტილებებისთვის შეცდომაში შემყვანი. ტერმინოლოგია ხშირად არეულია. ლექტორი ხშირად იყენებს ფრაზებს \"არ ვარ დარწმუნებული\" ან \"მგონი\", რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.", "key_recommendation": null, "score_justifications": "{\"content_depth\": \"ლექცია ეხება შთამბეჭდავი რაოდენობის ინსტრუმენტებს (სიგანე), მაგრამ თითქმის არცერთში არ შედის სიღრმეში. ლექტორს აშკარად აქვს ღრმა პერსონალური ცოდნა, მაგრამ ვერ ახერხებს მის სისტემურ გადაცემას.\", \"practical_value\": \"გაზიარდა რამდენიმე დაუყოვნებლივ გამოსადეგი რჩევა, თუმცა მონაწილეებს არ მიეცათ პრაქტიკის დრო, არ მიწოდებიათ ნაბიჯ-ნაბიჯ სახელმძღვანელოები და ჩავარდნილმა დემოებმა შეამცირა პრაქტიკული სარგებელი. პერსონალური რჩევები (მაგ. მარისთან) ნამდვილად ღირებული იყო.\", \"engagement\": \"ეს ლექციის ყველაზე ძლიერი მხარეა. ლექტორი კომუნიკაბელური და წამახალისებელია. თუმცა, ჩართულობა შემოიფარგლება მხოლოდ 4-5 ყველაზე აქტიური მონაწილით. არ არსებობს მექანიზმი უფრო ჩუმი მსმენელების ჩასართავად (არც გამოკითხვები, არც პრაქტიკული სამუშაოები).\", \"technical_accuracy\": \"Manus AI/Meta-ს შესყიდვის მტკიცება ფაქტობრივად მცდარია და ბიზნეს-გადაწყვეტილებებისთვის შეცდომაში შემყვანი. ტერმინოლოგია ხშირად არეულია. ლექტორი ხშირად იყენებს ფრაზებს \\\"არ ვარ დარწმუნებული\\\" ან \\\"მგონი\\\", რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.\", \"market_relevance\": \"განხილული ინსტრუმენტები ნამდვილად რელევანტურია ქართველი პროფესიონალებისთვის. თუმცა, სრულად იგნორირებულია ქართულ\\nი\\\", რაც გულწრფელია, მაგრამ ანგრევს ავტორიტეტს.\", \"overall_score\": \"კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ექსპერტიზის გამო, მაგრამ ამჟამად ის არის ქაოსური და პედაგოგიკურად გაუმართავი.\"}", "extracted_at": "2026-03-27T06:24:48.279627+00:00"}, {"id": 36, "group_number": 2, "lecture_number": 5, "strengths_count": 2, "weaknesses_count": 4, "gaps_count": 5, "recommendations_count": 0, "tech_correct_count": 0, "tech_problematic_count": 0, "blind_spots_count": 1, "top_strength": "ეს კურსის ყველაზე ძლიერი მხარეა. ლექტორს აქვს კარგი პერსონალური ურთიერთობა სტუდენტებთან და ზრუნავს მათზე. თუმცა, ჩართულობა ძირითადად 4-5 აქტიურ მონაწილეზე მოდის, დანარჩენები კი უკან რჩებიან.", "top_weakness": "განხილული ინსტრუმენტების სპექტრი შთამბეჭდავია, მაგრამ თითქმის არაფერია ახსნილი იმ სიღრმით, რომ სტუდენტმა დამოუკიდებლად გამოიყენოს. კურსი სიღრმეს წირავს ბევრი ინსტრუმენტის ზედაპირული გაცნობის ხარჯზე.", "key_recommendation": null, "score_justifications": "{\"content_depth\": \"განხილული ინსტრუმენტების სპექტრი შთამბეჭდავია, მაგრამ თითქმის არაფერია ახსნილი იმ სიღრმით, რომ სტუდენტმა დამოუკიდებლად გამოიყენოს. კურსი სიღრმეს წირავს ბევრი ინსტრუმენტის ზედაპირული გაცნობის ხარჯზე.\", \"practical_value\": \"გაზიარებული რესურსები ნამდვილად ღირებულია, მაგრამ სტრუქტურირებული დემონსტრაციებისა და შაბლონების გარეშე, სტუდენტების უმეტესობას გაუჭირდება მათი რეალურ პროექტებად ქცევა.\", \"engagement\": \"ეს კურსის ყველაზე ძლიერი მხარეა. ლექტორს აქვს კარგი პერსონალური ურთიერთობა სტუდენტებთან და ზრუნავს მათზე. თუმცა, ჩართულობა ძირითადად 4-5 აქტიურ მონაწილეზე მოდის, დანარჩენები კი უკან რჩებიან.\", \"technical_accuracy\": \"ინფორმაციის უმეტესობა მიმართულებითად სწორია, მაგრამ უზუსტო. მტკიცებები \\\"შეზღუდვების არარსებობაზე\\\" შეცდომაში შემყვანია. ლექტორი უნდა მოერიდოს კვალიფიკაციის გარეშე გაკეთებულ აბსოლუტურ განცხადებებს.\", \"market_relevance\": \"ინსტრუმენტების ეკოსისტემა რელევანტურია, მაგრამ აკლია ქართული კონტექსტი — არ არის ლოკალური ქეისები, ქართული ენის სპეციფიკის განხილვა და ROI ანალიზი. კურსი ნელ-ნელა ემსგავსება დეველოპერების ბუთქემფს და არა ბიზნეს AI ტრენინგს.\", \"overall_score\": \"კურსს აქვს უზარმაზარი პოტენციალი ლექტორის ენთუზიაზმის ხარჯზე, მაგრამ სასწრაფოდ საჭიროებს პედაგოგიკურ სტრუქტურირებასა და პრაქტიკულ დემონსტრაციებზე გადასვლას.\"}", "extracted_at": "2026-03-27T15:42:27.026351+00:00"}], "kirkpatrick": {"L1_reaction": 7.0, "L2_learning": 4.5, "L3_behavior": 5.0, "L4_results": 6.0}, "velocity": -0.04, "velocity_label": "სტაბილური", "volatility": {"content_depth": 1.0, "practical_value": 0.75, "engagement": 2.0, "technical_accuracy": 0.5, "market_relevance": 0.25}, "recommendation_followthrough": 1, "theory_practice_ratio": 0.75, "benchmark_gap": -1.6, "benchmark_percentile": 54, "at_risk_dims": [{"dim": "content_depth", "drop": 1.0, "current": 4.0}, {"dim": "practical_value", "drop": 1.0, "current": 5.0}], "lectures_to_target": null}}, "cross_group": {"content_depth": {"g1_mean": 4.8, "g2_mean": 4.8, "delta": 0.0}, "practical_value": {"g1_mean": 6.2, "g2_mean": 6.0, "delta": -0.2}, "engagement": {"g1_mean": 5.2, "g2_mean": 6.0, "delta": 0.8}, "technical_accuracy": {"g1_mean": 5.8, "g2_mean": 4.8, "delta": -1.0}, "market_relevance": {"g1_mean": 6.8, "g2_mean": 6.4, "delta": -0.4}, "composite": {"g1_mean": 5.76, "g2_mean": 5.6, "delta": -0.16}}, "dimension_labels_ka": {"content_depth": "შინაარსის სიღრმე", "practical_value": "პრაქტიკული ღირებულება", "engagement": "მონაწილეების ჩართულობა", "technical_accuracy": "ტექნიკური სიზუსტე", "market_relevance": "ბაზრის რელევანტურობა", "composite": "კომპოზიტური ქულა"}, "dimension_labels_en": {"content_depth": "Content Depth", "practical_value": "Practical Value", "engagement": "Engagement", "technical_accuracy": "Technical Accuracy", "market_relevance": "Market Relevance", "composite": "Composite"}, "total_lectures": 15, "trainer_performance_index": 5.68, "dimension_rankings": [{"dim": "market_relevance", "mean": 6.6}, {"dim": "practical_value", "mean": 6.1}, {"dim": "engagement", "mean": 5.6}, {"dim": "technical_accuracy", "mean": 5.3}, {"dim": "content_depth", "mean": 4.8}]};
+const DIMS = ["content_depth","practical_value","engagement","technical_accuracy","market_relevance"];
+const DIM_LABELS = ["შინაარსის სიღრმე","პრაქტიკული ღირებულება","ჩართულობა","ტექნიკური სიზუსტე","ბაზრის რელევანტურობა"];
+const COLORS = ["rgba(99,  102, 241, 1)", "rgba(34,  211, 238, 1)", "rgba(52,  211, 153, 1)", "rgba(251, 191,  36, 1)", "rgba(248,  113, 113, 1)"];
+const FILLS  = ["rgba(99,  102, 241, 0.15)", "rgba(34,  211, 238, 0.15)", "rgba(52,  211, 153, 0.15)", "rgba(251, 191,  36, 0.15)", "rgba(248,  113, 113, 0.15)"];
+
+document.addEventListener("DOMContentLoaded", function() {
+  if (typeof Chart === "undefined") return;
+  Chart.defaults.font.family = "'Noto Sans Georgian', 'Inter', system-ui, sans-serif";
+  Chart.defaults.color = "#94a3b8";
+
+  var GC = "rgba(255,255,255,0.04)";
+
+  /* ── Radar Chart ── */
+  (function() {
+    var ds = [];
+    var rc = ["rgba(99,102,241,0.85)", "rgba(34,211,238,0.85)"];
+    var rf = ["rgba(99,102,241,0.12)", "rgba(34,211,238,0.08)"];
+    [1,2].forEach(function(gn, i) {
+      var g = DATA.groups[gn];
+      if (!g.lecture_count) return;
+      var last = g.scores[g.scores.length - 1];
+      ds.push({
+        label: "ჯგ #" + gn + " (ლ#" + last.lecture_number + ")",
+        data: DIMS.map(function(d) { return last[d]; }),
+        borderColor: rc[i], backgroundColor: rf[i], pointBackgroundColor: rc[i], borderWidth: 2.5
+      });
+    });
+    if (!ds.length) return;
+    new Chart(document.getElementById("radar"), {
+      type: "radar",
+      data: { labels: DIM_LABELS, datasets: ds },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: { r: {
+          min: 0, max: 10,
+          ticks: { stepSize: 2, color: "#64748b", backdropColor: "transparent", font: { size: 9 } },
+          grid: { color: "rgba(255,255,255,0.06)" },
+          pointLabels: { color: "#f1f5f9", font: { size: 11, weight: "500" } },
+          angleLines: { color: "rgba(255,255,255,0.04)" }
+        } },
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#94a3b8", usePointStyle: true, padding: 16 } },
+          tooltip: {
+            backgroundColor: "rgba(15,23,42,0.95)", titleColor: "#f1f5f9", bodyColor: "#cbd5e1",
+            borderColor: "rgba(99,102,241,0.2)", borderWidth: 1, padding: 12, cornerRadius: 8,
+          }
+        }
+      }
+    });
+  })();
+
+  /* ── Bar Chart: Dimension Comparison ── */
+  (function() {
+    var g1 = DATA.groups[1];
+    var g2 = DATA.groups[2];
+    if (!g1.lecture_count && !g2.lecture_count) return;
+    var dimLabels = ["შინაარსის სიღრმე","პრაქტიკული ღირებულება","ჩართულობა","ტექნიკური სიზუსტე","ბაზრის რელევანტურობა"];
+    var ds = [];
+    function avgDims(g) {
+      return DIMS.map(function(d) {
+        var vals = g.scores.map(function(s) { return s[d]; }).filter(function(v) { return v != null; });
+        return vals.length ? vals.reduce(function(a,b) { return a+b; },0) / vals.length : 0;
+      });
+    }
+    if (g1.lecture_count) {
+      ds.push({
+        label: "ჯგუფი #1",
+        data: avgDims(g1),
+        backgroundColor: "rgba(99,102,241,0.7)",
+        borderColor: "rgba(99,102,241,1)",
+        borderWidth: 1.5, borderRadius: 6
+      });
+    }
+    if (g2.lecture_count) {
+      ds.push({
+        label: "ჯგუფი #2",
+        data: avgDims(g2),
+        backgroundColor: "rgba(34,211,238,0.7)",
+        borderColor: "rgba(34,211,238,1)",
+        borderWidth: 1.5, borderRadius: 6
+      });
+    }
+    new Chart(document.getElementById("barDimensions"), {
+      type: "bar",
+      data: { labels: dimLabels, datasets: ds },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#94a3b8", font: { size: 11 }, usePointStyle: true, padding: 16 } },
+          tooltip: {
+            backgroundColor: "rgba(15,23,42,0.95)", titleColor: "#f1f5f9", bodyColor: "#cbd5e1",
+            borderColor: "rgba(99,102,241,0.2)", borderWidth: 1, padding: 12, cornerRadius: 8,
+            callbacks: { label: function(ctx) { return " " + ctx.dataset.label + ": " + ctx.parsed.y.toFixed(1) + "/10"; } }
+          }
+        },
+        scales: {
+          x: { ticks: { color: "#94a3b8", font: { size: 10 }, maxRotation: 0 }, grid: { display: false } },
+          y: { min: 0, max: 10, ticks: { color: "#64748b", stepSize: 2 }, grid: { color: GC } }
+        }
+      }
+    });
+  })();
+
+  /* ── Combined Trend Chart ── */
+  (function() {
+    var g1 = DATA.groups[1];
+    var g2 = DATA.groups[2];
+    var maxLen = Math.max(g1.lecture_count || 0, g2.lecture_count || 0);
+    if (!maxLen) return;
+    var labels = [];
+    for (var i = 1; i <= maxLen; i++) labels.push("ლ#" + i);
+
+    var datasets = [];
+    if (g1.lecture_count) {
+      datasets.push({
+        label: "ჯგუფი #1",
+        data: g1.composite_series,
+        borderColor: "rgba(99,102,241,1)",
+        backgroundColor: "rgba(99,102,241,0.08)",
+        tension: 0.35, pointRadius: 5, pointHoverRadius: 8, borderWidth: 2.5, fill: true
+      });
+    }
+    if (g2.lecture_count) {
+      datasets.push({
+        label: "ჯგუფი #2",
+        data: g2.composite_series,
+        borderColor: "rgba(34,211,238,1)",
+        backgroundColor: "rgba(34,211,238,0.06)",
+        tension: 0.35, pointRadius: 5, pointHoverRadius: 8, borderWidth: 2.5, fill: true
+      });
+    }
+    /* Target line at 7.0 */
+    datasets.push({
+      label: "სამიზნე 7.0",
+      data: Array(maxLen).fill(7.0),
+      borderColor: "rgba(248,113,113,0.4)",
+      borderWidth: 1.5, borderDash: [6, 4],
+      pointRadius: 0, fill: false
+    });
+
+    new Chart(document.getElementById("trendCombined"), {
+      type: "line",
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#94a3b8", font: { size: 11 }, usePointStyle: true, padding: 16 } },
+          tooltip: {
+            backgroundColor: "rgba(15,23,42,0.95)", titleColor: "#f1f5f9", bodyColor: "#cbd5e1",
+            borderColor: "rgba(99,102,241,0.2)", borderWidth: 1, padding: 12, cornerRadius: 8,
+            callbacks: { label: function(ctx) { return " " + ctx.dataset.label + ": " + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(1) : "-") + "/10"; } }
+          }
+        },
+        scales: {
+          x: { ticks: { color: "#64748b", font: { size: 10 } }, grid: { color: GC } },
+          y: { min: 0, max: 10, ticks: { color: "#64748b", stepSize: 2 }, grid: { color: GC } }
+        }
+      }
+    });
+  })();
+});
+
+/* ── Expand/Collapse for insights text ── */
+document.querySelectorAll('.ins-quote.expandable').forEach(function(el) {
+  var expandText = el.querySelector('.expand-text');
+  if (!expandText) return;
+  /* Temporarily collapse to measure if text overflows the 6-line clamp */
+  el.classList.add('collapsed');
+  var wouldOverflow = expandText.scrollHeight > expandText.clientHeight + 2;
+  el.classList.remove('collapsed');
+  if (wouldOverflow) {
+    /* Text is long enough to need toggle — start expanded, allow collapse */
+    el.addEventListener('click', function() {
+      this.classList.toggle('collapsed');
+    });
+  } else {
+    /* Text fits fully — no toggle needed, hide the ::after button */
+    el.classList.add('no-toggle');
+  }
+});
+
+/* Auto-refresh every 5 minutes */
+setTimeout(function() { location.reload(); }, 5 * 60 * 1000);
+</script>
+</body>
+</html>

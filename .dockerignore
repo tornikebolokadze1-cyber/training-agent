@@ -41,6 +41,16 @@ conftest.py
 .github/
 .gitignore
 
+# Claude worktrees & caches (very large)
+.claude/worktrees/
+.claude/handoff-*
+
+# Obsidian vault (not needed in runtime)
+obsidian-vault/
+
+# Data files
+data/
+
 # IDE
 .vscode/
 .idea/
