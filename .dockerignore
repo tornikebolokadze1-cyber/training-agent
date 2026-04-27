@@ -72,6 +72,10 @@ firebase-debug.log
 .training-agent.pid
 start.sh
 scripts/
+# Exception: message_archive auto-bootstrap reads this SQL on first connect
+# against an empty volume. Without it the runtime raises "migration file
+# not found" and silently drops every webhook archive write.
+!scripts/migrate_001_messages.sql
 
 # Ruff / linting
 .ruff_cache/
