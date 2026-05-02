@@ -8,7 +8,7 @@ pytest-cov==6.2.1
 
 # Linting & type checking
 ruff==0.11.12
-mypy==1.16.0
+mypy==1.20.2
 
 # Security audit
 pip-audit==2.9.0
