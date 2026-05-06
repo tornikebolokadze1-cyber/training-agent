@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -145,11 +146,24 @@ def safe_operation(
                     try:
                         from tools.core.dlq import enqueue as _dlq_enqueue
 
-                        # Capture the function args as payload
+                        # Map positional args + kwargs onto parameter names so
+                        # handlers receive a typed dict instead of a positional
+                        # list. Falls back to a positional capture if signature
+                        # introspection fails (e.g. C-extension callables).
                         _dlq_payload: dict[str, Any] = {
-                            "args": [repr(a) for a in args[:3]],
                             "operation": operation_name,
                         }
+                        try:
+                            sig = inspect.signature(func)
+                            bound = sig.bind_partial(*args, **kwargs)
+                            for name, value in bound.arguments.items():
+                                # Only keep JSON-friendly primitives at the
+                                # top level — caller is responsible for
+                                # ensuring args are serializable.
+                                _dlq_payload[name] = value
+                        except (TypeError, ValueError):
+                            _dlq_payload["args"] = list(args)
+                            _dlq_payload["kwargs"] = dict(kwargs)
                         _dlq_enqueue(dlq_operation, _dlq_payload, str(exc))
                     except Exception as dlq_err:
                         logger.debug("DLQ enqueue failed: %s", dlq_err)

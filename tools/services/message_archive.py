@@ -384,6 +384,9 @@ def insert_message(conn: sqlite3.Connection, m: IngestedMessage) -> bool:
     """Insert a message. Returns True if newly inserted, False if duplicate.
 
     Idempotent via UNIQUE(green_api_id) + INSERT OR IGNORE.
+    Also keeps the `senders` aggregate in sync via :func:`upsert_sender`
+    so that distinct sender_hashes never accumulate in `messages` without
+    a matching row in `senders`.
     """
     cur = conn.execute(
         """INSERT OR IGNORE INTO messages
@@ -406,7 +409,24 @@ def insert_message(conn: sqlite3.Connection, m: IngestedMessage) -> bool:
             1 if m.is_bot else 0,
         ),
     )
-    return cur.rowcount > 0
+    inserted = cur.rowcount > 0
+    # Keep senders aggregate consistent regardless of insert vs duplicate:
+    # last_seen / display names / groups should reflect the latest data we
+    # have observed for this sender, even if the message itself is a dup.
+    try:
+        upsert_sender(
+            conn,
+            sender_hash=m.sender_hash,
+            ts_message=m.ts_message,
+            sender_display=m.sender_display,
+            group_number=m.group_number,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let aggregator crash insert
+        logger.warning(
+            "upsert_sender failed for hash=%s: %s",
+            m.sender_hash[:12], exc,
+        )
+    return inserted
 
 
 def bulk_insert(conn: sqlite3.Connection, messages: list[IngestedMessage]) -> dict[str, int]:
@@ -419,6 +439,182 @@ def bulk_insert(conn: sqlite3.Connection, messages: list[IngestedMessage]) -> di
         else:
             skipped += 1
     return {"inserted": inserted, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Senders aggregator
+# ---------------------------------------------------------------------------
+#
+# The `senders` table is an aggregate view over `messages`: one row per
+# distinct sender_hash, with first_seen, last_seen, the set of groups they
+# appeared in, and the set of display names they used. It exists so that
+# downstream analytics, GDPR delete operations, and roster reconciliation
+# can run without scanning the full messages table.
+#
+# Note on `phone_encrypted`: the schema declares this BLOB NOT NULL on the
+# assumption that an `encrypt_phone()` helper would be wired in alongside
+# the live webhook write path. That helper was deferred until SENDER_ENC_KEY
+# is provisioned in production; the postgres-archive plan §4 covers it.
+# Until then, we keep the column NOT NULL-compliant by storing an empty
+# blob (`b''`) — a deliberate sentinel that "we know this hash but have no
+# encrypted phone for it yet". When `encrypt_phone()` lands, a separate
+# migration will populate non-empty blobs from any source we still have
+# (live webhook payloads contain the raw phone in `senderId`).
+
+def upsert_sender(
+    conn: sqlite3.Connection,
+    sender_hash: str,
+    ts_message: str,
+    sender_display: Optional[str] = None,
+    group_number: Optional[int] = None,
+    phone_encrypted: bytes = b"",
+) -> None:
+    """Insert a sender row, or update first_seen/last_seen/groups/names.
+
+    Idempotent: safe to call once per `insert_message`, and safe to call
+    repeatedly during a backfill. ``phone_encrypted`` defaults to an empty
+    blob; once an `encrypt_phone()` helper lands it can be passed through
+    from the webhook payload.
+    """
+    if not sender_hash:
+        return
+
+    row = conn.execute(
+        """SELECT phone_encrypted, first_seen, last_seen,
+                  groups_json, display_names_json
+             FROM senders WHERE sender_hash = ?""",
+        (sender_hash,),
+    ).fetchone()
+
+    if row is None:
+        groups = [group_number] if group_number is not None else []
+        names = [sender_display] if sender_display else []
+        conn.execute(
+            """INSERT INTO senders
+               (sender_hash, phone_encrypted, first_seen, last_seen,
+                groups_json, display_names_json)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                sender_hash,
+                phone_encrypted,
+                ts_message,
+                ts_message,
+                json.dumps(groups),
+                json.dumps(names, ensure_ascii=False),
+            ),
+        )
+        return
+
+    # Existing row — extend last_seen, first_seen (only if earlier), and
+    # the JSON arrays. SQLite has no native set type, so we round-trip
+    # through json + Python set semantics. Cardinality is tiny (2 groups,
+    # a handful of display names per sender), so this is cheap.
+    existing_phone = row["phone_encrypted"] if "phone_encrypted" in row.keys() else row[0]
+    new_phone = phone_encrypted if phone_encrypted else existing_phone
+
+    new_first = min(row["first_seen"], ts_message)
+    new_last = max(row["last_seen"], ts_message)
+
+    try:
+        groups = json.loads(row["groups_json"] or "[]")
+    except json.JSONDecodeError:
+        groups = []
+    if group_number is not None and group_number not in groups:
+        groups.append(group_number)
+        groups.sort()
+
+    try:
+        names = json.loads(row["display_names_json"] or "[]")
+    except json.JSONDecodeError:
+        names = []
+    if sender_display and sender_display not in names:
+        names.append(sender_display)
+
+    conn.execute(
+        """UPDATE senders
+              SET phone_encrypted    = ?,
+                  first_seen         = ?,
+                  last_seen          = ?,
+                  groups_json        = ?,
+                  display_names_json = ?
+            WHERE sender_hash = ?""",
+        (
+            new_phone,
+            new_first,
+            new_last,
+            json.dumps(groups),
+            json.dumps(names, ensure_ascii=False),
+            sender_hash,
+        ),
+    )
+
+
+def backfill_senders_from_messages(conn: sqlite3.Connection) -> dict[str, int]:
+    """One-shot rebuild of `senders` from the existing `messages` rows.
+
+    Use this once after wiring the aggregator to an already-populated DB.
+    Idempotent — running twice yields the same end state. Returns a small
+    dict with the count of distinct sender_hashes processed.
+    """
+    rows = conn.execute(
+        """SELECT sender_hash,
+                  MIN(ts_message)  AS first_ts,
+                  MAX(ts_message)  AS last_ts
+             FROM messages
+            WHERE sender_hash IS NOT NULL AND sender_hash != ''
+            GROUP BY sender_hash"""
+    ).fetchall()
+
+    processed = 0
+    for r in rows:
+        sh = r["sender_hash"]
+        first_ts = r["first_ts"]
+        last_ts = r["last_ts"]
+        # All groups this sender appeared in (1, 2, NULL/DM)
+        groups_rows = conn.execute(
+            """SELECT DISTINCT group_number FROM messages
+                WHERE sender_hash = ?""",
+            (sh,),
+        ).fetchall()
+        groups = sorted(g["group_number"] for g in groups_rows
+                        if g["group_number"] is not None)
+        # Distinct non-null display names this sender used
+        names_rows = conn.execute(
+            """SELECT DISTINCT sender_display FROM messages
+                WHERE sender_hash = ? AND sender_display IS NOT NULL""",
+            (sh,),
+        ).fetchall()
+        names = [n["sender_display"] for n in names_rows
+                 if n["sender_display"]]
+
+        existing = conn.execute(
+            "SELECT phone_encrypted FROM senders WHERE sender_hash = ?",
+            (sh,),
+        ).fetchone()
+        phone = existing["phone_encrypted"] if existing else b""
+
+        conn.execute(
+            """INSERT INTO senders
+               (sender_hash, phone_encrypted, first_seen, last_seen,
+                groups_json, display_names_json)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(sender_hash) DO UPDATE SET
+                 first_seen         = excluded.first_seen,
+                 last_seen          = excluded.last_seen,
+                 groups_json        = excluded.groups_json,
+                 display_names_json = excluded.display_names_json""",
+            (
+                sh,
+                phone,
+                first_ts,
+                last_ts,
+                json.dumps(groups),
+                json.dumps(names, ensure_ascii=False),
+            ),
+        )
+        processed += 1
+
+    return {"processed": processed}
 
 
 # ---------------------------------------------------------------------------

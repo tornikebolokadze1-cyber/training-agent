@@ -939,3 +939,76 @@ class TestStartScheduler:
             "whatsapp_archive_catchup",
         }
         assert set(job_ids) == expected
+
+
+# ===========================================================================
+# 14. COURSE_COMPLETED flag
+# ===========================================================================
+
+
+class TestIsCourseCompleted:
+    """is_course_completed() must read COURSE_COMPLETED env var case-insensitively."""
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "YES", "on", "ON"])
+    def test_truthy_values(self, monkeypatch, value):
+        monkeypatch.setenv("COURSE_COMPLETED", value)
+        assert sched.is_course_completed() is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "  "])
+    def test_falsy_values(self, monkeypatch, value):
+        monkeypatch.setenv("COURSE_COMPLETED", value)
+        assert sched.is_course_completed() is False
+
+    def test_unset_returns_false(self, monkeypatch):
+        monkeypatch.delenv("COURSE_COMPLETED", raising=False)
+        assert sched.is_course_completed() is False
+
+    def test_whitespace_trimmed(self, monkeypatch):
+        monkeypatch.setenv("COURSE_COMPLETED", "  true  ")
+        assert sched.is_course_completed() is True
+
+
+class TestStartSchedulerCourseCompleted:
+    """When COURSE_COMPLETED=true, lecture-only jobs must NOT be registered."""
+
+    # Lecture-specific jobs that MUST be off post-course
+    _LECTURE_JOBS = {
+        "pre_group1_tuesday", "pre_group1_friday",
+        "pre_group2_monday", "pre_group2_thursday",
+        "nightly_catch_all", "drive_pinecone_audit",
+    }
+    # Advisor-supporting jobs that MUST stay on post-course
+    _ADVISOR_JOBS = {
+        "pinecone_score_backup", "google_token_health",
+        "proactive_token_check", "nightly_reconciliation",
+        "whatsapp_archive_catchup",
+    }
+
+    def _run_start(self, monkeypatch, course_completed: bool) -> set[str]:
+        monkeypatch.setenv("COURSE_COMPLETED", "1" if course_completed else "0")
+        mock_scheduler_instance = MagicMock()
+        mock_scheduler_instance.get_jobs.return_value = []
+        with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
+            sched.start_scheduler()
+        return {call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list}
+
+    def test_lecture_jobs_skipped_when_completed(self, monkeypatch):
+        job_ids = self._run_start(monkeypatch, course_completed=True)
+        assert self._LECTURE_JOBS.isdisjoint(job_ids), (
+            f"Lecture jobs leaked through when course is completed: "
+            f"{self._LECTURE_JOBS & job_ids}"
+        )
+
+    def test_advisor_jobs_remain_when_completed(self, monkeypatch):
+        job_ids = self._run_start(monkeypatch, course_completed=True)
+        assert self._ADVISOR_JOBS.issubset(job_ids), (
+            f"Advisor-supporting jobs missing post-course: "
+            f"{self._ADVISOR_JOBS - job_ids}"
+        )
+
+    def test_lecture_jobs_present_when_active(self, monkeypatch):
+        job_ids = self._run_start(monkeypatch, course_completed=False)
+        assert self._LECTURE_JOBS.issubset(job_ids), (
+            f"Lecture jobs missing while course is active: "
+            f"{self._LECTURE_JOBS - job_ids}"
+        )

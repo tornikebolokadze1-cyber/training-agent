@@ -70,8 +70,18 @@ _DIMENSION_PATTERNS: list[tuple[str, str]] = [
     ("overall_score",       r"საერთო\s+შეფასება"),
 ]
 
-# Matches a table row: | anything containing label | N/10 or **N/10** | anything |
-_ROW_TEMPLATE = r"\|[^\|]*{label}[^\|]*\|\s*\**(\d+(?:\.\d+)?)/10\**\s*\|"
+# Matches a table row: | anything containing label | <score> | anything |
+# <score> is one of:
+#   - numeric:   N/10 or N.N/10 (with optional **bold** wrapping)
+#   - N/A:       literal "N/A" or "n/a" (with optional /10 suffix and bold)
+# Captures group(1) for numeric value, group(2) for the N/A marker — exactly
+# one will be non-None per match.
+_ROW_TEMPLATE = (
+    r"\|[^\|]*{label}[^\|]*\|"
+    r"\s*\**\s*"
+    r"(?:(\d+(?:\.\d+)?)/10|(N/A)(?:/10)?)"
+    r"\s*\**\s*\|"
+)
 
 
 def extract_scores(deep_analysis_text: str) -> dict[str, float] | None:
@@ -79,6 +89,11 @@ def extract_scores(deep_analysis_text: str) -> dict[str, float] | None:
 
     The score table format is:
         | **შინაარსის სიღრმე** | 4/10 | justification |
+
+    Backward-compatible alternate formats supported:
+        | **ტექნიკური სიზუსტე** | N/A | not assessable |
+        — N/A is recorded as 0.0 (semantically: dimension was not measurable
+        because of missing content / corrupted recording).
 
     Returns:
         Dict with keys matching DB columns (content_depth, practical_value,
@@ -91,7 +106,17 @@ def extract_scores(deep_analysis_text: str) -> dict[str, float] | None:
         pattern = _ROW_TEMPLATE.format(label=label_pattern)
         match = re.search(pattern, deep_analysis_text, re.UNICODE | re.IGNORECASE)
         if match:
-            results[col] = float(match.group(1))
+            numeric, na_marker = match.group(1), match.group(2)
+            if numeric is not None:
+                results[col] = float(numeric)
+            elif na_marker is not None:
+                # N/A → 0.0: dimension was not measurable (e.g. missing content).
+                # Recording as 0 keeps composite math simple and reflects the
+                # zero observable performance for that dimension.
+                results[col] = 0.0
+                logger.info(
+                    "Score extraction: '%s' marked N/A — recording as 0.0", col,
+                )
         else:
             logger.warning("Score extraction: could not find '%s' in deep analysis", col)
 
@@ -118,8 +143,9 @@ def _capture_score_table(text: str) -> str | None:
     )
     if match:
         return match.group(0)[:2000]
-    # Fallback: grab lines containing /10
-    lines = [ln for ln in text.splitlines() if "/10" in ln]
+    # Fallback: grab lines containing /10 or N/A (catches tables where some
+    # dimensions are marked N/A rather than a numeric score).
+    lines = [ln for ln in text.splitlines() if "/10" in ln or "N/A" in ln]
     return "\n".join(lines[:10]) if lines else None
 
 

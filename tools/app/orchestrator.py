@@ -189,16 +189,29 @@ def _retry_whatsapp_group(payload: dict[str, Any]) -> None:
 def _retry_pinecone(payload: dict[str, Any]) -> None:
     """Retry indexing lecture content in Pinecone.
 
+    Modern payload (post-2026-04-29): typed kwargs from inspect.signature
+    binding inside ``safe_operation``.
+
     Expected payload keys:
         group_number: int
         lecture_number: int
         content: str — text content to index
         content_type: str — e.g. "summary", "transcript", "report"
+
+    Legacy payload (pre-2026-04-29): positional ``args`` list with content_type
+    missing. Those entries cannot be retried meaningfully and are rejected so
+    DLQ bookkeeping moves them to ``failed/`` after max_retries.
     """
     from tools.integrations.knowledge_indexer import index_lecture_content
 
-    group_number = payload["group_number"]
-    lecture_number = payload["lecture_number"]
+    if "content_type" not in payload and "args" in payload:
+        raise ValueError(
+            "Legacy DLQ entry without content_type — cannot retry. "
+            "Will expire to failed/ after max_retries."
+        )
+
+    group_number = int(payload["group_number"])
+    lecture_number = int(payload["lecture_number"])
     content = payload["content"]
     content_type = payload["content_type"]
 

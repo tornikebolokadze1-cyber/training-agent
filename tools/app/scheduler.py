@@ -51,6 +51,21 @@ REMINDER_OFFSET_MINUTES = 120  # fire at T-120 (18:00)
 REMINDER_HOUR = LECTURE_START_HOUR - (REMINDER_OFFSET_MINUTES // 60)  # 18
 REMINDER_MINUTE = 0
 
+
+def is_course_completed() -> bool:
+    """Return True when COURSE_COMPLETED env flag is set.
+
+    When the course finishes, set COURSE_COMPLETED=true so the scheduler
+    stops booking Zoom meetings, sending pre-lecture reminders, and running
+    the lecture-specific catch-up/audit jobs. The WhatsApp advisor and its
+    supporting jobs (Pinecone backup, token health, archive catch-up,
+    data reconciliation) keep running so students can still query the
+    course knowledge base.
+    """
+    return os.environ.get("COURSE_COMPLETED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
 # Recording polling: Zoom processes recordings 15–90 min after meeting ends.
 # We wait RECORDING_INITIAL_DELAY before the first poll, then retry every
 # RECORDING_POLL_INTERVAL for up to RECORDING_POLL_TIMEOUT seconds.
@@ -1114,82 +1129,91 @@ def start_scheduler() -> AsyncIOScheduler:
         timezone=TBILISI_TZ,
     )
 
-    # ------------------------------------------------------------------ #
-    #  Group 1 — Tuesday (dow=1) and Friday (dow=4)                       #
-    # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        pre_meeting_job,
-        trigger=CronTrigger(
-            day_of_week="tue",
-            hour=REMINDER_HOUR,
-            minute=REMINDER_MINUTE,
-            timezone=TBILISI_TZ,
-        ),
-        args=[1],
-        id="pre_group1_tuesday",
-        name="Pre-meeting: Group 1 (Tuesday)",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        pre_meeting_job,
-        trigger=CronTrigger(
-            day_of_week="fri",
-            hour=REMINDER_HOUR,
-            minute=REMINDER_MINUTE,
-            timezone=TBILISI_TZ,
-        ),
-        args=[1],
-        id="pre_group1_friday",
-        name="Pre-meeting: Group 1 (Friday)",
-        replace_existing=True,
-    )
+    course_completed = is_course_completed()
+    if course_completed:
+        logger.info(
+            "COURSE_COMPLETED=true — lecture pre-meeting jobs and lecture-only "
+            "retry/audit jobs are DISABLED. Advisor (WhatsApp assistant) and "
+            "its supporting jobs remain active."
+        )
 
     # ------------------------------------------------------------------ #
-    #  Group 2 — Monday (dow=0) and Thursday (dow=3)                      #
+    #  Lecture pre-meeting jobs — only when the course is still running.   #
+    #  When COURSE_COMPLETED=true, no Zoom meetings are booked and no      #
+    #  pre-lecture reminders are sent.                                     #
     # ------------------------------------------------------------------ #
-    scheduler.add_job(
-        pre_meeting_job,
-        trigger=CronTrigger(
-            day_of_week="mon",
-            hour=REMINDER_HOUR,
-            minute=REMINDER_MINUTE,
-            timezone=TBILISI_TZ,
-        ),
-        args=[2],
-        id="pre_group2_monday",
-        name="Pre-meeting: Group 2 (Monday)",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        pre_meeting_job,
-        trigger=CronTrigger(
-            day_of_week="thu",
-            hour=REMINDER_HOUR,
-            minute=REMINDER_MINUTE,
-            timezone=TBILISI_TZ,
-        ),
-        args=[2],
-        id="pre_group2_thursday",
-        name="Pre-meeting: Group 2 (Thursday)",
-        replace_existing=True,
-    )
+    if not course_completed:
+        # Group 1 — Tuesday (dow=1) and Friday (dow=4)
+        scheduler.add_job(
+            pre_meeting_job,
+            trigger=CronTrigger(
+                day_of_week="tue",
+                hour=REMINDER_HOUR,
+                minute=REMINDER_MINUTE,
+                timezone=TBILISI_TZ,
+            ),
+            args=[1],
+            id="pre_group1_tuesday",
+            name="Pre-meeting: Group 1 (Tuesday)",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            pre_meeting_job,
+            trigger=CronTrigger(
+                day_of_week="fri",
+                hour=REMINDER_HOUR,
+                minute=REMINDER_MINUTE,
+                timezone=TBILISI_TZ,
+            ),
+            args=[1],
+            id="pre_group1_friday",
+            name="Pre-meeting: Group 1 (Friday)",
+            replace_existing=True,
+        )
 
-    # ------------------------------------------------------------------ #
-    #  Nightly catch-all — 02:00 Tbilisi time every day                   #
-    # ------------------------------------------------------------------ #
-    from tools.core.pipeline_retry import nightly_catch_all
+        # Group 2 — Monday (dow=0) and Thursday (dow=3)
+        scheduler.add_job(
+            pre_meeting_job,
+            trigger=CronTrigger(
+                day_of_week="mon",
+                hour=REMINDER_HOUR,
+                minute=REMINDER_MINUTE,
+                timezone=TBILISI_TZ,
+            ),
+            args=[2],
+            id="pre_group2_monday",
+            name="Pre-meeting: Group 2 (Monday)",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            pre_meeting_job,
+            trigger=CronTrigger(
+                day_of_week="thu",
+                hour=REMINDER_HOUR,
+                minute=REMINDER_MINUTE,
+                timezone=TBILISI_TZ,
+            ),
+            args=[2],
+            id="pre_group2_thursday",
+            name="Pre-meeting: Group 2 (Thursday)",
+            replace_existing=True,
+        )
 
-    scheduler.add_job(
-        nightly_catch_all,
-        trigger=CronTrigger(
-            hour=2,
-            minute=0,
-            timezone=TBILISI_TZ,
-        ),
-        id="nightly_catch_all",
-        name="Nightly catch-all: retry unprocessed lectures",
-        replace_existing=True,
-    )
+        # Nightly catch-all — retries unprocessed lectures, only relevant
+        # while the course is active.
+        from tools.core.pipeline_retry import nightly_catch_all
+
+        scheduler.add_job(
+            nightly_catch_all,
+            trigger=CronTrigger(
+                hour=2,
+                minute=0,
+                timezone=TBILISI_TZ,
+            ),
+            id="nightly_catch_all",
+            name="Nightly catch-all: retry unprocessed lectures",
+            replace_existing=True,
+        )
 
     # ------------------------------------------------------------------ #
     #  Pinecone score backup — every 6 hours (safety net for ephemeral DB) #
@@ -1261,16 +1285,19 @@ def start_scheduler() -> AsyncIOScheduler:
     #  Detects missing videos, duplicate uploads, missing summaries, and  #
     #  empty Pinecone indexes BEFORE students notice. Runs after the      #
     #  token health check so any auth issue is surfaced first.            #
+    #  Only active while the course is running — no new lectures means    #
+    #  no new state to audit.                                              #
     # ------------------------------------------------------------------ #
-    from tools.services.drive_audit import daily_audit_job
+    if not course_completed:
+        from tools.services.drive_audit import daily_audit_job
 
-    scheduler.add_job(
-        daily_audit_job,
-        trigger=CronTrigger(hour=9, minute=0, timezone=TBILISI_TZ),
-        id="drive_pinecone_audit",
-        name="Daily Drive↔Pinecone consistency audit",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            daily_audit_job,
+            trigger=CronTrigger(hour=9, minute=0, timezone=TBILISI_TZ),
+            id="drive_pinecone_audit",
+            name="Daily Drive↔Pinecone consistency audit",
+            replace_existing=True,
+        )
 
     # ------------------------------------------------------------------ #
     #  Proactive token health monitor — 06:00 Tbilisi time every day      #
