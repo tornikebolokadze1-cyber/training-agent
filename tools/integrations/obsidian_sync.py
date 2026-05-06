@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from tools.core.config import (
+    ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GREEN_API_INSTANCE_ID,
@@ -476,7 +477,7 @@ def extract_entities(
     lecture_number: int,
     content: dict[str, str],
 ) -> dict[str, Any]:
-    """Use Gemini to extract entities and relationships from lecture content.
+    """Extract entities via Claude Sonnet 4.6 (Gemini free-tier 20/day was insufficient for bulk vault rebuild).
 
     Args:
         group_number: Training group (1 or 2).
@@ -486,24 +487,24 @@ def extract_entities(
     Returns:
         Parsed JSON dict with concepts, relationships, etc.
     """
-    from google import genai
+    import anthropic
 
-    api_key = GEMINI_API_KEY_PAID or GEMINI_API_KEY
-    if not api_key:
-        raise RuntimeError("No Gemini API key configured for entity extraction")
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("No Anthropic API key configured for entity extraction")
 
-    client = genai.Client(api_key=api_key)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    # Combine summary + deep_analysis for richest extraction
+    # Combine summary + deep_analysis for richest extraction.
+    # Cap at 30K each so prompt+output fits comfortably under Sonnet's response budget.
     texts = []
     for ctype in ("summary", "deep_analysis"):
         if ctype in content:
-            texts.append(content[ctype][:40000])
+            texts.append(content[ctype][:30000])
 
     if not texts:
         # Fall back to transcript
         if "transcript" in content:
-            texts.append(content["transcript"][:40000])
+            texts.append(content["transcript"][:30000])
 
     if not texts:
         logger.warning(
@@ -516,13 +517,20 @@ def extract_entities(
     combined = "\n\n---\n\n".join(texts)
     prompt = ENTITY_EXTRACTION_PROMPT + combined
 
+    # Sonnet 4.6: more reliable JSON output than Haiku (no truncation observed in testing).
+    # max_tokens=16000 gives headroom for 30 concepts + relationships + examples.
+    _ENTITY_MODEL = "claude-sonnet-4-6"
+
     def _do_extract() -> dict[str, Any]:
-        response = client.models.generate_content(
-            model=ENTITY_EXTRACTION_MODEL,
-            contents=prompt,
+        response = client.messages.create(
+            model=_ENTITY_MODEL,
+            max_tokens=16000,
+            timeout=300.0,
+            messages=[{"role": "user", "content": prompt}],
         )
-        text = response.text.strip()
-        # Remove markdown code blocks if present
+        text = "\n".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1]
             if "```" in text:
@@ -532,9 +540,9 @@ def extract_entities(
 
     data = retry_with_backoff(
         _do_extract,
-        max_retries=3,
-        backoff_base=5.0,
-        operation_name="entity extraction",
+        max_retries=5,
+        backoff_base=10.0,
+        operation_name="entity extraction (Claude Sonnet)",
     )
 
     # Post-extraction validation
