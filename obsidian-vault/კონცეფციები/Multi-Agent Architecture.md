@@ -27,8 +27,15 @@ category: concept
 
 - [[Commander Agent Pattern]]
 - [[Agent Skills System]]
-- [[Agentic Workflow]]
+- [[Agent Specialization]]
+- [[Paperclip Framework]]
 - [[AI Agent]]
 - [[Agent Swarm]]
 - [[Claude Code]]
 - [[Phone-First Agent Deployment]]
+
+---
+
+## პრაქტიკული გამოყენება
+
+- გალერეის ბიზნესისთვის ცალ-ცალკე მარკეტინგის, იმეილის და სოციალური მედიის აგენტების შექმნა ერთი 'ყველაფერი-ერთში' აგენტის ნაცვლად. (ჯგუფი 1, ლექცია 12)

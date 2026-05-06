@@ -17,6 +17,7 @@ LLM (Large Language Model) არის აგენტის 'ტვინი' 
 ## ლექციებში
 
 - [[ლექცია 8]] (ჯგუფი 1)
+- [[ლექცია 15]] (ჯგუფი 2)
 
 ---
 
@@ -24,3 +25,8 @@ LLM (Large Language Model) არის აგენტის 'ტვინი' 
 
 - [[AI Agent]]
 - [[Open Router]]
+- [[Prompt Engineering]]
+- [[RAG]]
+- [[Fine-tuning]]
+- [[Agentic AI]]
+- [[Multimodal AI]]

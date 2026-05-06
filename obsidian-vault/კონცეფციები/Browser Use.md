@@ -24,3 +24,4 @@ Computer Use-ის მსგავსი კონცეფცია, რომ
 ## დაკავშირებული
 
 - [[Computer Use]]
+- [[AI Agent]]

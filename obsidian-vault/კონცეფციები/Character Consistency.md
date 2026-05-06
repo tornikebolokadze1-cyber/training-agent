@@ -24,6 +24,5 @@ category: concept
 ## დაკავშირებული
 
 - [[Image Generation]]
-- [[Elements System]]
 - [[Sora]]
-- [[Multi-Shot Generation]]
+- [[Elements System]]

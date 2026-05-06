@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [მემ-ნული]
+aliases: []
 category: tool
 ---
 
@@ -14,12 +14,10 @@ category: tool
 
 ## ლექციებში
 
-- [[ლექცია 12]] (ჯგუფი 1)
 - [[ლექცია 6]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
-- [[Agent Memory Architecture]]
 - [[Vector Database]]

@@ -35,11 +35,11 @@ AI ვიდეო გენერაციის ინსტრუმენტ
 - [[Magic Light AI]]
 - [[Face Swap]]
 - [[Rika Studio]]
-- [[Kling 3.0]]
+- [[Elements System]]
 - [[Hailuo]]
-- [[Sora]]
-- [[Motion Control]]
-- [[Lipsync]]
+- [[Multi-Shot Generation]]
+- [[AI Video Workflow]]
+- [[Credit Cost Management]]
 
 ---
 

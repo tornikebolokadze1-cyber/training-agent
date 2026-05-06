@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [კდრანტი, კვადრანტი]
+aliases: [კდრანტი]
 category: tool
 ---
 
@@ -16,7 +16,6 @@ category: tool
 
 - [[ლექცია 8]] (ჯგუფი 1)
 - [[ლექცია 10]] (ჯგუფი 1)
-- [[ლექცია 12]] (ჯგუფი 1)
 - [[ლექცია 6]] (ჯგუფი 2)
 
 ---
@@ -25,6 +24,6 @@ category: tool
 
 - [[RAG]]
 - [[Knowledge Graph]]
-- [[Vector Database]]
 - [[RAG (Retrieval-Augmented Generation)]]
 - [[Global Infrastructure Setup]]
+- [[Vector Database]]

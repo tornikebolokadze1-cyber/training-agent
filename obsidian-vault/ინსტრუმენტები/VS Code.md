@@ -33,6 +33,7 @@ VS Code (Visual Studio Code) არის IDE — ინტეგრირებ
 ## დაკავშირებული
 
 - [[Claude Code]]
+- [[Hyperframes]]
 - [[Claude]]
 - [[IDE Configuration]]
 - [[Project Folder Structure]]

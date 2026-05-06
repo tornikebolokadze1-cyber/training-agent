@@ -25,7 +25,6 @@ Google-ის ვებ-პლატფორმა Gemini მოდელებ
 - [[ლექცია 10]] (ჯგუფი 1)
 - [[ლექცია 5]] (ჯგუფი 2)
 - [[ლექცია 7]] (ჯგუფი 2)
-- [[ლექცია 11]] (ჯგუფი 2)
 
 ---
 
@@ -41,8 +40,6 @@ Google-ის ვებ-პლატფორმა Gemini მოდელებ
 - [[Multi-speaker TTS]]
 - [[Parallel AI Environments]]
 - [[Imagen]]
-- [[Infographic Video Workflow]]
-- [[NanoBanana]]
 - [[Text-to-Speech]]
 
 ---

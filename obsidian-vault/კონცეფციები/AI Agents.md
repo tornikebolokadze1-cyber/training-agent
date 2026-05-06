@@ -1,6 +1,6 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [AI Agent, AI აგენტები, AI აგენტი]
+aliases: [AI Agent, AI აგენტები, AI აგენტი, Agent Orchestration, აგენტების ორკესტრაცია]
 category: concept
 ---
 
@@ -29,7 +29,7 @@ category: concept
 - [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 3]] (ჯგუფი 2)
 - [[ლექცია 5]] (ჯგუფი 2)
-- [[ლექცია 13]] (ჯგუფი 2)
+- [[ლექცია 14]] (ჯგუფი 2)
 
 ---
 
@@ -38,7 +38,6 @@ category: concept
 - [[Agentic Workflows]]
 - [[N8N]]
 - [[Multi-LLM Architecture]]
-- [[Kimi 2.6]]
 - [[LLM (Large Language Model)]]
 - [[Workflow Automation]]
 - [[Agentic Workflow]]
@@ -50,6 +49,7 @@ category: concept
 - [[Agentic Loop]]
 - [[Learning Curve]]
 - [[Agentic Behavior]]
+- [[AI Workflow Automation]]
 
 ---
 

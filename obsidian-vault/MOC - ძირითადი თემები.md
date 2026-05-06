@@ -28,7 +28,7 @@ tags: [MOC, ინდექსი]
 | 11 | [[ლექცია 11]] | 2026-04-17 | AI ვიდეო გენერაცია — სესია 2 |
 | 12 | [[ლექცია 12]] | 2026-04-21 | AI აგენტები — მეხსიერების სისტემები, Claude Code და N8N ინტე |
 | 13 | [[ლექცია 13]] | 2026-04-24 | Claude AI-ის პრაქტიკული გამოყენება VS Code-ში |
-| 14 | [[ლექცია 14]] | 2026-04-28 | AI დეველოპერის ინსტრუმენტები: Claude Code, N8N და Continue.d |
+| 14 | [[ლექცია 14]] | 2026-04-28 | AI დეველოპერული ინსტრუმენტების კონფიგურაცია და ინტეგრაცია |
 | 15 | [[ლექცია 15]] | 2026-05-01 | AI აგენტის შექმნა Claude-ისა და VS Code-ის გამოყენებით — ინდ |
 
 ### ჯგუფი 2 -- მარტის ჯგუფი #2
@@ -47,9 +47,9 @@ tags: [MOC, ინდექსი]
 | 10 | [[ლექცია 10]] | 2026-04-13 | ხელოვნური ინტელექტით ვიდეოების გენერაცია — სესია 2 |
 | 11 | [[ლექცია 11]] | 2026-04-16 | AI ვიდეო გენერაცია — სესია 2 |
 | 12 | [[ლექცია 12]] | 2026-04-20 | AI ვიდეო გენერაცია, ავატარის შექმნა და ავტომატიზაციის ინსტრუ |
-| 13 | [[ლექცია 13]] | 2026-04-23 | ლექციის შეჯამება: პრაქტიკული AI ავტომატიზაციის სემინარი — n8 |
+| 13 | [[ლექცია 13]] | 2026-04-23 | პრაქტიკული AI ავტომატიზაციის სემინარი — n8n + Claude Code-ის |
 | 14 | [[ლექცია 14]] | 2026-04-27 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი ქართველი ბიზნეს-პროფეს |
-| 15 | [[ლექცია 15]] | 2026-04-30 | ლექციის შინაარსი მიუწვდომელია - ტექნიკური ხარვეზი |
+| 15 | [[ლექცია 15]] | 2026-04-30 | AI ტრენინგის კურსი — ნაწილი 4/4 |
 
 ---
 
@@ -93,7 +93,7 @@ tags: [MOC, ინდექსი]
 - [[Compact]]
 - [[Confyu]]
 - [[Continue.dev]]
-- [[Cursor]]
+- [[Copilot Studio]]
 - [[Cursor IDE]]
 - [[DeepLearning.AI]]
 - [[Dispatch]]
@@ -112,36 +112,36 @@ tags: [MOC, ინდექსი]
 
 ## ძირითადი კონცეფციები (რამდენიმე ლექციაში განხილული)
 
-- [[AI Agents]] (G1L1, G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L11, G1L14, G1L15, G2L1, G2L3, G2L5, G2L13)
+- [[AI Agents]] (G1L1, G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L11, G1L14, G1L15, G2L1, G2L3, G2L5, G2L14)
+- [[AI Hallucination Management]] (G1L1, G2L15)
 - [[API (Access & Keys)]] (G1L2, G1L5, G2L2)
-- [[Agentic AI]] (G1L13, G2L2, G2L4, G2L7)
+- [[Agentic AI]] (G1L13, G2L2, G2L4, G2L7, G2L15)
 - [[Agentic Workflow]] (G1L1, G1L6, G1L12, G1L14)
 - [[Browser Use]] (G1L5, G2L14)
 - [[CLAUDE.md]] (G2L5, G2L9)
+- [[Camera Movement Control]] (G1L11, G2L11)
 - [[Character Consistency]] (G1L8, G2L11)
 - [[Claude Skills]] (G1L2, G1L3, G1L4, G2L2, G2L6)
 - [[Cloud Deployment]] (G2L9, G2L13)
 - [[Computer Use]] (G1L5, G1L13, G2L1, G2L2, G2L3, G2L7, G2L14)
 - [[Content Automation Pipeline]] (G1L6, G1L10)
-- [[Context Window]] (G1L2, G1L12, G1L13, G2L2, G2L5)
+- [[Context Window]] (G1L2, G1L13, G2L2, G2L5)
+- [[Context Window Management]] (G1L6, G1L12)
 - [[Custom Instructions]] (G1L2, G2L3)
+- [[Data Privacy]] (G2L5, G2L13)
 - [[Deep Research]] (G1L2, G1L5, G2L3)
 - [[Elements System]] (G2L10, G2L11)
 - [[Environment Variables]] (G1L10, G2L2)
 - [[Frame-based Video Generation]] (G1L9, G2L9)
+- [[Georgian Language AI Support]] (G2L11, G2L15)
 - [[Image-to-Video]] (G1L9, G2L10, G2L11)
-- [[Infographic Video Workflow]] (G2L10, G2L11)
 - [[Infrastructure Setup]] (G1L7, G2L5)
 - [[JSON Prompt Format]] (G1L8, G2L8)
+- [[LLM]] (G1L8, G2L15)
 - [[Lip-Sync]] (G2L7, G2L11)
 - [[LipSync]] (G2L9, G2L10)
 - [[Lipsyncing]] (G1L7, G1L9)
 - [[Local AI Models]] (G1L5, G2L5)
-- [[MCP (Model Context Protocol)]] (G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L12, G1L14, G2L1, G2L2, G2L3, G2L5, G2L7)
-- [[Memory Management (AI)]] (G1L2, G2L5)
-- [[Midjourney Personalization]] (G1L9, G2L8)
-- [[Multi-Agent Architecture]] (G1L8, G1L10, G1L12, G2L6)
-- [[Multi-Agent Orchestration]] (G1L6, G1L15, G2L14)
 
 ---
 

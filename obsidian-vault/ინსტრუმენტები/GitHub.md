@@ -31,4 +31,5 @@ category: tool
 - [[Claude Code]]
 - [[Project Infrastructure]]
 - [[Git]]
+- [[Version Control Discipline]]
 - [[Cloud Deployment]]
