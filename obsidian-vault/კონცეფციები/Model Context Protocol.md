@@ -1,6 +1,6 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [Model Context Protocol (MCP), მოდელის კონტექსტის პროტოკოლი]
+aliases: [მოდელის კონტექსტის პროტოკოლი]
 category: concept
 ---
 
@@ -16,13 +16,10 @@ category: concept
 
 ## ლექციებში
 
-- [[ლექცია 12]] (ჯგუფი 1)
 - [[ლექცია 15]] (ჯგუფი 1)
 
 ---
 
 ## დაკავშირებული
 
-- [[Claude Code]]
-- [[N8N]]
 - [[AI Agent]]

@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [Claude Code რეჟიმი, Claude-ის კოდირების გარემო, კლოდ კოდი]
+aliases: [Claude-ის კოდირების გარემო, Claude-ის კოდირების რეჟიმი, კლოდ კოდი]
 category: tool
 ---
 
@@ -8,7 +8,7 @@ category: tool
 
 ## აღწერა
 
-AI-powered coding agent integrated with Claude that enables building complex applications and automating tasks with minimal constraints. Claude Code serves as a central development tool capable of creating trading systems, chatbots, and multi-model orchestrations with access to one million token context windows.
+Claude Code არის ხელოვნური ინტელექტის კოდირების აგენტი, რომელსაც შეუძლია პროგრამული უზრუნველყოფის ავტონომიური ინსტალაცია, კოდის წერა და სისტემების კონფიგურაცია ბუნებრივი ენის გამოყენებით. ის ეხმარება მომხმარებლებს ტექნიკური ამოცანების შესრულებაში კოდირების ცოდნის გარეშე, მაგალითად, n8n-ის ლოკალურად გამართვაში.
 
 ---
 
@@ -28,40 +28,41 @@ AI-powered coding agent integrated with Claude that enables building complex app
 - [[ლექცია 4]] (ჯგუფი 2)
 - [[ლექცია 5]] (ჯგუფი 2)
 - [[ლექცია 6]] (ჯგუფი 2)
-- [[ლექცია 9]] (ჯგუფი 2)
 - [[ლექცია 13]] (ჯგუფი 2)
+- [[ლექცია 14]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[N8N]]
+- [[MCP (Model Context Protocol)]]
 - [[VS Code]]
-- [[Model Context Protocol]]
-- [[PRD]]
-- [[Skills]]
 - [[Context Window]]
-- [[Prompt Engineering]]
-- [[Model Context Protocol (MCP)]]
+- [[PRD (Product Requirements Document)]]
+- [[Parallel Sessions]]
+- [[Continue.dev]]
 - [[Global Configuration]]
-- [[Code Assistance]]
-- [[API (Application Programming Interface)]]
+- [[Prompt Engineering]]
 - [[Claude]]
 - [[Claude Desktop App]]
 - [[n8n]]
-- [[MCP (Model Context Protocol)]]
+- [[Claude Skills]]
+- [[Claude Desktop]]
+- [[GitHub]]
 
 ---
 
 ## პრაქტიკული გამოყენება
 
-- კესো აშენებს ვებ აპლიკაციას Claude Code-ის გამოყენებით, რომელიც სრულ კოდს წერს ნულიდან (ჯგუფი 1, ლექცია 12)
-- გლობალური კონფიგურაციის განხილვა წინა ლექციის საშინაო დავალებაზე, სადაც მონაწილემ (ლიკამ) აჩვენა, როგორ დააკონფიგურირა Claude Code გლობალურად ახალი პროექტებისთვის (ჯგუფი 1, ლექცია 14)
+- ნინიმ შექმნა AI-ით დაგენერირებული მოუშენ-დიზაინის ვიდეო მუსიკით და ტექსტური ანიმაციებით Hyperframes რეპოზიტორიუმის გამოყენებით VS Code-ში (ჯგუფი 1, ლექცია 12)
+- მონაწილემ (ლიკამ) გააზიარა ეკრანი და ცოცხლად აჩვენა Claude Code-ის გლობალური კონფიგურაცია, როგორც საშინაო დავალება — ლექტორი სოკრატესეული კითხვებით ამოწმებდა, ესმის თუ არა მონაწილეს თითოეული ნაბიჯის მიზანი. (ჯგუფი 1, ლექცია 14)
 - Chat-First Workflow-ის მეორე ეტაპი: Claude Chat-ში სტრუქტურირებული პრომპტების VS Code-ში Claude Code-თან გადატანა აგენტის კოდირებისა და ასაწყობი გარემოს სახით. (ჯგუფი 1, ლექცია 15)
 - VS Code-ში `/setup` ბრძანების გაშვება ახალი პროექტის ინფრასტრუქტურის გამართვისთვის — სისტემა ავტომატურად ანალიზებს არსებულ პროექტებს და პოულობს კონფიგურაციის ხარვეზებს. (ჯგუფი 1, ლექცია 5)
 - HR მართვის ვებ-აპლიკაციის შექმნა, რომელიც ხელფასებს ითვლის, Excel-ის შაბლონებს ქმნის, ტვირთავს მათ და დასწრების რეპორტებს ამზადებს. (ჯგუფი 1, ლექცია 7)
 - n8n-ის დოკუმენტაციის ბმულების კოპირება და Claude Code-ს ბუნებრივ ენაზე მოთხოვნა n8n-ის ინსტალაციისთვის (ჯგუფი 2, ლექცია 13)
 - „bypass permissions" ფუნქციის პოვნისა და ჩართვის დემონსტრაცია Claude Code-ის პარამეტრებში (ჯგუფი 2, ლექცია 13)
-- CRM სისტემის აგენტის შექმნა VS Code-ში, რომელიც ელ.ფოსტის საშუალებით ლიდების კლასიფიკაციას ახდენს ავტომატურად. (ჯგუფი 2, ლექცია 4)
-- Building automated trading dashboard agent with market analysis, decision-making, and visual reporting capabilities (ჯგუფი 2, ლექცია 5)
-- ნიკას მულტიპლატფორმული ჩატ-აგენტის შენობა Web, Telegram, WhatsApp-ის მხარდაჭერით. (ჯგუფი 2, ლექცია 6)
+- ქართული სამზარეულოს ვებსაიტის შექმნა Google Project IDX-ში, რეცეპტების შეფასებისა და კომენტარების სისტემით — Claude-მა თავად დაგეგმა არქიტექტურა და დაიწყო შენება. (ჯგუფი 2, ლექცია 2)
+- Meta სარეკლამო მონაცემების (Supermetrics/Looker Studio-დან) ავტომატური ანალიზისა და ოპტიმიზაციის AI აგენტის შექმნა ციფრული მარკეტოლოგებისთვის. (ჯგუფი 2, ლექცია 4)
+- CRM სისტემის ქასთომ AI აგენტით გამდიდრება ლიდების ავტომატური კლასიფიკაციისა და ელ.ფოსტის გაგზავნის ავტომატიზაციისთვის. (ჯგუფი 2, ლექცია 4)
+- Opus 4.6 მოდელი 1 მილიონიანი კონტექსტით, ნებართვების გვერდის ავლით და მიკროფონის გამოყენებით — დემო VS Code-ის სამუშაო გარემოში. (ჯგუფი 2, ლექცია 5)

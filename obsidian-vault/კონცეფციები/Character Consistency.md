@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [პერსონაჟის კონსისტენტურობა]
-category: technique
+category: concept
 ---
 
 # Character Consistency
@@ -17,9 +17,13 @@ category: technique
 ## ლექციებში
 
 - [[ლექცია 8]] (ჯგუფი 1)
+- [[ლექცია 11]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[Image Generation]]
+- [[Elements System]]
+- [[Sora]]
+- [[Multi-Shot Generation]]

@@ -25,3 +25,4 @@ JSON პრომპტის ფორმატი სტრუქტური�
 
 - [[Prompt Structure for Images]]
 - [[Prompt Engineering]]
+- [[Midjourney]]

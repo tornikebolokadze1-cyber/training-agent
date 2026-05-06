@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [სამუშაო პროცესების ავტომატიზაცია, სამუშაო პროცესის ავტომატიზაცია]
-category: concept
+aliases: [სამუშაო პროცესების ავტომატიზაცია]
+category: methodology
 ---
 
 # Workflow Automation
@@ -17,7 +17,9 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 14]] (ჯგუფი 1)
+- [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 13]] (ჯგუფი 2)
+- [[ლექცია 14]] (ჯგუფი 2)
 
 ---
 
@@ -26,3 +28,8 @@ category: concept
 - [[AI Agent]]
 - [[N8N]]
 - [[n8n]]
+- [[N8n]]
+- [[Telegram Bot]]
+- [[Facebook Chatbot]]
+- [[Claude Worq]]
+- [[PRD (Product Requirements Document)]]

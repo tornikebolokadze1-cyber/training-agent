@@ -1,16 +1,16 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [mem რეპოზიტორი]
+aliases: [მემ რეპოზიტორი]
 category: tool
 ---
 
 # mem Repository
 
-> ქართულად: **mem რეპოზიტორი**
+> ქართულად: **მემ რეპოზიტორი**
 
 ## აღწერა
 
-Global memory storage system that can be activated in Claude Code to maintain persistent knowledge across multiple sessions and projects. Mem repository serves as extended memory layer preventing context window overflow while preserving critical project information and decision history.
+სპეციალიზებული გლობალური მეხსიერების ინსტრუმენტი Claude Code-სთვის, რომელიც საშუალებას აძლევს AI-ს შეინახოს და გამოიყენოს ინფორმაცია სხვადასხვა სესიასა და პროექტს შორის. ლექტორი რეკომენდაციას უწევს მის გლობალურ გააქტიურებას Claude Code-ში.
 
 ---
 
@@ -22,4 +22,5 @@ Global memory storage system that can be activated in Claude Code to maintain pe
 
 ## დაკავშირებული
 
-- [[Context Window Management]]
+- [[Claude Code]]
+- [[Memory Management]]

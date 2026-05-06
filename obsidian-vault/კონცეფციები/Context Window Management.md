@@ -10,14 +10,13 @@ category: concept
 
 ## აღწერა
 
-Strategy for managing limited computational space in each AI session to prevent hallucinations and performance degradation. Extended sessions cause quality deterioration, making it essential to implement three-tier memory architecture: Claude.md files, mem repositories, and vector databases to maintain long-term context without overwhelming single sessions.
+Claude-ს გააჩნია შეზღუდული კონტექსტის ფანჯარა ერთი სესიის ფარგლებში, რაც გავლენას ახდენს გრძელი პროექტების მუშაობაზე. პრობლემის გადასაჭრელად გამოიყენება Compact ფუნქცია ან ახალი სესიის გახსნა პროექტის ფაილების ხელახლა დამატებით.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 6]] (ჯგუფი 1)
-- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -25,7 +24,3 @@ Strategy for managing limited computational space in each AI session to prevent 
 
 - [[Compact]]
 - [[Hindsight]]
-- [[Claude.md Configuration]]
-- [[mem Repository]]
-- [[Vector Databases]]
-- [[Session-Based Development Strategy]]

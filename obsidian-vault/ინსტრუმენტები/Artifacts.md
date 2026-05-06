@@ -1,14 +1,16 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: []
+aliases: [არტეფაქტები]
 category: tool
 ---
 
 # Artifacts
 
+> ქართულად: **არტეფაქტები**
+
 ## აღწერა
 
-Claude's feature for creating simple, standalone web-based outputs including forms, templates, and quizzes directly in the interface. Artifacts provide quick delivery of functional solutions for straightforward tasks without requiring full agent architecture implementation in VS Code.
+Claude-ის ინტერფეისში პირდაპირ შექმნილი მარტივი ვებ-გამომავალი შედეგები, მაგალითად ფორმები, ვიზუალიზაციები და შაბლონები. ისინი იდეალურია მარტივი ამოცანებისთვის, რომლებსაც არ სჭირდება სრული აგენტის აშენება VS Code-ში.
 
 ---
 

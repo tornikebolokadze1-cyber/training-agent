@@ -1,6 +1,6 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [პრომპტ ინჟინერია, პრომპტ ინჟინერინგი, პრომპტ-ინჟინერია, პრომპტების ინჟინერია, პრომპტის დაწერა, პრომპტის ინჟინერია, პრომპტის სტრატეგია]
+aliases: [პრომპტ ინჟინერია, პრომპტ ინჟინერინგი, პრომპტ-ინჟინერია, პრომპტების ინჟინერია, პრომპტის ინჟინერია, პრომპტის სტრატეგია]
 category: technique
 ---
 
@@ -23,13 +23,14 @@ category: technique
 - [[ლექცია 7]] (ჯგუფი 1)
 - [[ლექცია 8]] (ჯგუფი 1)
 - [[ლექცია 10]] (ჯგუფი 1)
-- [[ლექცია 11]] (ჯგუფი 1)
 - [[ლექცია 12]] (ჯგუფი 1)
 - [[ლექცია 13]] (ჯგუფი 1)
 - [[ლექცია 14]] (ჯგუფი 1)
 - [[ლექცია 15]] (ჯგუფი 1)
+- [[ლექცია 1]] (ჯგუფი 2)
 - [[ლექცია 8]] (ჯგუფი 2)
 - [[ლექცია 13]] (ჯგუფი 2)
+- [[ლექცია 14]] (ჯგუფი 2)
 
 ---
 
@@ -38,18 +39,18 @@ category: technique
 - [[Chain-of-Thought]]
 - [[Few-Shot Learning]]
 - [[Deep Audit Prompt]]
-- [[ChatGPT Mediation]]
-- [[Kling]]
-- [[Sideance (Sora 2.0)]]
-- [[Claude Code]]
+- [[Token Optimization]]
 - [[Code Generation]]
 - [[Iterative Refinement]]
-- [[Continue]]
+- [[Claude Code]]
 - [[Argumentative Recommendation]]
 - [[AI as Teacher]]
 - [[AI Agent]]
 - [[Claude Skills]]
 - [[Sound Effects Generation]]
+- [[Skills (Agent Instructions)]]
+- [[Large Language Model (LLM)]]
+- [[Agent Architecture]]
 
 ---
 

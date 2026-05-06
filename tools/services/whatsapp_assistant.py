@@ -39,6 +39,7 @@ from tools.core.config import (
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
+    iter_all_groups,
 )
 from tools.integrations.whatsapp_sender import send_message_to_chat
 
@@ -52,11 +53,25 @@ _GROUP_CHAT_MAP: dict[str, int] = {}
 
 
 def _build_group_chat_map() -> dict[str, int]:
-    """Build chat-ID → group-number mapping from config values."""
+    """Build chat-ID → group-number mapping from the GROUPS config.
+
+    Reads ``whatsapp_chat_id`` from each entry produced by
+    ``iter_all_groups()`` so newly added groups (e.g. Course #2) light up
+    automatically without code changes here.
+
+    Falls back to the legacy module-level WHATSAPP_GROUP1_ID/2_ID values
+    if a group's ``whatsapp_chat_id`` is empty, so existing deployments
+    that haven't yet populated the new field keep working.
+    """
     mapping: dict[str, int] = {}
-    if WHATSAPP_GROUP1_ID:
+    for group_num, cfg in iter_all_groups():
+        chat_id = cfg.get("whatsapp_chat_id", "")
+        if chat_id:
+            mapping[chat_id] = group_num
+    # Legacy fallback — only populate if the new field wasn't filled in.
+    if WHATSAPP_GROUP1_ID and WHATSAPP_GROUP1_ID not in mapping:
         mapping[WHATSAPP_GROUP1_ID] = 1
-    if WHATSAPP_GROUP2_ID:
+    if WHATSAPP_GROUP2_ID and WHATSAPP_GROUP2_ID not in mapping:
         mapping[WHATSAPP_GROUP2_ID] = 2
     return mapping
 
@@ -64,15 +79,23 @@ def _build_group_chat_map() -> dict[str, int]:
 def _build_allowed_chats() -> set[str]:
     """Build the set of chat IDs where the assistant may send messages.
 
-    Only these chats are allowed (Green API free plan = 3 chats):
-      1. Tornike's private chat
-      2. Group #1
-      3. Group #2
-    Messages from any other chat are silently ignored.
+    Allowed chats:
+      • The operator's private chat (WHATSAPP_TORNIKE_PHONE)
+      • Every group chat present in the GROUPS config (regardless of
+        ``course_completed`` — completed courses keep the advisor active)
+
+    Messages from any other chat are silently ignored, both for cost
+    control on Green API plans with chat caps and to prevent the bot from
+    leaking into chats where it isn't authorised to speak.
     """
     allowed: set[str] = set()
     if WHATSAPP_TORNIKE_PHONE:
         allowed.add(f"{WHATSAPP_TORNIKE_PHONE}@c.us")
+    for _group_num, cfg in iter_all_groups():
+        chat_id = cfg.get("whatsapp_chat_id", "")
+        if chat_id:
+            allowed.add(chat_id)
+    # Legacy fallback for deployments that still rely on the env-var pair.
     if WHATSAPP_GROUP1_ID:
         allowed.add(WHATSAPP_GROUP1_ID)
     if WHATSAPP_GROUP2_ID:

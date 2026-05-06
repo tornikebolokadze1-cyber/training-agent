@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [ფიშ აუდიო]
-category: tool
+category: platform
 ---
 
 # Fish Audio

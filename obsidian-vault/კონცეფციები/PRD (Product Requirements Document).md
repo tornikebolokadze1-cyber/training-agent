@@ -1,27 +1,34 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [PRD (პროდუქტის მოთხოვნების დოკუმენტი), პროდუქტის მოთხოვნების დოკუმენტი]
-category: methodology
+aliases: [პროდუქტის მოთხოვნების დოკუმენტი]
+category: technique
 ---
 
 # PRD (Product Requirements Document)
 
-> ქართულად: **PRD (პროდუქტის მოთხოვნების დოკუმენტი)**
+> ქართულად: **პროდუქტის მოთხოვნების დოკუმენტი**
 
 ## აღწერა
 
-Structured document defining project goals, requirements, and direction that guides AI agent development. PRD provides clear specifications to Claude Code agents, ensuring focused development and enabling iterative refinement of features and capabilities aligned with business objectives.
+AI პროექტების მშენებლობამდე Claude-ის ვებ-ინტერფეისში შესაქმნელი დეტალური გეგმის დოკუმენტი. ლექტორმა ხაზი გაუსვა, რომ პროექტი ჯერ დეტალურად უნდა დაიგეგმოს Claude-ის ვებსაიტზე და მხოლოდ ამის შემდეგ გადაიტანოს VS Code-ში ასაშენებლად.
 
 ---
 
 ## ლექციებში
 
 - [[ლექცია 3]] (ჯგუფი 1)
-- [[ლექცია 5]] (ჯგუფი 2)
+- [[ლექცია 12]] (ჯგუფი 1)
+- [[ლექცია 2]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
 - [[Claude Code]]
-- [[Iterative Development with AI]]
+- [[Workflow Automation]]
+
+---
+
+## პრაქტიკული გამოყენება
+
+- ლაშას ტრეიდინგ-აგენტისთვის /create PRD ბრძანების გამოყენება 2000-გვერდიანი სტრატეგიის დოკუმენტზე დაფუძნებული მეხსიერების არქიტექტურის დასაპროექტებლად (ჯგუფი 1, ლექცია 12)

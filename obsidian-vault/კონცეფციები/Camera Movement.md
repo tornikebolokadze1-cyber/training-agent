@@ -10,7 +10,7 @@ category: concept
 
 ## აღწერა
 
-ვიდეო გენერაციაში კრიტიკული ელემენტი, რომელსაც აქვს 42 განსხვავებული ტიპი (Dolly, Hyperlapse, God's Eye View და სხვა). კამერის მოძრაობა უფრო მნიშვნელოვანია ვიდეოში, ვიდრე ფოტოში.
+ვიდეო გენერაციაში 42 სხვადასხვა კამერის მოძრაობა დოკუმენტირებულია, მათ შორის Dolly In/Out, Dolly Side, Hyperlapse და God's Eye View. კამერის სწორი მოძრაობა ვიდეო გენერაციაში ბევრად უფრო მნიშვნელოვანია, ვიდრე ფოტო გენერაციაში.
 
 ---
 
@@ -22,5 +22,5 @@ category: concept
 
 ## დაკავშირებული
 
-- [[Midjourney]]
-- [[Prompt Engineering for Video]]
+- [[Video Prompting]]
+- [[Midjourney Video]]

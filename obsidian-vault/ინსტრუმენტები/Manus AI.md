@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [მანუს AI]
-category: tool
+category: platform
 ---
 
 # Manus AI
@@ -30,10 +30,9 @@ category: tool
 - [[Meta Ads Integration]]
 - [[AI Presentation Generation]]
 - [[Deep Research]]
-- [[Claude]]
+- [[Agentic AI]]
+- [[Airtable]]
 - [[Rube]]
-- [[YouTube MCP]]
-- [[NotebookLM]]
 
 ---
 
@@ -41,4 +40,4 @@ category: tool
 
 - Facebook Ads კამპანიების კვლევა და ოპტიმიზაცია Meta Ads Manager-თან პირდაპირი ინტეგრაციის გამოყენებით (ჯგუფი 1, ლექცია 2)
 - Computer Use ფუნქციით MagtiCom-ისა და SOCAR Georgia-ს შესახებ პრეზენტაციების ავტომატური შექმნა, სადაც სისტემამ ავტონომიურად მოიძია ინტერნეტიდან რეალური ფოტოები, სტატისტიკა და კომპანიის მონაცემები. (ჯგუფი 1, ლექცია 5)
-- YouTube MCP კავშირი, ლაივ დავალება: YouTube არხიდან პოდკასტ-ინფორმაციის ამოღება CRM-ის Airtable-ში ჩასატანად (ჯგუფი 2, ლექცია 7)
+- YouTube არხიდან (AI Pulse Georgia) პოდკასტის ვიდეო ინფორმაციის ამოღება და Airtable-ში CRM სისტემის შევსება — YouTube MCP სერვერის OAuth ავტორიზაციით. (ჯგუფი 2, ლექცია 7)

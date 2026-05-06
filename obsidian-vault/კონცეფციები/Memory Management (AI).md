@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [Memory Management, მეხსიერების მართვა]
-category: concept
+category: technique
 ---
 
 # Memory Management (AI)
@@ -17,6 +17,7 @@ AI მოდელებში მომხმარებლის ინფო
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 1)
+- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -24,3 +25,7 @@ AI მოდელებში მომხმარებლის ინფო
 
 - [[Context Window]]
 - [[AI Model Personalization]]
+- [[Claude.md]]
+- [[mem Repository]]
+- [[Vector Database]]
+- [[Session Management]]

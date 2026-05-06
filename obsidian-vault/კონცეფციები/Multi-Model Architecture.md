@@ -1,7 +1,7 @@
 ---
 tags: [კონცეფცია, AI]
 aliases: [მულტი-მოდელური არქიტექტურა]
-category: concept
+category: methodology
 ---
 
 # Multi-Model Architecture
@@ -10,7 +10,7 @@ category: concept
 
 ## აღწერა
 
-System design combining multiple AI models for different specialized functions, such as Gemini Vision for image analysis, Claude Sonnet for reasoning, and smaller models for specific tasks. Architecture enables leveraging strengths of each model while compensating for individual weaknesses through ensemble approach.
+სისტემური მიდგომა, სადაც სხვადასხვა AI მოდელი ასრულებს სხვადასხვა სპეციალიზებულ ამოცანას ერთ პიპლაინში. მაგალითად, Gemini Vision-ი ახდენს სურათების ანალიზს, Claude კი ლოგიკური დასკვნების გამოტანას, რაც საერთო შედეგს აუმჯობესებს.
 
 ---
 
@@ -22,6 +22,13 @@ System design combining multiple AI models for different specialized functions, 
 
 ## დაკავშირებული
 
-- [[Gemini Vision]]
+- [[Gemini]]
 - [[Claude Code]]
-- [[Emoji-Based Signaling System]]
+- [[Multi-Model Validation]]
+
+---
+
+## პრაქტიკული გამოყენება
+
+- ლექტორის WhatsApp/Facebook აგენტი: Claude ფიქრობს და გეგმავს, Gemini წერს ტექსტს, Nano-Banana კი სურათებს გენერირებს. (ჯგუფი 2, ლექცია 5)
+- ტარიელის სისტემა: Gemini Flash 2.5 ახდენს სურათების ანალიზს ემოჯი სიგნალებით, Claude Sonnet 3.5 კი ლოგიკურ დასკვნებს — უთანხმოების შემთხვევაში Telegram-ში იგზავნება ახსნა. (ჯგუფი 2, ლექცია 5)

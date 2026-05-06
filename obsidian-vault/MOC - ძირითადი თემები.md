@@ -28,27 +28,27 @@ tags: [MOC, ინდექსი]
 | 11 | [[ლექცია 11]] | 2026-04-17 | AI ვიდეო გენერაცია — სესია 2 |
 | 12 | [[ლექცია 12]] | 2026-04-21 | AI აგენტები — მეხსიერების სისტემები, Claude Code და N8N ინტე |
 | 13 | [[ლექცია 13]] | 2026-04-24 | Claude AI-ის პრაქტიკული გამოყენება VS Code-ში |
-| 14 | [[ლექცია 14]] | 2026-04-28 | AI დეველოპერების ინსტრუმენტები: Claude Code, N8N, Continue.d |
+| 14 | [[ლექცია 14]] | 2026-04-28 | AI დეველოპერის ინსტრუმენტები: Claude Code, N8N და Continue.d |
 | 15 | [[ლექცია 15]] | 2026-05-01 | AI აგენტის შექმნა Claude-ისა და VS Code-ის გამოყენებით — ინდ |
 
 ### ჯგუფი 2 -- მარტის ჯგუფი #2
 
 | # | ლექცია | თარიღი | თემა |
 |---|--------|--------|------|
-| 1 | ლექცია 1 | -- | _მოლოდინში_ |
+| 1 | [[ლექცია 1]] | 2026-03-12 | AI ტრენინგის კურსი — ლექცია 1 (თეორიული შესავალი) |
 | 2 | [[ლექცია 2]] | 2026-03-16 | AI აგენტები, Claude Code, MCP სერვერები და დეველოპმენტის გარ |
 | 3 | [[ლექცია 3]] | 2026-03-19 | ხელოვნური ინტელექტის მოდელების მიმოხილვა, ფუნქციები, ინტეგრა |
 | 4 | [[ლექცია 4]] | 2026-03-23 | AI ინსტრუმენტები ქართველი ბიზნეს-პროფესიონალებისთვის — ლექცი |
-| 5 | [[ლექცია 5]] | 2026-03-26 | Claude Code, VS Code Integration, Multi-Model Architecture,  |
-| 6 | [[ლექცია 6]] | 2026-03-30 | AI აგენტების დანერგვა: კორპორატიული უსაფრთხოება, ჩინური მოდე |
-| 7 | [[ლექცია 7]] | 2026-04-02 | ჩინური AI მოდელები და გლობალური აუდიო/ხმის გენერაციის ინსტრუ |
+| 5 | [[ლექცია 5]] | 2026-03-26 | AI აგენტების შექმნა — პროგრესის შემოწმება და ინსტრუმენტების  |
+| 6 | [[ლექცია 6]] | 2026-03-30 | AI აგენტების განვითარება და კორპორატიული დანერგვა |
+| 7 | [[ლექცია 7]] | 2026-04-02 | ჩინური AI მოდელები, ხმის გენერაცია და მუსიკის გენერაციის ინს |
 | 8 | [[ლექცია 8]] | 2026-04-06 | AI ფოტო გენერაცია — ინსტრუმენტები, ტექნიკები და გამოყენების  |
 | 9 | [[ლექცია 9]] | 2026-04-09 | AI აგენტების პროგრესის შემოწმება და ვიდეო გენერაციის ინსტრუმ |
-| 10 | ლექცია 10 | -- | _მოლოდინში_ |
-| 11 | ლექცია 11 | -- | _მოლოდინში_ |
-| 12 | ლექცია 12 | -- | _მოლოდინში_ |
+| 10 | [[ლექცია 10]] | 2026-04-13 | ხელოვნური ინტელექტით ვიდეოების გენერაცია — სესია 2 |
+| 11 | [[ლექცია 11]] | 2026-04-16 | AI ვიდეო გენერაცია — სესია 2 |
+| 12 | [[ლექცია 12]] | 2026-04-20 | AI ვიდეო გენერაცია, ავატარის შექმნა და ავტომატიზაციის ინსტრუ |
 | 13 | [[ლექცია 13]] | 2026-04-23 | ლექციის შეჯამება: პრაქტიკული AI ავტომატიზაციის სემინარი — n8 |
-| 14 | ლექცია 14 | -- | _მოლოდინში_ |
+| 14 | [[ლექცია 14]] | 2026-04-27 | AI ინსტრუმენტების პრაქტიკული ვორქშოფი ქართველი ბიზნეს-პროფეს |
 | 15 | [[ლექცია 15]] | 2026-04-30 | ლექციის შინაარსი მიუწვდომელია - ტექნიკური ხარვეზი |
 
 ---
@@ -59,20 +59,19 @@ tags: [MOC, ინდექსი]
 - [[Claude]]
 - [[Claude Artifacts]]
 - [[Claude Code]]
+- [[Claude Code Skills]]
 - [[Claude Computer Use]]
 - [[Claude Desktop]]
-- [[Claude Dispatch]]
 - [[Claude Projects]]
-- [[Claude.md Configuration]]
+- [[Claude Worq]]
 - [[DeepSeek]]
 - [[Gemini]]
 - [[Gemini Lyria]]
-- [[Gemini Vision]]
-- [[Google Gemini/Lyria]]
+- [[Google Gemini Lyria]]
 - [[Grok]]
 - [[Ollama]]
 - [[Perplexity]]
-- [[Perplexity Spaces]]
+- [[VS Code + Claude Code]]
 
 ---
 
@@ -86,63 +85,63 @@ tags: [MOC, ინდექსი]
 - [[Brave Browser]]
 - [[Browser Use CLI]]
 - [[CLI-Anything]]
-- [[Canvas]]
 - [[CapCut]]
 - [[Cartesia]]
-- [[Chat Mode]]
-- [[ChromaDB]]
 - [[Cinema Studio]]
 - [[ClickHouse]]
 - [[Cloud Services]]
-- [[Codex Extension]]
 - [[Compact]]
-- [[Continue]]
+- [[Confyu]]
+- [[Continue.dev]]
+- [[Cursor]]
 - [[Cursor IDE]]
 - [[DeepLearning.AI]]
-- [[DeepRank AI]]
 - [[Dispatch]]
 - [[Docker]]
 - [[Draw.io]]
 - [[ElevenLabs]]
 - [[Enagram AI]]
-- [[Firecrawl AI]]
+- [[Expo React Native]]
+- [[Facebook Chatbot]]
+- [[Figma]]
+- [[Firecrawl]]
 - [[Fish Audio]]
-- [[Flux]]
+- [[Genspark AI]]
 
 ---
 
 ## ძირითადი კონცეფციები (რამდენიმე ლექციაში განხილული)
 
-- [[AI Agents]] (G1L1, G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L14, G1L15, G2L13)
+- [[AI Agents]] (G1L1, G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L11, G1L14, G1L15, G2L1, G2L3, G2L5, G2L13)
 - [[API (Access & Keys)]] (G1L2, G1L5, G2L2)
-- [[API Key Management]] (G1L13, G1L14, G2L5)
-- [[Agent Architecture]] (G2L5, G2L7)
-- [[Agentic AI]] (G1L13, G2L2)
-- [[Agentic Workflow]] (G1L1, G1L6)
+- [[Agentic AI]] (G1L13, G2L2, G2L4, G2L7)
+- [[Agentic Workflow]] (G1L1, G1L6, G1L12, G1L14)
+- [[Browser Use]] (G1L5, G2L14)
+- [[CLAUDE.md]] (G2L5, G2L9)
+- [[Character Consistency]] (G1L8, G2L11)
 - [[Claude Skills]] (G1L2, G1L3, G1L4, G2L2, G2L6)
-- [[Computer Use]] (G1L5, G1L13, G2L2, G2L3)
+- [[Cloud Deployment]] (G2L9, G2L13)
+- [[Computer Use]] (G1L5, G1L13, G2L1, G2L2, G2L3, G2L7, G2L14)
 - [[Content Automation Pipeline]] (G1L6, G1L10)
-- [[Context Window]] (G1L2, G1L12, G1L13, G2L2)
-- [[Context Window Management]] (G1L6, G2L5)
+- [[Context Window]] (G1L2, G1L12, G1L13, G2L2, G2L5)
 - [[Custom Instructions]] (G1L2, G2L3)
 - [[Deep Research]] (G1L2, G1L5, G2L3)
+- [[Elements System]] (G2L10, G2L11)
 - [[Environment Variables]] (G1L10, G2L2)
+- [[Frame-based Video Generation]] (G1L9, G2L9)
+- [[Image-to-Video]] (G1L9, G2L10, G2L11)
+- [[Infographic Video Workflow]] (G2L10, G2L11)
 - [[Infrastructure Setup]] (G1L7, G2L5)
 - [[JSON Prompt Format]] (G1L8, G2L8)
+- [[Lip-Sync]] (G2L7, G2L11)
+- [[LipSync]] (G2L9, G2L10)
 - [[Lipsyncing]] (G1L7, G1L9)
-- [[MCP (Model Context Protocol)]] (G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L14, G2L2, G2L3, G2L5)
-- [[Model Context Protocol]] (G1L12, G1L15)
-- [[Multi-Agent Architecture]] (G1L8, G1L10, G1L12)
-- [[Multi-Agent Orchestration]] (G1L6, G1L15)
-- [[Negative Prompts]] (G1L8, G1L9, G2L8)
-- [[PRD (Product Requirements Document)]] (G1L3, G2L5)
-- [[Plan Mode]] (G1L6, G2L2, G2L4)
-- [[Prompt Engineering]] (G1L1, G1L3, G1L4, G1L6, G1L7, G1L8, G1L10, G1L11, G1L12, G1L13, G1L14, G1L15, G2L8, G2L13)
-- [[Prompt Injection]] (G1L15, G2L3)
-- [[RAG]] (G1L1, G1L4, G1L10, G1L12, G1L15)
-- [[RAG (Retrieval-Augmented Generation)]] (G1L6, G1L8)
-- [[Skills]] (G1L12, G2L9)
-- [[Style Reference]] (G1L9, G2L8)
+- [[Local AI Models]] (G1L5, G2L5)
+- [[MCP (Model Context Protocol)]] (G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L12, G1L14, G2L1, G2L2, G2L3, G2L5, G2L7)
+- [[Memory Management (AI)]] (G1L2, G2L5)
+- [[Midjourney Personalization]] (G1L9, G2L8)
+- [[Multi-Agent Architecture]] (G1L8, G1L10, G1L12, G2L6)
+- [[Multi-Agent Orchestration]] (G1L6, G1L15, G2L14)
 
 ---
 
@@ -151,7 +150,7 @@ tags: [MOC, ინდექსი]
 | ჯგუფი | ლექციები | სტატუსი |
 |-------|----------|---------|
 | #1 | 15/15 | მიმდინარე |
-| #2 | 10/15 | მიმდინარე |
+| #2 | 15/15 | მიმდინარე |
 
 ---
 
@@ -175,6 +174,7 @@ tags: [MOC, ინდექსი]
 - [[ლექცია 15 -- ანალიზი]]
 
 ### ჯგუფი 2
+- [[ლექცია 1 -- ანალიზი]]
 - [[ლექცია 2 -- ანალიზი]]
 - [[ლექცია 3 -- ანალიზი]]
 - [[ლექცია 4 -- ანალიზი]]
@@ -183,7 +183,11 @@ tags: [MOC, ინდექსი]
 - [[ლექცია 7 -- ანალიზი]]
 - [[ლექცია 8 -- ანალიზი]]
 - [[ლექცია 9 -- ანალიზი]]
+- [[ლექცია 10 -- ანალიზი]]
+- [[ლექცია 11 -- ანალიზი]]
+- [[ლექცია 12 -- ანალიზი]]
 - [[ლექცია 13 -- ანალიზი]]
+- [[ლექცია 14 -- ანალიზი]]
 - [[ლექცია 15 -- ანალიზი]]
 
 ---

@@ -898,12 +898,40 @@ class TestStartScheduler:
         assert result is mock_scheduler_instance
         mock_scheduler_instance.start.assert_called_once()
 
-    def test_registers_six_jobs(self):
+    def test_registers_six_jobs(self, monkeypatch):
         """4 pre-meeting cron jobs + nightly_catch_all + pinecone_score_backup
         + google_token_health + drive_pinecone_audit + proactive_token_check
-        + nightly_reconciliation + whatsapp_archive_catchup = 11 jobs total."""
+        + nightly_reconciliation + whatsapp_archive_catchup = 11 jobs total.
+
+        Run with both Course #1 groups synthetically reactivated so the
+        full pre-lecture cron set is registered — mirrors the original
+        behaviour before per-group ``course_completed`` flags landed.
+        """
+        from datetime import date
+
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
+
+        active_groups = {
+            1: {
+                "name": "მარტის ჯგუფი #1",
+                "meeting_days": [1, 4],
+                "start_date": date(2026, 3, 13),
+                "course_completed": False,
+            },
+            2: {
+                "name": "მარტის ჯგუფი #2",
+                "meeting_days": [0, 3],
+                "start_date": date(2026, 3, 12),
+                "course_completed": False,
+            },
+        }
+        monkeypatch.setattr(sched, "GROUPS", active_groups)
+        monkeypatch.setattr(
+            sched, "iter_active_groups",
+            lambda: ((n, c) for n, c in sorted(active_groups.items())),
+        )
+        monkeypatch.delenv("COURSE_COMPLETED", raising=False)
 
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
@@ -922,17 +950,45 @@ class TestStartScheduler:
         finally:
             sched._scheduler_ref = original
 
-    def test_job_ids_match_expected_pattern(self):
+    def test_job_ids_match_expected_pattern(self, monkeypatch):
+        """With both groups active, job IDs use the new
+        ``pre_group{N}_{weekday}`` pattern (Mon/Tue/Wed/Thu/Fri/Sat/Sun
+        three-letter codes). Legacy IDs like ``pre_group1_tuesday`` are
+        gone.
+        """
+        from datetime import date
+
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
+
+        active_groups = {
+            1: {
+                "name": "მარტის ჯგუფი #1",
+                "meeting_days": [1, 4],
+                "start_date": date(2026, 3, 13),
+                "course_completed": False,
+            },
+            2: {
+                "name": "მარტის ჯგუფი #2",
+                "meeting_days": [0, 3],
+                "start_date": date(2026, 3, 12),
+                "course_completed": False,
+            },
+        }
+        monkeypatch.setattr(sched, "GROUPS", active_groups)
+        monkeypatch.setattr(
+            sched, "iter_active_groups",
+            lambda: ((n, c) for n, c in sorted(active_groups.items())),
+        )
+        monkeypatch.delenv("COURSE_COMPLETED", raising=False)
 
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
         job_ids = [call[1]["id"] for call in mock_scheduler_instance.add_job.call_args_list]
         expected = {
-            "pre_group1_tuesday", "pre_group1_friday",
-            "pre_group2_monday", "pre_group2_thursday",
+            "pre_group1_tue", "pre_group1_fri",
+            "pre_group2_mon", "pre_group2_thu",
             "nightly_catch_all", "pinecone_score_backup",
             "google_token_health", "drive_pinecone_audit",
             "proactive_token_check", "nightly_reconciliation",
@@ -947,7 +1003,29 @@ class TestStartScheduler:
 
 
 class TestIsCourseCompleted:
-    """is_course_completed() must read COURSE_COMPLETED env var case-insensitively."""
+    """``is_course_completed()`` returns True when the global env flag is
+    set OR every group in ``GROUPS`` has ``course_completed=True``.
+
+    The "falsy / unset" tests below force at least one group to be active
+    so the aggregate branch returns False; otherwise the post-Course #1
+    state of the live config (groups 1 and 2 both flagged completed)
+    would make those tests always return True.
+    """
+
+    @pytest.fixture
+    def one_active_group(self, monkeypatch):
+        """Force ``GROUPS`` to contain at least one active group."""
+        from datetime import date
+        active = {
+            99: {
+                "name": "synthetic active",
+                "meeting_days": [1],
+                "start_date": date(2026, 1, 1),
+                "course_completed": False,
+            }
+        }
+        monkeypatch.setattr(sched, "GROUPS", active)
+        return active
 
     @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "YES", "on", "ON"])
     def test_truthy_values(self, monkeypatch, value):
@@ -955,11 +1033,11 @@ class TestIsCourseCompleted:
         assert sched.is_course_completed() is True
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "  "])
-    def test_falsy_values(self, monkeypatch, value):
+    def test_falsy_values(self, monkeypatch, one_active_group, value):
         monkeypatch.setenv("COURSE_COMPLETED", value)
         assert sched.is_course_completed() is False
 
-    def test_unset_returns_false(self, monkeypatch):
+    def test_unset_returns_false(self, monkeypatch, one_active_group):
         monkeypatch.delenv("COURSE_COMPLETED", raising=False)
         assert sched.is_course_completed() is False
 
@@ -967,14 +1045,51 @@ class TestIsCourseCompleted:
         monkeypatch.setenv("COURSE_COMPLETED", "  true  ")
         assert sched.is_course_completed() is True
 
+    def test_aggregate_all_groups_completed(self, monkeypatch):
+        """Returns True even without env flag when every group is flagged."""
+        from datetime import date
+        all_completed = {
+            1: {
+                "name": "G1", "meeting_days": [1, 4],
+                "start_date": date(2026, 3, 13), "course_completed": True,
+            },
+            2: {
+                "name": "G2", "meeting_days": [0, 3],
+                "start_date": date(2026, 3, 12), "course_completed": True,
+            },
+        }
+        monkeypatch.setattr(sched, "GROUPS", all_completed)
+        monkeypatch.delenv("COURSE_COMPLETED", raising=False)
+        assert sched.is_course_completed() is True
+
+    def test_aggregate_any_active_group_returns_false(self, monkeypatch):
+        """Returns False when at least one group is still active."""
+        from datetime import date
+        mixed = {
+            1: {
+                "name": "G1", "meeting_days": [1, 4],
+                "start_date": date(2026, 3, 13), "course_completed": True,
+            },
+            3: {
+                "name": "G3", "meeting_days": [2, 5],
+                "start_date": date(2026, 5, 13), "course_completed": False,
+            },
+        }
+        monkeypatch.setattr(sched, "GROUPS", mixed)
+        monkeypatch.delenv("COURSE_COMPLETED", raising=False)
+        assert sched.is_course_completed() is False
+
 
 class TestStartSchedulerCourseCompleted:
     """When COURSE_COMPLETED=true, lecture-only jobs must NOT be registered."""
 
-    # Lecture-specific jobs that MUST be off post-course
+    # Lecture-specific jobs that MUST be off post-course.
+    # IDs use the new ``pre_group{N}_{weekday}`` pattern (mon/tue/wed/thu/
+    # fri/sat/sun) introduced when scheduler.py started iterating
+    # ``iter_active_groups()`` instead of hardcoding 4 cron lines.
     _LECTURE_JOBS = {
-        "pre_group1_tuesday", "pre_group1_friday",
-        "pre_group2_monday", "pre_group2_thursday",
+        "pre_group1_tue", "pre_group1_fri",
+        "pre_group2_mon", "pre_group2_thu",
         "nightly_catch_all", "drive_pinecone_audit",
     }
     # Advisor-supporting jobs that MUST stay on post-course
@@ -985,7 +1100,29 @@ class TestStartSchedulerCourseCompleted:
     }
 
     def _run_start(self, monkeypatch, course_completed: bool) -> set[str]:
+        from datetime import date
         monkeypatch.setenv("COURSE_COMPLETED", "1" if course_completed else "0")
+        # Force GROUPS into a known state matching the requested course state
+        # so the aggregate branch of is_course_completed lines up too.
+        synthetic = {
+            1: {
+                "name": "მარტის ჯგუფი #1",
+                "meeting_days": [1, 4],
+                "start_date": date(2026, 3, 13),
+                "course_completed": course_completed,
+            },
+            2: {
+                "name": "მარტის ჯგუფი #2",
+                "meeting_days": [0, 3],
+                "start_date": date(2026, 3, 12),
+                "course_completed": course_completed,
+            },
+        }
+        monkeypatch.setattr(sched, "GROUPS", synthetic)
+        monkeypatch.setattr(
+            sched, "iter_active_groups",
+            lambda: ((n, c) for n, c in sorted(synthetic.items()) if not c["course_completed"]),
+        )
         mock_scheduler_instance = MagicMock()
         mock_scheduler_instance.get_jobs.return_value = []
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):

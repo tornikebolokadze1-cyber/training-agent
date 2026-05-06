@@ -1,12 +1,12 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Application (Projects/Workspaces), Claude Desktop აპლიკაცია, Claude-ის სამაგიდო აპლიკაცია, კლოდ დესკტოპი, კლოდის დესკტოპ აპლიკაცია, კლოდის დესქტოფ აპლიკაცია]
+aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Dispatch, Claude Desktop აპლიკაცია, Claude-ის დესკტოპ აპლიკაცია, Claude-ის სამაგიდო აპლიკაცია, კლოდ დესქტოპი, კლოდის დესკტოპ აპლიკაცია, კლოდის დესქტოპ აპლიკაცია, კლოდის დესქტოფ აპლიკაცია]
 category: tool
 ---
 
 # Claude Desktop
 
-> ქართულად: **კლოდ დესკტოპი**
+> ქართულად: **კლოდ დესქტოპი**
 
 ## აღწერა
 
@@ -42,12 +42,12 @@ Claude Desktop არის Anthropic-ის სამი რეჟიმის 
 - [[Tool Selection Framework]]
 - [[Four Environments Framework]]
 - [[Project Phasing Methodology]]
-- [[Worq]]
-- [[Chat Mode]]
+- [[Claude Worq]]
+- [[AI Agents]]
 
 ---
 
 ## პრაქტიკული გამოყენება
 
 - ლექტორი ხელმძღვანელობს მონაწილეს Claude Desktop-ის პარამეტრების რიგით გახსნის სახით, კონფიგურირების მაქვს Computer Use და Browser Action უფლებები (ჯგუფი 1, ლექცია 13)
-- პროექტების მართვა მეხსიერებით და ინტეგრაციებით კოდის გარეშე (ჯგუფი 2, ლექცია 3)
+- მობილური ტელეფონიდან QR კოდის სკანირებით Slack-ში შეტყობინებების გაგზავნა, Asana-ში ამოცანების მართვა ან Google Drive-ში საბუთების ძიება კომპიუტერთან ფიზიკური დასხდომის გარეშე. (ჯგუფი 2, ლექცია 4)

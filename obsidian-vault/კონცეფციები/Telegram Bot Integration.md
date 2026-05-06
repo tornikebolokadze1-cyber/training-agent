@@ -10,7 +10,7 @@ category: technique
 
 ## აღწერა
 
-Method of deploying AI agents through Telegram messenger, enabling communication of model decisions and explanations via messaging platform. Practical implementation for delivering agent outputs to end users through widely-used communication channel.
+ავტომატიზაციის სისტემაში Telegram-ის გამოყენება, კონტენტის სოციალურ მედიაში გამოქვეყნებამდე ადამიანის მიერ წინასწარი ნახვის (preview) უზრუნველსაყოფად. ეს მიდგომა ქმნის ხელით კონტროლის ეტაპს სრულად ავტომატიზებულ ფაიფლაინში.
 
 ---
 
@@ -18,7 +18,6 @@ Method of deploying AI agents through Telegram messenger, enabling communication
 
 - [[ლექცია 3]] (ჯგუფი 1)
 - [[ლექცია 10]] (ჯგუფი 1)
-- [[ლექცია 5]] (ჯგუფი 2)
 
 ---
 
@@ -26,4 +25,3 @@ Method of deploying AI agents through Telegram messenger, enabling communication
 
 - [[Content Automation Pipeline]]
 - [[HR AI Agent]]
-- [[Agent Architecture]]

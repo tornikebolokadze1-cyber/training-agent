@@ -10,7 +10,7 @@ category: methodology
 
 ## აღწერა
 
-Foundational configuration process involving setting up lecturer's repository, adding skills/agents/commands/hooks, and configuring MCP servers. Step-by-step infrastructure setup followed by PRD creation establishes baseline for iterative agent development across all projects.
+AI განვითარების გარემოს ნაბიჯ-ნაბიჯ კონფიგურაციის პროცესი, რომელიც მოიცავს ლექტორის რეპოზიტორიის დაყენებას, Skills/Commands/Hooks-ებისა და MCP-ების დამატებას. სწორი ინფრასტრუქტურა წარმოადგენს AI პროექტების წარმატებული განვითარების საფუძველს.
 
 ---
 
@@ -25,5 +25,5 @@ Foundational configuration process involving setting up lecturer's repository, a
 
 - [[Claude Code]]
 - [[VS Code]]
-- [[MCP (Model Context Protocol)]]
-- [[Skills and Commands]]
+- [[PRD]]
+- [[MCP]]

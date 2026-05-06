@@ -26,8 +26,6 @@ from typing import Any
 
 from tools.core.config import (
     ANTHROPIC_API_KEY,
-    GEMINI_API_KEY,
-    GEMINI_API_KEY_PAID,
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     GROUPS,

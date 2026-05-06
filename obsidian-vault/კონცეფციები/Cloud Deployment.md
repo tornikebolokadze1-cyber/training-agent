@@ -1,12 +1,12 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [ღრუბლოვანი განთავსება]
+aliases: [ქლაუდ დეპლოიმენტი, ღრუბლოვანი განთავსება]
 category: methodology
 ---
 
 # Cloud Deployment
 
-> ქართულად: **ღრუბლოვანი განთავსება**
+> ქართულად: **ქლაუდ დეპლოიმენტი**
 
 ## აღწერა
 
@@ -16,6 +16,7 @@ category: methodology
 
 ## ლექციებში
 
+- [[ლექცია 9]] (ჯგუფი 2)
 - [[ლექცია 13]] (ჯგუფი 2)
 
 ---
@@ -23,3 +24,6 @@ category: methodology
 ## დაკავშირებული
 
 - [[Local Deployment]]
+- [[Railway]]
+- [[Tax Declaration Automation]]
+- [[GitHub]]

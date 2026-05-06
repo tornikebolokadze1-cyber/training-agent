@@ -1,7 +1,7 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [Minimax, მინიმაქს, მინიმაქსი]
-category: tool
+category: platform
 ---
 
 # MiniMax
@@ -10,7 +10,7 @@ category: tool
 
 ## აღწერა
 
-ჩინური AI მოდელი, რომელიც პოზიციონირდება როგორც ეკონომიური ალტერნატივა Claude-თან და ChatGPT-სთან მიმართებაში. მისი Project Space აღწერილია როგორც ერთ-ერთი საუკეთესო სამუშაო სივრცე მორგებული ქვე-აგენტების შექმნის საშუალებით.
+ჩინური AI პლატფორმა, რომელიც პოზიციონირდება როგორც ეკონომიური ალტერნატივა Claude-სა და ChatGPT-სთან შედარებით. მისი Project Space (Explore Experts) ფუნქცია საშუალებას იძლევა შეიქმნას მორგებული ქვე-აგენტები სისტემური პრომპტებით, MCP კავშირებითა და გარემოს ცვლადებით.
 
 ---
 
@@ -25,14 +25,13 @@ category: tool
 
 - [[AI Presentation Generation]]
 - [[Multimodal AI Generation]]
-- [[Claude]]
+- [[Sub-agents]]
+- [[MCP]]
 - [[MaxClaw]]
-- [[Rube]]
-- [[Agent Architecture]]
 
 ---
 
 ## პრაქტიკული გამოყენება
 
 - AI PPT-ის ავტომატური გენერირება ქართული კომპანიების (MagtiCom) შესახებ, ვიდეო და აუდიო კონტენტის შექმნასთან ერთად. (ჯგუფი 1, ლექცია 5)
-- ქვე-აგენტების შექმნა (Report Writer, Slide Maker) და უნარების სისტემა (Data Analysis, Deep Research Consultant) (ჯგუფი 2, ლექცია 7)
+- ქვე-აგენტების შექმნა (Report Writer, Slide Maker) სისტემური პრომპტებით და Data Analysis, Deep Research, GitHub უნარების (skills) კონფიგურაცია. (ჯგუფი 2, ლექცია 7)
