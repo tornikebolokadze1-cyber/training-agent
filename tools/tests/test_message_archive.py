@@ -519,3 +519,113 @@ class TestArchiveWebhookPayload:
         assert row["content"] == "გამარჯობა, რატომ ვერ ვიგებ?"
         assert row["direction"] == "incoming"
         assert row["msg_type"] == "textMessage"
+
+
+# --------------------------------------------------------------------- #
+# Senders aggregator
+# --------------------------------------------------------------------- #
+
+class TestSendersAggregator:
+    """Verify upsert_sender + backfill_senders_from_messages."""
+
+    def _make(self, idm: str, ts: int, sender: str, name: str = "ვანო") -> dict:
+        return {
+            "idMessage": idm,
+            "timestamp": ts,
+            "typeMessage": "textMessage",
+            "textMessage": "test",
+            "senderId": sender,
+            "senderName": name,
+            "type": "incoming",
+        }
+
+    def test_insert_message_creates_sender_row(self, temp_db, sample_payload):
+        m = ma.normalize_green_api_message(sample_payload, "120363@g.us", 1)
+        with ma.connect(temp_db) as conn:
+            ma.insert_message(conn, m)
+            row = conn.execute(
+                "SELECT first_seen, last_seen, groups_json, display_names_json "
+                "FROM senders WHERE sender_hash = ?",
+                (m.sender_hash,),
+            ).fetchone()
+        assert row is not None
+        assert row["first_seen"] == m.ts_message
+        assert row["last_seen"] == m.ts_message
+        assert "1" in row["groups_json"]
+        assert "ვანო" in row["display_names_json"]
+
+    def test_upsert_extends_last_seen_and_collects_names(self, temp_db):
+        msgs = [
+            ma.normalize_green_api_message(
+                self._make("A", 1_712_000_000, "555@c.us", "ვანო"), "c", 1),
+            ma.normalize_green_api_message(
+                self._make("B", 1_712_900_000, "555@c.us", "Vano"), "c", 2),
+        ]
+        with ma.connect(temp_db) as conn:
+            ma.bulk_insert(conn, msgs)
+            row = conn.execute(
+                "SELECT first_seen, last_seen, groups_json, display_names_json "
+                "FROM senders WHERE sender_hash = ?",
+                (msgs[0].sender_hash,),
+            ).fetchone()
+        # last_seen advanced; both groups recorded; both names collected.
+        assert row["first_seen"] < row["last_seen"]
+        assert "1" in row["groups_json"] and "2" in row["groups_json"]
+        assert "ვანო" in row["display_names_json"]
+        assert "Vano" in row["display_names_json"]
+
+    def test_distinct_hashes_match_senders_count(self, temp_db):
+        # Three distinct senders, two messages each.
+        msgs = []
+        for sender_idx in range(3):
+            for i in range(2):
+                msgs.append(ma.normalize_green_api_message(
+                    self._make(f"{sender_idx}_{i}", 1_712_000_000 + i,
+                               f"sender_{sender_idx}@c.us", f"u{sender_idx}"),
+                    "c", 1,
+                ))
+        with ma.connect(temp_db) as conn:
+            ma.bulk_insert(conn, msgs)
+            distinct_hashes = conn.execute(
+                "SELECT COUNT(DISTINCT sender_hash) FROM messages"
+            ).fetchone()[0]
+            sender_count = conn.execute(
+                "SELECT COUNT(*) FROM senders"
+            ).fetchone()[0]
+        assert distinct_hashes == 3
+        assert sender_count == 3
+
+    def test_backfill_rebuilds_senders_from_messages(self, temp_db):
+        # Insert messages bypassing the aggregator (simulate the historical
+        # state where senders was empty despite messages being populated).
+        with ma.connect(temp_db) as conn:
+            for i in range(3):
+                conn.execute(
+                    """INSERT INTO messages
+                       (green_api_id, chat_id, sender_hash, sender_display,
+                        ts_message, direction, msg_type, content, raw_payload,
+                        group_number, is_bot)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (f"X_{i}", "c",
+                     ma.sender_hash(f"phone_{i}"), f"name_{i}",
+                     "2026-04-01T00:00:00+00:00",
+                     "incoming", "textMessage", "hi", "{}", 1, 0),
+                )
+            assert conn.execute(
+                "SELECT COUNT(*) FROM senders"
+            ).fetchone()[0] == 0
+            result = ma.backfill_senders_from_messages(conn)
+            assert result["processed"] == 3
+            assert conn.execute(
+                "SELECT COUNT(*) FROM senders"
+            ).fetchone()[0] == 3
+
+    def test_backfill_idempotent(self, temp_db, sample_payload):
+        m = ma.normalize_green_api_message(sample_payload, "c", 1)
+        with ma.connect(temp_db) as conn:
+            ma.insert_message(conn, m)
+            r1 = ma.backfill_senders_from_messages(conn)
+            r2 = ma.backfill_senders_from_messages(conn)
+            count = conn.execute("SELECT COUNT(*) FROM senders").fetchone()[0]
+        assert r1 == r2 == {"processed": 1}
+        assert count == 1
