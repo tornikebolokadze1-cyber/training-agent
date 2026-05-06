@@ -696,8 +696,15 @@ class WhatsAppAssistant:
             "Write only the Georgian response text, nothing else:"
         )
 
+        # Default to Claude-first because the project's Gemini API key sits on
+        # Google's free tier (no billing configured), so flagship models —
+        # gemini-3.1-pro-preview, 2.5-pro, 2.5-flash — return 429 on every
+        # WhatsApp reply attempt. Trying Gemini first wastes 2-3 seconds per
+        # student question waiting for the inevitable quota error before
+        # falling through. Setting USE_CLAUDE_FOR_GEORGIAN_WRITING=0 reverts
+        # to Gemini-first once Google billing is enabled on the API key.
         prefer_claude = os.environ.get(
-            "USE_CLAUDE_FOR_GEORGIAN_WRITING", ""
+            "USE_CLAUDE_FOR_GEORGIAN_WRITING", "1"
         ).strip().lower() in ("1", "true", "yes", "on")
 
         if not prefer_claude:

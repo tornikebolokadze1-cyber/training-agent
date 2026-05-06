@@ -671,7 +671,10 @@ class TestRetrieveContext:
 class TestWriteResponse:
     """_write_response calls Gemini to produce Georgian text."""
 
-    def test_returns_gemini_response(self):
+    def test_returns_gemini_response(self, monkeypatch):
+        # Default writer was flipped to Claude-first; this test specifically
+        # exercises the Gemini happy path, so opt out of the new default.
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
         assistant = _make_assistant()
         mock_response = MagicMock()
         mock_response.text = "  ეს არის AI ტექნოლოგია  "
@@ -680,14 +683,23 @@ class TestWriteResponse:
         result = assistant._write_response("key points", "original msg", "context")
         assert result == "ეს არის AI ტექნოლოგია"
 
-    def test_returns_fallback_on_gemini_error(self):
+    def test_returns_fallback_on_gemini_error(self, monkeypatch):
+        # Force Gemini-first AND make Claude fallback also fail so we land on
+        # the polite-error string. With Claude-first default the test would
+        # never even reach the Gemini exception branch.
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
         assistant = _make_assistant()
         assistant._genai_client.models.generate_content.side_effect = Exception("API error")
+        assistant._claude.messages.create.side_effect = Exception("Claude also down")
 
         result = assistant._write_response("points", "msg", "ctx")
         assert "ბოდიში" in result  # Georgian fallback
 
-    def test_includes_context_in_prompt_when_provided(self):
+    def test_includes_context_in_prompt_when_provided(self, monkeypatch):
+        # Force Gemini-first path (default flipped to Claude-first because
+        # the project's Gemini key is on free tier; this test verifies the
+        # Gemini prompt structure, so we opt out of the new default).
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
         assistant = _make_assistant()
         captured_prompt = []
 
@@ -763,8 +775,13 @@ class TestHandleMessage:
 
         assert result is None
 
-    def test_full_pipeline_sends_response(self):
+    def test_full_pipeline_sends_response(self, monkeypatch):
         import asyncio
+
+        # Force Gemini-first path so this end-to-end test still exercises
+        # both LLMs (default flipped to Claude-first for production where
+        # Gemini key is on free tier).
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
 
         from tools.services import whatsapp_assistant as wa_mod
         assistant = _make_assistant()
@@ -1031,9 +1048,15 @@ class TestHandleMessageEndToEnd:
         )
         return assistant
 
-    def test_direct_mention_calls_claude_and_gemini_and_sends(self):
+    def test_direct_mention_calls_claude_and_gemini_and_sends(self, monkeypatch):
         """A direct-mention message must pass through Claude reasoning, then
-        Gemini writing, then dispatch to send_message_to_chat."""
+        Gemini writing, then dispatch to send_message_to_chat.
+
+        Default writer was flipped to Claude-first (Gemini key on free tier
+        429s constantly). This test specifically exercises the Gemini path,
+        so opt out of the new default.
+        """
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
         from tools.services import whatsapp_assistant as wa_mod
 
         assistant = self._build_mocked_assistant()
@@ -1059,8 +1082,12 @@ class TestHandleMessageEndToEnd:
         # Return value echoes the sent text
         assert result == sent_text
 
-    def test_direct_mention_result_contains_gemini_output(self):
-        """The formatted result must include the text Gemini produced."""
+    def test_direct_mention_result_contains_gemini_output(self, monkeypatch):
+        """The formatted result must include the text Gemini produced.
+
+        Opts out of the new Claude-first default for the same reason as above.
+        """
+        monkeypatch.setenv("USE_CLAUDE_FOR_GEORGIAN_WRITING", "0")
         from tools.services import whatsapp_assistant as wa_mod
 
         assistant = self._build_mocked_assistant()
