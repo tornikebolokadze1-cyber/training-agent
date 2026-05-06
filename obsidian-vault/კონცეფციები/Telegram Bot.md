@@ -25,3 +25,9 @@ Telegram ბოტი არის ავტომატიზებული �
 - [[n8n]]
 - [[BotFather]]
 - [[AI Agent]]
+
+---
+
+## პრაქტიკული გამოყენება
+
+- Deploying multi-model decision system that sends emoji signals and explanations to Telegram when model opinions diverge (ჯგუფი 2, ლექცია 5)

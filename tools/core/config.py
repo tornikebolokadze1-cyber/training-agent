@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Iterator
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -148,8 +149,22 @@ except (ValueError, TypeError):
 # Lecture #1 already completed for both groups.
 
 
-class GroupConfig(TypedDict):
-    """Type definition for training group configuration."""
+class GroupConfig(TypedDict, total=False):
+    """Type definition for training group configuration.
+
+    ``course_completed`` is the per-group lifecycle flag introduced when
+    Course #1 wrapped up. When True, the scheduler skips lecture cron
+    registration for that group while the WhatsApp advisor (მრჩეველი)
+    keeps running for it. Defaults to False (active course) when the
+    field is absent — see ``iter_active_groups()``.
+
+    ``whatsapp_chat_id`` mirrors WHATSAPP_GROUP{N}_ID env vars but lives
+    on the group entry so per-chat lookups don't require module-level
+    constants for every new group.
+
+    ``total`` is False so older entries that pre-date the new fields
+    still type-check while we migrate.
+    """
 
     name: str
     folder_name: str
@@ -159,6 +174,19 @@ class GroupConfig(TypedDict):
     meeting_days: list[int]
     start_date: date
     attendee_emails: list[str]
+    whatsapp_chat_id: str
+    course_completed: bool
+
+
+# Weekday integer (Monday=0) → APScheduler CronTrigger day_of_week code
+_WEEKDAY_CRON_NAMES: tuple[str, ...] = (
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+)
+
+
+def weekday_to_cron(weekday: int) -> str:
+    """Map a Python weekday integer (Monday=0) to APScheduler cron code."""
+    return _WEEKDAY_CRON_NAMES[weekday]
 
 
 GROUPS: dict[int, GroupConfig] = {
@@ -171,6 +199,9 @@ GROUPS: dict[int, GroupConfig] = {
         "meeting_days": [1, 4],  # Tuesday=1, Friday=4 (Monday=0)
         "start_date": date(2026, 3, 13),  # First lecture: Friday March 13
         "attendee_emails": _ATTENDEES.get("1", []),
+        "whatsapp_chat_id": _env("WHATSAPP_GROUP1_ID"),
+        # Course #1 wrapped up 2026-05-06. Advisor stays active; no new lectures booked.
+        "course_completed": True,
     },
     2: {
         "name": "მარტის ჯგუფი #2",
@@ -181,8 +212,132 @@ GROUPS: dict[int, GroupConfig] = {
         "meeting_days": [0, 3],  # Monday=0, Thursday=3
         "start_date": date(2026, 3, 12),  # First lecture: Thursday March 12
         "attendee_emails": _ATTENDEES.get("2", []),
+        "whatsapp_chat_id": _env("WHATSAPP_GROUP2_ID"),
+        "course_completed": True,
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Optional additional groups (Course #2 onwards) — populated entirely from
+# environment variables. A group is ENABLED when both DRIVE_GROUP{N}_FOLDER_ID
+# and WHATSAPP_GROUP{N}_ID are set; otherwise the entry is omitted so the
+# scheduler doesn't try to register cron jobs for an unconfigured group.
+#
+# To onboard a new course, set on Railway:
+#   GROUP{N}_NAME            — display name, e.g. "მაისის ჯგუფი #3"
+#   GROUP{N}_FOLDER_NAME     — Drive folder display name
+#   DRIVE_GROUP{N}_FOLDER_ID — Drive folder ID (required)
+#   DRIVE_GROUP{N}_ANALYSIS_FOLDER_ID — private Drive folder for reports
+#   ZOOM_GROUP{N}_MEETING_ID — optional, falls back to shared Zoom room
+#   WHATSAPP_GROUP{N}_ID     — required, e.g. "120363XXX@g.us"
+#   GROUP{N}_MEETING_DAYS    — comma-separated weekday integers, e.g. "2,5"
+#   GROUP{N}_START_DATE      — ISO date of first lecture, e.g. "2026-05-13"
+#   GROUP{N}_TOTAL_LECTURES  — optional override (defaults to TOTAL_LECTURES)
+# ---------------------------------------------------------------------------
+
+
+def _parse_meeting_days(raw: str) -> list[int]:
+    """Parse a comma-separated weekday list into a list[int]."""
+    out: list[int] = []
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            v = int(piece)
+            if 0 <= v <= 6:
+                out.append(v)
+        except ValueError:
+            continue
+    return out
+
+
+def _parse_iso_date(raw: str) -> date | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _load_optional_groups(start: int = 3, end: int = 9) -> None:
+    """Pull GROUP{N} entries from env vars and merge them into GROUPS.
+
+    Iterates 3..end inclusive. A group entry is added only when both
+    DRIVE_GROUP{N}_FOLDER_ID and WHATSAPP_GROUP{N}_ID are set, since
+    those are the two values without which the lecture pipeline can't run.
+    """
+    for n in range(start, end + 1):
+        drive = _env(f"DRIVE_GROUP{n}_FOLDER_ID")
+        chat = _env(f"WHATSAPP_GROUP{n}_ID")
+        if not drive or not chat:
+            continue
+        if n in GROUPS:
+            # already present (shouldn't happen for n>=3, but be safe)
+            continue
+        meeting_days = _parse_meeting_days(_env(f"GROUP{n}_MEETING_DAYS", ""))
+        start_date_val = _parse_iso_date(_env(f"GROUP{n}_START_DATE", ""))
+        if not meeting_days or start_date_val is None:
+            logger.warning(
+                "GROUP%d has DRIVE/WHATSAPP set but missing meeting_days "
+                "or start_date — skipping", n,
+            )
+            continue
+        GROUPS[n] = {
+            "name": _env(f"GROUP{n}_NAME", f"ჯგუფი #{n}"),
+            "folder_name": _env(f"GROUP{n}_FOLDER_NAME", f"AI კურსი (ჯგუფი #{n})"),
+            "drive_folder_id": drive,
+            "analysis_folder_id": _env(f"DRIVE_GROUP{n}_ANALYSIS_FOLDER_ID"),
+            "zoom_meeting_id": _env(f"ZOOM_GROUP{n}_MEETING_ID"),
+            "meeting_days": meeting_days,
+            "start_date": start_date_val,
+            "attendee_emails": _ATTENDEES.get(str(n), []),
+            "whatsapp_chat_id": chat,
+            "course_completed": _env(f"GROUP{n}_COURSE_COMPLETED", "").strip().lower()
+            in ("1", "true", "yes", "on"),
+        }
+        logger.info(
+            "Loaded optional group %d (%s): meeting_days=%s, course_completed=%s",
+            n, GROUPS[n]["name"], meeting_days, GROUPS[n]["course_completed"],
+        )
+
+
+_load_optional_groups()
+
+
+# ---------------------------------------------------------------------------
+# Group iteration helpers
+# ---------------------------------------------------------------------------
+
+
+def iter_all_groups() -> Iterator[tuple[int, GroupConfig]]:
+    """Yield (group_number, config) for every configured group."""
+    for n in sorted(GROUPS.keys()):
+        yield n, GROUPS[n]
+
+
+def iter_active_groups() -> Iterator[tuple[int, GroupConfig]]:
+    """Yield (group_number, config) only for groups still booking lectures.
+
+    A group is active when ``course_completed`` is False or absent. This is
+    the iteration the scheduler uses to decide which cron jobs to register.
+    """
+    for n, cfg in iter_all_groups():
+        if not cfg.get("course_completed", False):
+            yield n, cfg
+
+
+def get_group_for_chat_id(chat_id: str) -> int | None:
+    """Return group number whose ``whatsapp_chat_id`` matches, or None."""
+    if not chat_id:
+        return None
+    for n, cfg in iter_all_groups():
+        if cfg.get("whatsapp_chat_id") == chat_id:
+            return n
+    return None
 
 # Holiday/cancellation dates — lectures scheduled on these dates are skipped
 # Format: comma-separated ISO dates in env var, e.g., "2026-04-01,2026-04-15"
