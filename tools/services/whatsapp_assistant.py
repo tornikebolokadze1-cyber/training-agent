@@ -646,11 +646,18 @@ class WhatsAppAssistant:
         original_message: str,
         context: str,
     ) -> str:
-        """Use Gemini 3.1 Pro to write the actual Georgian response.
+        """Write the final Georgian response, with Gemini → Claude fallback.
 
-        Takes Claude's structured reasoning plan and the original message,
+        Takes Claude's structured reasoning plan and the original message
         and produces a natural, concise Georgian-language reply suitable
-        for WhatsApp.
+        for WhatsApp. The default writer is Gemini 3.1 Pro Preview, which
+        excels at fluent Georgian. When Gemini fails (quota exhaustion,
+        503, or any other exception) the function automatically retries
+        through Claude, which speaks Georgian well enough that students
+        keep getting answers instead of the "ვერ მოვახერხე პასუხის
+        გენერირება" fallback. Claude can also be selected up front by
+        setting ``USE_CLAUDE_FOR_GEORGIAN_WRITING=1`` (mirrors the
+        gemini_analyzer.py override).
 
         Args:
             reasoning: Key-points/plan from Claude (English bullet list).
@@ -658,8 +665,8 @@ class WhatsAppAssistant:
             context: Pinecone context string (may be empty).
 
         Returns:
-            The Georgian response text.  Falls back to a polite error message
-            if Gemini fails.
+            The Georgian response text. Falls back to a polite error
+            message only when both Gemini AND Claude fail.
         """
         context_section = (
             f"\n\nRelevant course context to draw from if helpful:\n{context}"
@@ -689,39 +696,101 @@ class WhatsAppAssistant:
             "Write only the Georgian response text, nothing else:"
         )
 
-        try:
-            gemini_response = self._genai_client.models.generate_content(
-                model=self._gemini_model,
-                contents=prompt,
-            )
-            text = gemini_response.text.strip()
-            logger.debug("Gemini response (%d chars): %s…", len(text), text[:80])
+        prefer_claude = os.environ.get(
+            "USE_CLAUDE_FOR_GEORGIAN_WRITING", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
 
-            # --- Cost tracking ---
+        if not prefer_claude:
+            try:
+                gemini_response = self._genai_client.models.generate_content(
+                    model=self._gemini_model,
+                    contents=prompt,
+                )
+                text = gemini_response.text.strip()
+                logger.debug("Gemini response (%d chars): %s…", len(text), text[:80])
+
+                try:
+                    from tools.core.cost_tracker import record_cost as _record_cost
+
+                    _meta = getattr(gemini_response, "usage_metadata", None)
+                    _in = getattr(_meta, "prompt_token_count", 0) or 0
+                    _out = getattr(_meta, "candidates_token_count", 0) or 0
+                    _cost = (_in * 1.25 + _out * 10.0) / 1_000_000
+                    _record_cost(
+                        service="gemini",
+                        model=self._gemini_model,
+                        purpose="whatsapp_response",
+                        input_tokens=_in,
+                        output_tokens=_out,
+                        cost_usd=_cost,
+                        pipeline_key="whatsapp",
+                    )
+                except Exception as _ct_err:
+                    logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
+
+                return text
+
+            except Exception as exc:
+                logger.warning(
+                    "Gemini API error in _write_response (%s) — falling back to Claude",
+                    exc,
+                )
+
+        # Claude fallback path (also primary when USE_CLAUDE_FOR_GEORGIAN_WRITING=1).
+        return self._write_response_via_claude(prompt)
+
+    def _write_response_via_claude(self, prompt: str) -> str:
+        """Generate the WhatsApp reply via Claude when Gemini is unavailable.
+
+        Uses the same prompt as the Gemini path but goes through the
+        already-initialized Anthropic client. Returns the polite-error
+        fallback only if Claude itself errors out.
+        """
+        try:
+            response = self._claude.messages.create(
+                model=ASSISTANT_CLAUDE_MODEL,
+                max_tokens=1024,
+                timeout=60.0,
+                system=(
+                    "You are a professional Georgian-language writer for a "
+                    "WhatsApp AI-literacy course. You produce short, fluent, "
+                    "natural Georgian replies (2-3 sentences) using formal "
+                    "'თქვენ', no emojis, no introductions, no AI disclaimers. "
+                    "Match the requested format precisely."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text_parts = [b.text for b in response.content if b.type == "text"]
+            text = "\n".join(text_parts).strip()
+            logger.info(
+                "Claude WhatsApp response generated (%d chars) — Gemini fallback",
+                len(text),
+            )
+
             try:
                 from tools.core.cost_tracker import record_cost as _record_cost
 
-                _meta = getattr(gemini_response, "usage_metadata", None)
-                _in = getattr(_meta, "prompt_token_count", 0) or 0
-                _out = getattr(_meta, "candidates_token_count", 0) or 0
-                _cost = (_in * 1.25 + _out * 10.0) / 1_000_000
-                _record_cost(
-                    service="gemini",
-                    model=self._gemini_model,
-                    purpose="whatsapp_response",
-                    input_tokens=_in,
-                    output_tokens=_out,
-                    cost_usd=_cost,
-                    pipeline_key="whatsapp",
-                )
+                usage = getattr(response, "usage", None)
+                if usage:
+                    in_tok = getattr(usage, "input_tokens", 0) or 0
+                    out_tok = getattr(usage, "output_tokens", 0) or 0
+                    cost = (in_tok / 1_000_000) * 3.0 + (out_tok / 1_000_000) * 15.0
+                    _record_cost(
+                        service="claude",
+                        model=ASSISTANT_CLAUDE_MODEL,
+                        purpose="whatsapp_response_fallback",
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        cost_usd=cost,
+                        pipeline_key="whatsapp",
+                    )
             except Exception as _ct_err:
                 logger.debug("Cost tracking failed (non-critical): %s", _ct_err)
 
-            return text
+            return text or "ბოდიში, ამჯერად ვერ მოვახერხე პასუხის გენერირება. სცადეთ მოგვიანებით."
 
         except Exception as exc:
-            logger.error("Gemini API error in _write_response: %s", exc)
-            # Graceful degradation: return a minimal Georgian fallback
+            logger.error("Claude fallback also failed in _write_response: %s", exc)
             return "ბოდიში, ამჯერად ვერ მოვახერხე პასუხის გენერირება. სცადეთ მოგვიანებით."
 
     # ------------------------------------------------------------------
