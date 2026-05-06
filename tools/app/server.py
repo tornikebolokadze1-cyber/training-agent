@@ -1093,14 +1093,31 @@ async def whatsapp_incoming(
     #
     # Bot-authored replies always begin with the 🤖 emoji + the assistant
     # signature that ``_format_response`` prepends, so we distinguish the
-    # two cases by inspecting the message body. Outgoing-message webhooks
-    # are also disabled at the Green API side as a second line of defence
-    # (configure_webhook sets ``outgoingMessageWebhook=no``).
+    # two cases by inspecting the message body. We tolerate any dash
+    # variant in the signature (regular ``-``, en-dash ``–``, em-dash ``—``)
+    # so a hand-crafted proactive nudge with em-dash typography is still
+    # recognised as bot-authored — otherwise the bot replies to itself and
+    # the rate-limit cascade burns the conversation thread (seen 2026-05-07
+    # 00:00 in both groups when the operator pushed a manual catch-up
+    # message with em-dash signature).
+    # Outgoing-message webhooks are also disabled at the Green API side as
+    # a second line of defence (configure_webhook sets
+    # ``outgoingMessageWebhook=no``).
     if message_data.get("fromMe", False):
         text_head = (text or "").lstrip()
+        # Normalise unicode dash variants to a regular ASCII hyphen so the
+        # signature substring match works regardless of typography.
+        head_normalised = (
+            text_head[:120]
+            .replace("—", "-")  # em-dash
+            .replace("–", "-")  # en-dash
+            .replace("−", "-")  # minus sign
+        )
         is_bot_self = (
             text_head.startswith("🤖")
-            or "AI ასისტენტი - მრჩეველი" in text_head[:80]
+            or "AI ასისტენტი" in head_normalised
+            or "AI ასისტენტი" in (text_head.replace("—", "-").replace("–", "-"))[-120:]
+            or "მრჩეველი" in head_normalised and "AI" in head_normalised
         )
         if is_bot_self:
             return {"status": "ignored", "reason": "own bot message"}

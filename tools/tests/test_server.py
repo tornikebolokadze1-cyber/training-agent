@@ -742,6 +742,39 @@ class TestWhatsAppIncomingEndpoint:
         assert body_json["status"] == "ignored"
         assert "bot" in body_json.get("reason", "").lower()
 
+    async def test_own_bot_message_with_em_dash_signature_ignored(self, patched_secrets):
+        """Bot replies that use em-dash typography in the signature must
+        still be detected as the bot talking to itself. The 2026-05-07
+        00:00 incident in both groups happened because a hand-crafted
+        proactive message used ``— AI ასისტენტი — მრჩეველი`` (em-dash
+        rather than the regular hyphen the formatter normally emits) and
+        slipped past the self-detection check, causing the bot to reply
+        to its own message and burn the Gemini→Claude fallback chain.
+        """
+        body = {
+            **_WA_TEXT_BODY,
+            "messageData": {
+                "typeMessage": "textMessage",
+                "fromMe": True,
+                "textMessageData": {
+                    # Em-dash variant — must still be recognised
+                    "textMessage": (
+                        "შორენა, კი, Cursor-ზეც მუშაობს იგივე მიდგომა — "
+                        "system prompt-ში წერთ მკაფიო შეზღუდვას.\n\n"
+                        "— AI ასისტენტი — მრჩეველი"
+                    ),
+                },
+            },
+        }
+        async with await _async_client() as client:
+            resp = await client.post(
+                "/whatsapp-incoming", json=body, headers=_WA_AUTH
+            )
+        assert resp.status_code == 200
+        body_json = resp.json()
+        assert body_json["status"] == "ignored"
+        assert "bot" in body_json.get("reason", "").lower()
+
     async def test_operator_manual_message_accepted(self, patched_secrets):
         """fromMe=True without the bot signature is the OPERATOR typing.
 
