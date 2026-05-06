@@ -1,6 +1,6 @@
 ---
 tags: [კონცეფცია, AI]
-aliases: [Multi-agent Architecture, მულტი-აგენტური არქიტექტურა]
+aliases: [Multi-agent Architecture, მრავალ-აგენტური არქიტექტურა, მულტი-აგენტური არქიტექტურა]
 category: concept
 ---
 
@@ -19,6 +19,7 @@ category: concept
 - [[ლექცია 8]] (ჯგუფი 1)
 - [[ლექცია 10]] (ჯგუფი 1)
 - [[ლექცია 12]] (ჯგუფი 1)
+- [[ლექცია 13]] (ჯგუფი 1)
 - [[ლექცია 6]] (ჯგუფი 2)
 
 ---
@@ -29,6 +30,7 @@ category: concept
 - [[Agent Skills System]]
 - [[Agent Specialization]]
 - [[Paperclip Framework]]
+- [[Agentic AI]]
 - [[AI Agent]]
 - [[Agent Swarm]]
 - [[Claude Code]]

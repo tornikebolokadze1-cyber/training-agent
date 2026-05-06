@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Dispatch, Claude Desktop აპლიკაცია, Claude-ის დესკტოპ აპლიკაცია, Claude-ის სამაგიდო აპლიკაცია, კლოდ დესქტოპი, კლოდის დესკტოპ აპლიკაცია, კლოდის დესქტოპ აპლიკაცია, კლოდის დესქტოფ აპლიკაცია]
+aliases: [Claude Cowork, Claude Desktop App, Claude Desktop Application, Claude Desktop Dispatch, Claude-ის დესკტოპ აპლიკაცია, Claude-ის სამაგიდო აპლიკაცია, კლოდ დესქტოპი, კლოდის დესკტოპ აპლიკაცია, კლოდის დესქტოპ აპლიკაცია, კლოდის დესქტოფ აპლიკაცია]
 category: tool
 ---
 
@@ -29,8 +29,12 @@ Claude Desktop არის Anthropic-ის სამი რეჟიმის 
 
 ## დაკავშირებული
 
-- [[Claude]]
-- [[Desktop Application Settings]]
+- [[Model Context Protocol]]
+- [[Computer Use]]
+- [[Claude Model Tiers]]
+- [[VS Code]]
+- [[AI System Architecture]]
+- [[Multimodal AI]]
 - [[Claude Code]]
 - [[MCP (Model Context Protocol)]]
 - [[Claude Computer Use]]
@@ -40,14 +44,10 @@ Claude Desktop არის Anthropic-ის სამი რეჟიმის 
 - [[MCP]]
 - [[Claude Artifacts]]
 - [[Tool Selection Framework]]
-- [[Four Environments Framework]]
-- [[Project Phasing Methodology]]
-- [[Claude Worq]]
-- [[AI Agents]]
 
 ---
 
 ## პრაქტიკული გამოყენება
 
-- ლექტორი ხელმძღვანელობს მონაწილეს Claude Desktop-ის პარამეტრების რიგით გახსნის სახით, კონფიგურირების მაქვს Computer Use და Browser Action უფლებები (ჯგუფი 1, ლექცია 13)
+- Claude Desktop-ის პარამეტრებში მოდელის Sonnet-დან Opus-ზე გადართვა ტექნიკური პრობლემის მოსაგვარებლად სესიის განმავლობაში. (ჯგუფი 1, ლექცია 13)
 - მობილური ტელეფონიდან QR კოდის სკანირებით Slack-ში შეტყობინებების გაგზავნა, Asana-ში ამოცანების მართვა ან Google Drive-ში საბუთების ძიება კომპიუტერთან ფიზიკური დასხდომის გარეშე. (ჯგუფი 2, ლექცია 4)

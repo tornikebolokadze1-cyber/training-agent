@@ -16,10 +16,13 @@ category: concept
 
 ## ლექციებში
 
+- [[ლექცია 13]] (ჯგუფი 1)
 - [[ლექცია 15]] (ჯგუფი 1)
 
 ---
 
 ## დაკავშირებული
 
+- [[Claude Desktop]]
+- [[AI System Architecture]]
 - [[AI Agent]]

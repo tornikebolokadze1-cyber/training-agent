@@ -70,7 +70,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -178,6 +179,11 @@
   },
   "active": "a457e1b4aee88f6a",
   "lastOpenFiles": [
+    "ანალიზი/ჯგუფი 1/ლექცია 15 -- ანალიზი.md",
+    "ანალიზი/ჯგუფი 1/ლექცია 10 -- ანალიზი.md",
+    "კონცეფციები/AI Music Generation.md",
+    "ინსტრუმენტები/NanoBanana.md",
+    "ინსტრუმენტები/N8N.md",
     "კონცეფციები/SME AI Adoption.md",
     "ინსტრუმენტები/Copilot Studio.md",
     "კონცეფციები/AI Risk Management.md",
@@ -199,11 +205,6 @@
     "კონცეფციები/Infographic Video.md",
     "კონცეფციები/LipSync.md",
     "კონცეფციები/Zero-cost AI Automation Stack.md",
-    "კონცეფციები/VRAM (Video RAM).md",
-    "კონცეფციები/Node-based Automation.md",
-    "კონცეფციები/Multi-Model Integration.md",
-    "კონცეფციები/Lipsync.md",
-    "კონცეფციები/Large Language Model (LLM).md",
     "Untitled 2.canvas",
     "Untitled.base",
     "Untitled 1.canvas",

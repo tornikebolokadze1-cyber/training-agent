@@ -38,8 +38,8 @@ AI-სთვის ინსტრუქციების ოპტიმალ
 - [[Chain-of-Thought]]
 - [[Few-Shot Learning]]
 - [[Deep Audit Prompt]]
-- [[Code Generation]]
-- [[Iterative Refinement]]
+- [[Claude Model Tiers]]
+- [[Georgian Language AI Quality]]
 - [[Argumentative Recommendation]]
 - [[AI as Teacher]]
 - [[AI Agent]]
@@ -55,4 +55,4 @@ AI-სთვის ინსტრუქციების ოპტიმალ
 
 ## პრაქტიკული გამოყენება
 
-- მონაწილეები iteratively გამეორებენ თავიანთ პრომპტებს Claude-ის გამომავალიდან, თანმიმდევრობით გაუმჯობესებენ და კონკრეტების გაკეთება მათ ინსტრუქციაში (ჯგუფი 1, ლექცია 13)
+- პრომპტების WhatsApp-ის გავლით გადაცემა მონაწილეებს შორის — ნაჩვენებია, როგორც პრობლემატური პრაქტიკა, რომელიც სტრუქტურირებული მიდგომით უნდა შეიცვალოს. (ჯგუფი 1, ლექცია 13)
