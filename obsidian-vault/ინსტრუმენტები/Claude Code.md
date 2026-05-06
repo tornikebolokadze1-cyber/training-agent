@@ -14,16 +14,27 @@ Claude Code არის ხელოვნური ინტელექტი
 
 ## ლექციებში
 
+- [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 7]] (ჯგუფი 1)
 - [[ლექცია 13]] (ჯგუფი 2)
 
 ---
 
 ## დაკავშირებული
 
+- [[AI Agent]]
+- [[Paradigm Shift]]
+- [[VS Code]]
+- [[Prompt Engineering]]
+- [[Claude Desktop]]
+- [[MCP (Model Context Protocol)]]
+- [[GitHub]]
+- [[Model Evaluation and Selection]]
+- [[Cursor IDE]]
+- [[Ollama]]
 - [[Large Language Model (LLM)]]
 - [[Docker]]
 - [[Zero-cost AI Automation Stack]]
-- [[Prompt Engineering]]
 
 ---
 

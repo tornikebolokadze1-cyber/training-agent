@@ -1,12 +1,10 @@
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [VS Code (Visual Studio Code)]
-category: platform
+category: tool
 ---
 
 # VS Code
-
-> ქართულად: **VS Code (Visual Studio Code)**
 
 ## აღწერა
 
@@ -16,6 +14,8 @@ VS Code არის Microsoft-ის მიერ შექმნილი უ�
 
 ## ლექციებში
 
+- [[ლექცია 3]] (ჯგუფი 1)
+- [[ლექცია 7]] (ჯგუფი 1)
 - [[ლექცია 13]] (ჯგუფი 1)
 
 ---
@@ -25,6 +25,9 @@ VS Code არის Microsoft-ის მიერ შექმნილი უ�
 - [[Claude AI]]
 - [[Claude Desktop Application]]
 - [[CLI "code" Command]]
+- [[Claude Code]]
+- [[Google Antigravity IDE]]
+- [[VS Code Infrastructure Setup]]
 
 ---
 
