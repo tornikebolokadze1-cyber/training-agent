@@ -315,6 +315,133 @@ def _count_pattern_items(text: str, section_pattern: str) -> int:
     return len(items)
 
 
+# ---------------------------------------------------------------------------
+# Tech-accuracy extraction helpers
+# ---------------------------------------------------------------------------
+#
+# The deep analysis report does not have a dedicated "tech_correct" /
+# "tech_problematic" itemised section. The only canonical signal is the
+# "ტექნიკური სიზუსტე" justification cell in the 5-dimension score table.
+# This cell is prose: typically a positive statement, then a transition
+# ("თუმცა,", "მაგრამ ", "ქულები დააკლდა:") followed by faults. We classify
+# each sentence as positive / negative / mixed and count clauses.
+
+_TECH_POS_KW = re.compile(
+    r"ზუსტი|ზუსტად|ზუსტ\s+|ზუსტ[აეი]|სწორი|სწორად|აქტუალურ|"
+    r"ჩამოყალიბებულ|გულწრფელ|შთამბეჭდავ|შესანიშნავ|ჭეშმარიტ",
+    re.UNICODE,
+)
+
+_TECH_NEG_KW = re.compile(
+    r"არაზუსტ|მცდარ|შეცდომ|უსაფუძვლ|გადაუმოწმებელ|მოძველებულ|"
+    r"არასწორ|უზუსტობ|გადაჭარბებ|უარყოფ|არასრულ|ხარვეზ|"
+    r"შეცდომაში\s+შემყვან|არ\s+არის\s+ზუსტი|არ\s+აღნიშნავს",
+    re.UNICODE,
+)
+
+_TECH_TRANSITION = re.compile(
+    r"(?:თუმცა\s*,|მაგრამ\s+|ქულები\s+დააკლდა\s*:?|თუმცაღა\s*,)",
+    re.UNICODE,
+)
+
+
+def _extract_tech_accuracy_cell(text: str) -> tuple[str | None, bool]:
+    """Pull the 'ტექნიკური სიზუსტე' justification cell from the score table.
+
+    Returns:
+        (cell_text, is_na). cell_text is None if no row found or only N/A.
+        Picks the longest non-NA cell when chunk-overlap duplicated the row.
+    """
+    pattern = (
+        r"\|\s*\*?\*?ტექნიკური\s+სიზუსტე\*?\*?\s*\|"
+        r"\s*\**\s*(?:(\d+(?:\.\d+)?)/10|(N/A)(?:/10)?)\s*\**\s*\|"
+        r"\s*([^\|]*?)(?=\s*\|)"
+    )
+    matches = list(re.finditer(pattern, text, re.UNICODE | re.IGNORECASE))
+    if not matches:
+        return (None, False)
+    best_cell: str | None = None
+    any_na = False
+    for m in matches:
+        na_marker = m.group(2)
+        cell = m.group(3).strip()
+        if na_marker:
+            any_na = True
+            continue
+        if best_cell is None or len(cell) > len(best_cell):
+            best_cell = cell
+    if best_cell is None and any_na:
+        return (None, True)
+    return (best_cell, False)
+
+
+def _split_tech_sentences(text: str) -> list[str]:
+    """Split text into sentences by period+space, preserving decimal numbers."""
+    placeholder = "<DOT>"
+    text = re.sub(r"(\d)\.(\d)", rf"\1{placeholder}\2", text)
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    return [p.replace(placeholder, ".").strip() for p in parts if p.strip()]
+
+
+def _split_tech_clauses(sentence: str) -> list[str]:
+    """Split a sentence into clauses by ',', ';', ' და '."""
+    normalized = re.sub(r"\s+და\s+", ", ", sentence)
+    parts = re.split(r"[,;]\s*", normalized)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _count_tech_clauses(part: str, keyword_re: re.Pattern[str]) -> int:
+    """Count clauses in `part` containing at least one keyword match.
+
+    Returns at least 1 if the keyword appears in `part` (handles single-keyword
+    sentences with no comma splits).
+    """
+    if not part.strip():
+        return 0
+    clauses = _split_tech_clauses(part)
+    count = sum(1 for c in clauses if keyword_re.search(c))
+    if count == 0 and keyword_re.search(part):
+        count = 1
+    return count
+
+
+def _extract_tech_accuracy_counts(text: str) -> tuple[int, int]:
+    """Return (tech_correct_count, tech_problematic_count) from deep analysis.
+
+    Conservative extractor: parses the 'ტექნიკური სიზუსტე' justification cell,
+    splits into sentences, classifies each as positive / negative / mixed by
+    keyword presence, then counts clauses within each part. Returns (0, 0) for
+    N/A cells or when no row is present.
+    """
+    cell, is_na = _extract_tech_accuracy_cell(text)
+    if cell is None or is_na:
+        return (0, 0)
+
+    correct = 0
+    problematic = 0
+    for sentence in _split_tech_sentences(cell):
+        has_pos = bool(_TECH_POS_KW.search(sentence))
+        has_neg = bool(_TECH_NEG_KW.search(sentence))
+        if has_pos and has_neg:
+            transition = _TECH_TRANSITION.search(sentence)
+            if transition:
+                correct += _count_tech_clauses(
+                    sentence[: transition.start()], _TECH_POS_KW,
+                )
+                problematic += _count_tech_clauses(
+                    sentence[transition.end():], _TECH_NEG_KW,
+                )
+            else:
+                correct += _count_tech_clauses(sentence, _TECH_POS_KW)
+                problematic += _count_tech_clauses(sentence, _TECH_NEG_KW)
+        elif has_pos:
+            correct += _count_tech_clauses(sentence, _TECH_POS_KW)
+        elif has_neg:
+            problematic += _count_tech_clauses(sentence, _TECH_NEG_KW)
+        # neutral sentences contribute nothing
+    return (correct, problematic)
+
+
 def _extract_first_item(text: str, section_pattern: str) -> str | None:
     """Extract first bullet/numbered item from a section."""
     match = re.search(section_pattern, text, re.UNICODE | re.DOTALL)
@@ -415,17 +542,11 @@ def extract_insights(deep_analysis_text: str) -> dict:
     if recs_count == 0:
         # Count any numbered steps: "ნაბიჯი N:"
         recs_count = len(re.findall(r"(?m)ნაბიჯი\s+\d+", rec_section))
-    # Count ✅ items (technically correct) and ⚠️ items (problematic)
-    tech_correct = len(re.findall(r"(?m)^\s*✅\s+", deep_analysis_text))
-    tech_problematic = len(re.findall(r"(?m)^\s*[⚠️]\s*\*\*", deep_analysis_text))
-    if tech_correct == 0:
-        # Fallback: count bullet items under "სწორია" section
-        correct_section = _get_section(deep_analysis_text, r"სწორია") or ""
-        tech_correct = len(re.findall(r"(?m)^\s*\*\s+.+", correct_section))
-    if tech_problematic == 0:
-        # Fallback: count items under "პრობლემური" section
-        prob_section = _get_section(deep_analysis_text, r"პრობლემური") or ""
-        tech_problematic = len(re.findall(r"(?m)^\s*\*\s+.+", prob_section))
+    # Tech-accuracy counts: extracted from the 'ტექნიკური სიზუსტე' score-table
+    # cell (the report has no dedicated itemised section for these). The legacy
+    # ✅/⚠️/"სწორია"/"პრობლემური" patterns never matched real reports — those
+    # markers are not produced by Claude's analysis prompt.
+    tech_correct, tech_problematic = _extract_tech_accuracy_counts(deep_analysis_text)
 
     # Extract top items
     top_strength = _extract_first_item(
