@@ -1132,7 +1132,10 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                         "sync: reconstructed text too short (%d chars) for G%dL%d",
                         len(full_text), group, lecture,
                     )
-                    failed += 1
+                    if _restore_from_score_backup(idx, group, lecture):
+                        synced += 1
+                    else:
+                        failed += 1
                     continue
 
                 # Save scores + insights
@@ -1143,12 +1146,18 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                         group, lecture, len(chunks), len(full_text),
                     )
                 else:
-                    failed += 1
                     logger.warning("sync: score extraction failed for G%dL%d", group, lecture)
+                    if _restore_from_score_backup(idx, group, lecture):
+                        synced += 1
+                    else:
+                        failed += 1
 
             except Exception as e:
                 logger.warning("sync: fetch/reconstruct error for G%dL%d: %s", group, lecture, e)
-                failed += 1
+                if _restore_from_score_backup(idx, group, lecture):
+                    synced += 1
+                else:
+                    failed += 1
 
     # Seed G1L1 approximate scores + insights (video was corrupted, scores
     # derived from equivalent G2L1 delivery analysis — cannot be re-processed).

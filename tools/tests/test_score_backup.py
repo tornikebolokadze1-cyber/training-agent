@@ -784,6 +784,46 @@ class TestSyncFallsBackToScoreBackup:
 
         mock_restore.assert_not_called()
 
+    def test_fallback_called_when_deep_analysis_score_extraction_fails(
+        self, in_memory_db
+    ):
+        """If deep_analysis text exists but lacks scores, restore backup."""
+        mock_idx = MagicMock()
+        mock_idx.list.return_value = iter([["g1_l1_deep_analysis_0"]])
+
+        chunk_fetch_response = MagicMock()
+        chunk_fetch_response.vectors = {
+            "g1_l1_deep_analysis_0": MagicMock(
+                metadata={
+                    "chunk_index": 0,
+                    "text": "x" * 300,
+                }
+            )
+        }
+        mock_idx.fetch.return_value = chunk_fetch_response
+
+        with (
+            patch(
+                "tools.integrations.knowledge_indexer.get_pinecone_index",
+                return_value=mock_idx,
+            ),
+            patch(
+                "tools.services.analytics._restore_from_score_backup",
+                return_value=True,
+            ) as mock_restore,
+            patch(
+                "tools.services.analytics.save_scores_from_analysis",
+                return_value=False,
+            ),
+        ):
+            _seed_all_except(in_memory_db, skip_group=1, skip_lecture=1)
+            from tools.services.analytics import sync_from_pinecone
+            result = sync_from_pinecone(force=True)
+
+        mock_restore.assert_called_once()
+        assert result["synced"] >= 1
+        assert result["failed"] == 0
+
     def test_fallback_returns_false_restore_not_called_again(self, in_memory_db):
         """When _restore_from_score_backup returns False (no backup either),
         it should only be called once for the missing lecture.
