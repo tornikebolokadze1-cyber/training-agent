@@ -36,6 +36,22 @@ def test_reconcile_no_drift():
     assert report.state_file_orphans == []
 
 
+def test_reconcile_complete_state_file_not_orphaned():
+    """COMPLETE state files are terminal and should not alert as active."""
+    with patch(
+        "tools.integrations.knowledge_indexer.lecture_exists_in_index",
+        side_effect=_exists_factory({(1, 1)}),
+    ), patch.object(
+        data_reconciliation, "_scan_scores_db", return_value={(1, 1)}
+    ), patch.object(
+        data_reconciliation, "_scan_state_files", return_value=[((1, 1), "complete")]
+    ):
+        report = reconcile_state_drift()
+
+    assert report.has_drift is False
+    assert report.state_file_orphans == []
+
+
 def test_reconcile_scores_only_drift():
     """Lecture in scores DB but missing from Pinecone (the dangerous drift)."""
     with patch(

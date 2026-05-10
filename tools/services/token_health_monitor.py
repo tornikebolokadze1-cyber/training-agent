@@ -51,8 +51,9 @@ def check_token_proactively() -> dict[str, Any]:
             logger.critical("Could not alert operator: %s", alert_exc)
         return result
 
-    # Case 1: token already revoked / unusable
-    if not health.get("valid") or not health.get("has_refresh_token"):
+    # Case 1: refresh_token missing/revoked. An expired access token is
+    # recoverable as long as a refresh_token is still present.
+    if not health.get("has_refresh_token"):
         error = health.get("error") or "token invalid"
         logger.critical("[token-monitor] Token is unusable: %s", error)
         result["status"] = "critical"
@@ -67,6 +68,38 @@ def check_token_proactively() -> dict[str, Any]:
             result["alert_sent"] = True
         except Exception as exc:
             logger.critical("Could not alert operator about revocation: %s", exc)
+        return result
+
+    if not health.get("valid"):
+        error = health.get("error") or "access token expired"
+        logger.warning(
+            "[token-monitor] Access token invalid/expired; attempting refresh: %s",
+            error,
+        )
+        try:
+            refreshed = refresh_google_token()
+        except Exception as exc:
+            logger.error("Refresh raised: %s", exc)
+            refreshed = False
+
+        if refreshed:
+            result["status"] = "healthy"
+            result["action_taken"] = "expired access token refreshed"
+            return result
+
+        logger.critical("[token-monitor] Token refresh failed: %s", error)
+        result["status"] = "critical"
+        result["action_taken"] = f"token refresh FAILED: {error}"
+        try:
+            alert_operator(
+                "CRITICAL: Google OAuth token could not be refreshed.\n\n"
+                f"Detail: {error}\n\n"
+                "Pipeline will fail on Drive operations. Re-authorize now:\n"
+                "  python -m tools.core.token_manager --reauth"
+            )
+            result["alert_sent"] = True
+        except Exception as exc:
+            logger.critical("Could not alert operator about refresh failure: %s", exc)
         return result
 
     expires_in_hours = health.get("expires_in_hours")

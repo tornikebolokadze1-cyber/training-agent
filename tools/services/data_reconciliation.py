@@ -23,7 +23,15 @@ logger = logging.getLogger(__name__)
 
 _SCORES_DB_PATH = Path("data/scores.db")
 _STATE_DIR = Path(".tmp")
-_TERMINAL_STATES = {"completed", "done", "finished", "success", "indexed"}
+_TERMINAL_STATES = {
+    "complete",
+    "failed",
+    "completed",
+    "done",
+    "finished",
+    "success",
+    "indexed",
+}
 
 
 @dataclass(frozen=True)

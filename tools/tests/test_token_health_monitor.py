@@ -58,6 +58,31 @@ def test_revoked_token_alerts():
     assert "REVOKED" in mock_alert.call_args.args[0]
 
 
+def test_expired_access_token_refreshes_without_alert():
+    """Expired access token with refresh_token -> refresh, no revoked alert."""
+    health = {
+        "valid": False,
+        "expires_in_hours": -49.0,
+        "has_refresh_token": True,
+        "needs_refresh": True,
+        "error": None,
+    }
+    with patch(
+        "tools.core.token_manager.check_token_health", return_value=health
+    ), patch(
+        "tools.core.token_manager.refresh_google_token", return_value=True
+    ) as mock_refresh, patch(
+        "tools.integrations.whatsapp_sender.alert_operator"
+    ) as mock_alert:
+        result = token_health_monitor.check_token_proactively()
+
+    assert result["status"] == "healthy"
+    assert result["action_taken"] == "expired access token refreshed"
+    assert result["alert_sent"] is False
+    mock_refresh.assert_called_once()
+    mock_alert.assert_not_called()
+
+
 def test_expiring_soon_attempts_refresh():
     """Token expires in 2 days → attempt refresh, healthy after success."""
     health = {
