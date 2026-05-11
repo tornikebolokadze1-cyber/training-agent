@@ -261,13 +261,28 @@ def validate_summary_document(
             f"Summary does not reference lecture number {lecture_number}"
         )
 
-    # Check for group reference
+    # Check for group reference — accept both the internal numbering
+    # ("ჯგუფი 3") and the cohort-prefixed user-facing name
+    # ("მაისის ჯგუფი #1") that the writer model is likelier to produce.
+    from tools.core.config import GROUPS as _GROUPS
+
     group_patterns = [
         f"ჯგუფი #{group_number}",
         f"ჯგუფი {group_number}",
         f"Group {group_number}",
         f"Group #{group_number}",
     ]
+    cohort_name = _GROUPS.get(group_number, {}).get("name")
+    if cohort_name:
+        group_patterns.append(cohort_name)
+        # Also tolerate the short marker present in cohort names (e.g.
+        # "ჯგუფი #1" is the trailing fragment of "მაისის ჯგუფი #1") so
+        # writers who drop the prefix still satisfy the check.
+        import re as _re
+
+        m = _re.search(r"#\d+", cohort_name)
+        if m:
+            group_patterns.append(f"ჯგუფი {m.group(0)}")  # "ჯგუფი #1"
     has_group_ref = any(pat in content_stripped for pat in group_patterns)
     metrics["has_group_reference"] = has_group_ref
     if not has_group_ref:

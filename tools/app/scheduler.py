@@ -44,6 +44,19 @@ from tools.integrations.whatsapp_sender import alert_operator
 
 logger = logging.getLogger(__name__)
 
+
+def _group_label(group_number: int) -> str:
+    """Return the user-facing cohort-prefixed name for a group.
+
+    Used in operator WhatsApp alerts and error messages so Tornike sees
+    ``მაისის ჯგუფი #1`` (matching the Zoom topic, Drive folder, and
+    WhatsApp chat title) rather than the internal index ``Group 3``.
+    Falls back to ``Group N`` when no name is configured.
+    """
+    name = GROUPS.get(group_number, {}).get("name")
+    return name if name else f"Group {group_number}"
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -552,7 +565,7 @@ def _run_post_meeting_pipeline(
             _cleanup_dedup()
             try:
                 alert_operator(
-                    f"Pipeline ABORTED for Group {group_number}, Lecture #{lecture_number}: "
+                    f"Pipeline ABORTED for {_group_label(group_number)}, Lecture #{lecture_number}: "
                     f"no recording found for meeting {meeting_id}. "
                     f"Check Zoom — the recording may not have been saved."
                 )
@@ -584,7 +597,7 @@ def _run_post_meeting_pipeline(
                 )
                 _cleanup_dedup()
                 alert_operator(
-                    f"Recording download FAILED for Group {group_number}, "
+                    f"Recording download FAILED for {_group_label(group_number)}, "
                     f"Lecture #{lecture_number} (segment {i}).\nError: {exc}\n"
                     f"Check Zoom dashboard for manual download."
                 )
@@ -607,7 +620,7 @@ def _run_post_meeting_pipeline(
                 _durable_abort(f"ffmpeg_concat_failed: {exc}")
                 _cleanup_dedup()
                 alert_operator(
-                    f"ffmpeg concat FAILED for Group {group_number}, "
+                    f"ffmpeg concat FAILED for {_group_label(group_number)}, "
                     f"Lecture #{lecture_number}.\nError: {exc}\n"
                     f"Segments are in .tmp/ for manual merge."
                 )
@@ -696,7 +709,7 @@ def _run_post_meeting_pipeline(
             logger.error("[post] Failed to schedule retry: %s", retry_exc)
 
         alert_operator(
-            f"Pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+            f"Pipeline FAILED for {_group_label(group_number)}, Lecture #{lecture_number}.\n"
             f"Error: {exc}\n"
             f"Automatic retry has been scheduled."
         )
@@ -785,7 +798,7 @@ async def pre_meeting_job(group_number: int) -> None:
         logger.error("[pre] Failed to create Zoom meeting: %s", exc)
         zoom_join_url = "(Zoom meeting creation failed)"
         alert_operator(
-            f"Zoom meeting creation FAILED for Group {group_number}, "
+            f"Zoom meeting creation FAILED for {_group_label(group_number)}, "
             f"Lecture #{lecture_number}.\nError: {exc}\n"
             f"Create the meeting manually."
         )
@@ -814,7 +827,7 @@ async def pre_meeting_job(group_number: int) -> None:
         logger.error("[pre] WhatsApp reminder failed: %s", exc)
         try:
             alert_operator(
-                f"WhatsApp reminder FAILED for Group {group_number}, "
+                f"WhatsApp reminder FAILED for {_group_label(group_number)}, "
                 f"Lecture #{lecture_number}.\nError: {exc}"
             )
         except Exception:
@@ -937,7 +950,7 @@ async def _recording_watchdog(
     # Anything else → alert operator with actionable instruction
     if reason == "scope_missing":
         msg = (
-            f"⚠️ ZOOM RECORDING NOT ACTIVE — Group {group_number}, Lecture #{lecture_number}\n\n"
+            f"⚠️ ZOOM RECORDING NOT ACTIVE — {_group_label(group_number)}, Lecture #{lecture_number}\n\n"
             f"Meeting ID: {meeting_id}\n\n"
             "Zoom auto_recording config silently no-op'd AND watchdog can't "
             "force-start because OAuth app is missing the "
@@ -948,7 +961,7 @@ async def _recording_watchdog(
         )
     else:
         msg = (
-            f"⚠️ ZOOM RECORDING WATCHDOG FAILED — Group {group_number}, "
+            f"⚠️ ZOOM RECORDING WATCHDOG FAILED — {_group_label(group_number)}, "
             f"Lecture #{lecture_number}\n\n"
             f"Meeting ID: {meeting_id}\n"
             f"Reason: {reason}\n\n"

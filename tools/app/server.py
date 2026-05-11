@@ -29,6 +29,7 @@ from tools.core.config import (
     IS_RAILWAY,
     MINIMUM_LECTURE_DURATION_MINUTES,
     N8N_CALLBACK_URL,
+    OPERATOR_WEBHOOK_SECRET,
     PAPERCLIP_API_BASE,
     PAPERCLIP_WEBHOOK_SECRET,
     SERVER_HOST,
@@ -342,7 +343,7 @@ async def _deferred_lifespan_init() -> None:
     """Heavy startup work that must NOT block lifespan from yielding.
 
     Runs as a background task spawned in ``_lifespan``. Critical for
-    Railway healthchecks: ``/live`` and ``/health`` need to respond
+    Railway healthchecks: ``/live`` and ``/ready`` need to respond
     immediately so the container is marked healthy. Anything that hits
     Pinecone or Zoom must be backgrounded with timeouts so a slow
     upstream cannot prevent the app from accepting connections.
@@ -435,7 +436,7 @@ async def _periodic_catchup_loop() -> None:
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # noqa: ARG001
     eviction_task = asyncio.create_task(_eviction_loop())
-    # Defer heavy startup work to a background task so /live and /health
+    # Defer heavy startup work to a background task so /live and /ready
     # are servable as soon as uvicorn binds. Without this, Pinecone/Zoom
     # network calls during startup would block Railway healthchecks and
     # the container would be killed before it ever responded.
@@ -643,25 +644,44 @@ class CallbackPayload(BaseModel):
 # Security
 # ---------------------------------------------------------------------------
 
-def verify_webhook_secret(authorization: str | None = Header(None)) -> None:
-    """Validate the webhook secret from the Authorization header.
-
-    Fails closed: if WEBHOOK_SECRET is not configured, all requests are
-    rejected to prevent accidental open access in production.
-    """
-    if not WEBHOOK_SECRET:
-        logger.error("WEBHOOK_SECRET not configured — rejecting request (fail closed)")
+def _verify_bearer_secret(
+    authorization: str | None,
+    expected_secret: str | None,
+    secret_name: str,
+) -> None:
+    """Validate a static bearer secret from the Authorization header."""
+    if not expected_secret:
+        logger.error("%s not configured; rejecting request (fail closed)", secret_name)
         raise HTTPException(
             status_code=503,
-            detail="Server misconfigured: WEBHOOK_SECRET not set",
+            detail=f"Server misconfigured: {secret_name} not set",
         )
 
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
 
-    expected = f"Bearer {WEBHOOK_SECRET}"
+    expected = f"Bearer {expected_secret}"
     if not hmac.compare_digest(authorization, expected):
-        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+        raise HTTPException(status_code=403, detail="Invalid bearer secret")
+
+
+def verify_webhook_secret(authorization: str | None = Header(None)) -> None:
+    """Validate the ingestion webhook secret from the Authorization header."""
+    _verify_bearer_secret(authorization, WEBHOOK_SECRET, "WEBHOOK_SECRET")
+
+
+def verify_operator_secret(authorization: str | None = Header(None)) -> None:
+    """Validate the operator/admin secret from the Authorization header.
+
+    OPERATOR_WEBHOOK_SECRET lets operator-only endpoints rotate independently
+    from ingestion webhooks. If it is not configured, WEBHOOK_SECRET is used
+    as a compatibility fallback.
+    """
+    _verify_bearer_secret(
+        authorization,
+        OPERATOR_WEBHOOK_SECRET or WEBHOOK_SECRET,
+        "OPERATOR_WEBHOOK_SECRET",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +747,7 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         logger.info("Uploading recording to Google Drive...")
         recording_file_id = await asyncio.to_thread(upload_file, local_path, lecture_folder_id)
         drive_recording_url = get_drive_file_url(recording_file_id)
-        logger.info("Recording uploaded: %s", drive_recording_url)
+        logger.info("Recording uploaded to Drive")
 
         # Step 3: Run the full analysis pipeline (transcribe → analyze →
         # Drive summary + private report → WhatsApp notifications → Pinecone)
@@ -782,9 +802,10 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
         # Last-resort alert — ensures Tornike knows even if n8n callback fails
         try:
+            _g_label = GROUPS.get(group, {}).get("name") or f"Group {group}"
             await asyncio.to_thread(
                 alert_operator,
-                f"Pipeline FAILED for Group {group}, Lecture #{lecture}.\n"
+                f"Pipeline FAILED for {_g_label}, Lecture #{lecture}.\n"
                 f"Error: {e}",
             )
         except Exception as alert_err:
@@ -947,9 +968,16 @@ async def readiness(request: Request):  # noqa: ARG001
     )
 
 
-@limiter.limit("60/minute")
+_dashboard_cache: tuple[float, str] | None = None
+
+
+@limiter.limit("30/minute")
 @app.get("/health")
-async def health_check(request: Request, force: str = ""):
+async def health_check(
+    request: Request,
+    force: str = "",
+    authorization: str | None = Header(None),
+):
     """Deep observability endpoint — full dependency audit with TTL caching.
 
     Checks all external services: Gemini, Claude, Zoom, Pinecone, WhatsApp,
@@ -972,6 +1000,8 @@ async def health_check(request: Request, force: str = ""):
     This means warning-level issues (e.g. one dependency slow) do NOT cause
     Railway/Docker to restart the service.
     """
+    verify_operator_secret(authorization)
+
     from tools.core.health_monitor import get_cached_or_run_full_audit
 
     force_refresh = force.lower() in ("true", "1", "yes")
@@ -993,31 +1023,52 @@ async def health_check(request: Request, force: str = ""):
 
 @limiter.limit("10/minute")
 @app.get("/dashboard")
-async def dashboard(request: Request):
-    """Render the analytics dashboard as an HTML page."""
+async def dashboard(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Render the operator-only analytics dashboard as an HTML page."""
+    verify_operator_secret(authorization)
     try:
-        from tools.services.analytics import get_dashboard_data, render_dashboard_html
-        data = get_dashboard_data()
+        import time as _time
+        from tools.services.analytics import (
+            get_dashboard_data,
+            render_dashboard_html,
+            sync_from_pinecone,
+        )
+
+        global _dashboard_cache
+        now = _time.monotonic()
+        if _dashboard_cache and (now - _dashboard_cache[0]) < 300:
+            return HTMLResponse(content=_dashboard_cache[1])
+
+        await asyncio.to_thread(sync_from_pinecone)
+        data = await asyncio.to_thread(get_dashboard_data)
         html = render_dashboard_html(data)
+        _dashboard_cache = (now, html)
         return HTMLResponse(content=html)
     except Exception as exc:
         logger.error("Dashboard render failed: %s", exc)
         return HTMLResponse(
-            content=f"<h1>Dashboard Error</h1><pre>{exc}</pre>",
+            content="<h1>Dashboard Error</h1>",
             status_code=500,
         )
 
 
 @limiter.limit("10/minute")
 @app.get("/dashboard/data")
-async def dashboard_data(request: Request):
-    """Return raw dashboard data as JSON (for custom frontends)."""
+async def dashboard_data(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """Return raw operator-only dashboard data as JSON."""
+    verify_operator_secret(authorization)
     try:
         from tools.services.analytics import get_dashboard_data
-        return get_dashboard_data()
+        return await asyncio.to_thread(get_dashboard_data)
     except Exception as exc:
         logger.error("Dashboard data failed: %s", exc)
-        return JSONResponse(content={"error": str(exc)}, status_code=500)
+        return JSONResponse(content={"error": "Dashboard data unavailable"}, status_code=500)
 
 
 @limiter.limit("30/minute")
@@ -1634,9 +1685,9 @@ async def trigger_pre_meeting(
 ):
     """Manually trigger a pre-meeting job for a group.
 
-    Operator-only endpoint: requires WEBHOOK_SECRET.
+    Operator-only endpoint: requires OPERATOR_WEBHOOK_SECRET.
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
     if group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
@@ -1661,9 +1712,9 @@ async def retry_latest(
     indexed, and starts the pipeline for the most recent unprocessed one.
     No parameters needed — fully automatic discovery.
 
-    Operator-only endpoint: requires WEBHOOK_SECRET.
+    Operator-only endpoint: requires OPERATOR_WEBHOOK_SECRET.
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
 
 
     try:
@@ -1832,9 +1883,10 @@ async def _manual_pipeline_task(
     except Exception as e:
         error_msg = f"Manual pipeline failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
+        _g_label = GROUPS.get(group_number, {}).get("name") or f"Group {group_number}"
         await asyncio.to_thread(
             alert_operator,
-            f"Manual pipeline FAILED for Group {group_number}, Lecture #{lecture_number}.\n"
+            f"Manual pipeline FAILED for {_g_label}, Lecture #{lecture_number}.\n"
             f"Error: {e}",
         )
     finally:
@@ -1855,11 +1907,11 @@ async def manual_trigger(
 ):
     """Manually trigger the analysis pipeline from a Google Drive recording.
 
-    Operator-only endpoint: requires WEBHOOK_SECRET.
+    Operator-only endpoint: requires OPERATOR_WEBHOOK_SECRET.
     Downloads the recording from Drive, then runs the full pipeline
     (transcribe → analyze → Drive upload → WhatsApp → Pinecone).
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
 
     if payload.group_number not in (1, 2):
         raise HTTPException(status_code=422, detail=f"Invalid group_number: {payload.group_number}")
@@ -1906,41 +1958,6 @@ async def manual_trigger(
 
 
 # ---------------------------------------------------------------------------
-# Analytics dashboard
-# ---------------------------------------------------------------------------
-
-_dashboard_cache: tuple[float, str] | None = None
-
-
-@limiter.limit("30/minute")
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def analytics_dashboard(
-    request: Request,
-    authorization: str | None = Header(None),
-):
-    """Serve the analytics dashboard HTML.
-
-    Operator-only endpoint: requires WEBHOOK_SECRET.
-    """
-    verify_webhook_secret(authorization)
-    import time as _time
-    # HTML cache: 5-min TTL (data changes at most twice per day)
-    global _dashboard_cache
-    now = _time.monotonic()
-    if _dashboard_cache and (now - _dashboard_cache[0]) < 300:
-        return HTMLResponse(content=_dashboard_cache[1])
-    from tools.services.analytics import (
-        get_dashboard_data,
-        render_dashboard_html,
-        sync_from_pinecone,
-    )
-    await asyncio.to_thread(sync_from_pinecone)
-    data = await asyncio.to_thread(get_dashboard_data)
-    html = render_dashboard_html(data)
-    _dashboard_cache = (now, html)
-    return HTMLResponse(content=html)
-
-
 @limiter.limit("60/minute")
 @app.get("/api/scores", include_in_schema=False)
 async def api_scores(
@@ -1952,7 +1969,7 @@ async def api_scores(
 
     Query param: group=1|2 (optional, omit for all groups).
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
     if group is not None and group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
@@ -1972,7 +1989,7 @@ async def api_stats(
 
     Query param: group=1|2 (optional, omit for both groups).
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
     if group is not None and group not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group: {group}")
 
@@ -2015,7 +2032,7 @@ async def api_backfill_scores(
     indexed in the analytics DB. Safe to call repeatedly — skips
     already-indexed lectures.
     """
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
     from tools.services.analytics import backfill_from_tmp
     result = await asyncio.to_thread(backfill_from_tmp)
     logger.info("Manual score backfill triggered: %s", result)
@@ -2029,7 +2046,7 @@ async def api_backup_scores(
     authorization: str | None = Header(None),
 ):
     """Trigger manual backup of scores to Pinecone."""
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
     from tools.services.analytics import backup_scores_to_pinecone
     result = await asyncio.to_thread(backup_scores_to_pinecone)
     logger.info("Manual score backup to Pinecone triggered: %s", result)
