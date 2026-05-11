@@ -156,8 +156,9 @@ def _capture_score_table(text: str) -> str | None:
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS lecture_scores (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_number       INTEGER NOT NULL CHECK (group_number IN (1, 2)),
+    group_number       INTEGER NOT NULL CHECK (group_number > 0),
     lecture_number     INTEGER NOT NULL CHECK (lecture_number BETWEEN 1 AND 15),
+    cohort             TEXT,
     content_depth      REAL    NOT NULL,
     practical_value    REAL    NOT NULL,
     engagement         REAL    NOT NULL,
@@ -171,11 +172,14 @@ CREATE TABLE IF NOT EXISTS lecture_scores (
 );
 CREATE INDEX IF NOT EXISTS idx_group_lecture
     ON lecture_scores (group_number, lecture_number);
+CREATE INDEX IF NOT EXISTS idx_cohort
+    ON lecture_scores (cohort);
 
 CREATE TABLE IF NOT EXISTS lecture_insights (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     group_number            INTEGER NOT NULL,
     lecture_number           INTEGER NOT NULL,
+    cohort                  TEXT,
     strengths_count         INTEGER DEFAULT 0,
     weaknesses_count        INTEGER DEFAULT 0,
     gaps_count              INTEGER DEFAULT 0,
@@ -193,10 +197,86 @@ CREATE TABLE IF NOT EXISTS lecture_insights (
 """
 
 
+def _migrate_legacy_schema(conn: sqlite3.Connection) -> None:
+    """Detect pre-cohort schema and migrate in place.
+
+    Two legacy shapes we need to handle:
+      1. ``CHECK (group_number IN (1, 2))`` on ``lecture_scores`` — silently
+         rejects group_number > 2 inserts. Rebuild table with the relaxed
+         ``CHECK (group_number > 0)``.
+      2. Missing ``cohort`` text column on either table — added by this
+         migration so per-cohort analytics queries become trivial.
+
+    Idempotent: each step checks whether it's needed before applying. Safe to
+    call on every startup. Pinecone is the source of truth (scores.db is
+    rebuilt from it via ``backfill_from_pinecone``), so the scores rows that
+    momentarily get copied here will be re-populated if anything goes wrong.
+    """
+    cur = conn.cursor()
+
+    # 1. Migrate lecture_scores if the legacy CHECK is still there.
+    row = cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='lecture_scores'"
+    ).fetchone()
+    if row is not None and row[0] and "group_number IN (1, 2)" in row[0]:
+        logger.info("Migrating lecture_scores: relaxing legacy CHECK + adding cohort column")
+        cur.executescript(
+            """
+            ALTER TABLE lecture_scores RENAME TO _lecture_scores_legacy;
+            CREATE TABLE lecture_scores (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_number       INTEGER NOT NULL CHECK (group_number > 0),
+                lecture_number     INTEGER NOT NULL CHECK (lecture_number BETWEEN 1 AND 15),
+                cohort             TEXT,
+                content_depth      REAL    NOT NULL,
+                practical_value    REAL    NOT NULL,
+                engagement         REAL    NOT NULL,
+                technical_accuracy REAL    NOT NULL,
+                market_relevance   REAL    NOT NULL,
+                overall_score      REAL,
+                composite          REAL    NOT NULL,
+                raw_score_text     TEXT,
+                processed_at       TEXT    NOT NULL,
+                UNIQUE (group_number, lecture_number)
+            );
+            INSERT INTO lecture_scores
+                (id, group_number, lecture_number, content_depth, practical_value,
+                 engagement, technical_accuracy, market_relevance, overall_score,
+                 composite, raw_score_text, processed_at)
+            SELECT
+                id, group_number, lecture_number, content_depth, practical_value,
+                engagement, technical_accuracy, market_relevance, overall_score,
+                composite, raw_score_text, processed_at
+            FROM _lecture_scores_legacy;
+            DROP TABLE _lecture_scores_legacy;
+            CREATE INDEX IF NOT EXISTS idx_group_lecture
+                ON lecture_scores (group_number, lecture_number);
+            CREATE INDEX IF NOT EXISTS idx_cohort
+                ON lecture_scores (cohort);
+            """
+        )
+
+    # 2. Add cohort column to lecture_insights if missing (post-migration tables
+    #    will already have it from _SCHEMA; this catches older DBs).
+    for table in ("lecture_scores", "lecture_insights"):
+        cols = {r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        if cols and "cohort" not in cols:
+            logger.info("Adding 'cohort' column to %s", table)
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN cohort TEXT")
+
+
 def init_db() -> None:
-    """Create data/ directory and lecture_scores table if absent."""
+    """Create data/ directory + tables, applying migrations first.
+
+    Order matters: legacy schema migration must run BEFORE ``_SCHEMA`` so
+    the new ``CREATE INDEX idx_cohort`` doesn't fire against a still-legacy
+    table that lacks the ``cohort`` column. After migration the table has
+    the new shape, then ``CREATE TABLE IF NOT EXISTS`` is a no-op and the
+    indexes attach cleanly.
+    """
     DB_PATH.parent.mkdir(exist_ok=True)
     with _get_conn() as conn:
+        _migrate_legacy_schema(conn)
         conn.executescript(_SCHEMA)
     logger.info("Analytics DB initialized at %s", DB_PATH)
 

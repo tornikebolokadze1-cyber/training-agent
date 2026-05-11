@@ -9,6 +9,7 @@ Supports two deployment modes:
 from __future__ import annotations
 
 import base64
+import atexit
 import json
 import logging
 import os
@@ -56,6 +57,18 @@ def _decode_b64_env(key: str) -> str | None:
 _credential_file_cache: dict[str, Path] = {}
 
 
+def _cleanup_materialized_credential_files() -> None:
+    """Remove credential files decoded from base64 env vars at process exit."""
+    for path in list(_credential_file_cache.values()):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Failed to remove materialized credential file: %s", exc)
+
+
+atexit.register(_cleanup_materialized_credential_files)
+
+
 def _materialize_credential_file(
     b64_env_key: str,
     fallback_path: Path,
@@ -92,7 +105,7 @@ def _materialize_credential_file(
         os.chmod(tmp.name, file_permissions)
         result = Path(tmp.name)
         _credential_file_cache[b64_env_key] = result
-        logger.info("Materialized %s from env var to %s", b64_env_key, result)
+        logger.info("Materialized %s from env var to a private temp file", b64_env_key)
         return result
 
     if fallback_path.exists():
@@ -412,6 +425,7 @@ PINECONE_INDEX_NAME = "training-course"
 OPERATOR_EMAIL = _env("OPERATOR_EMAIL")
 
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
+OPERATOR_WEBHOOK_SECRET = _env("OPERATOR_WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
 # --- Paperclip bridge ---
@@ -460,6 +474,10 @@ def validate_critical_config() -> list[str]:
         warnings.append("Green API not configured — WhatsApp notifications disabled")
     if not WHATSAPP_TORNIKE_PHONE:
         warnings.append("WHATSAPP_TORNIKE_PHONE not set — operator alerts disabled")
+    if not OPERATOR_WEBHOOK_SECRET:
+        warnings.append(
+            "OPERATOR_WEBHOOK_SECRET not set; operator/admin endpoints fall back to WEBHOOK_SECRET"
+        )
 
     # These are HIGH-risk if missing — warn at startup
     _warn_vars = [
@@ -587,19 +605,44 @@ def get_lecture_folder_name(lecture_number: int) -> str:
 def extract_group_from_topic(topic: str) -> int | None:
     """Extract group number from a Zoom meeting topic string.
 
-    Searches for the short Georgian group marker (ჯგუფი #N) in the topic,
-    which is more robust than matching the full group name — Zoom topics
-    may vary but always contain "ჯგუფი #1" or "ჯგუფი #2".
+    Two markers are checked, in priority order:
+
+    1. **Cohort-prefixed name** (e.g. ``მაისის ჯგუფი #1``) — matched against
+       each group's configured ``name`` field. This handles topics written for
+       the user-facing convention where each cohort restarts numbering at #1.
+       More specific match wins (longest ``name`` first) so that
+       ``მაისის ჯგუფი #1`` doesn't accidentally match a topic that only says
+       ``ჯგუფი #1``.
+
+    2. **Short marker** (``ჯგუფი #N`` where N is the internal group index) —
+       legacy fallback for early March topics that were created before the
+       cohort-prefixed convention.
 
     Returns:
-        Group number (1 or 2) if found, None otherwise.
+        Internal group number (1, 2, 3, ...) if found, None otherwise.
     """
     if not isinstance(topic, str) or not topic.strip():
         logger.warning("extract_group_from_topic called with invalid topic: %r", topic)
         return None
-    for group_num in GROUPS:
+
+    # 1. Match cohort-prefixed names (e.g. "მაისის ჯგუფი #1") first.
+    # Sort by name length descending so longer (more specific) names win.
+    by_name = sorted(
+        ((g_num, cfg.get("name", "")) for g_num, cfg in GROUPS.items() if cfg.get("name")),
+        key=lambda kv: len(kv[1]),
+        reverse=True,
+    )
+    for group_num, name in by_name:
+        if name and name in topic:
+            return group_num
+
+    # 2. Legacy short marker "ჯგუფი #N" — only kicks in when no cohort-prefixed
+    #    name matched. Iteration order is sorted by group_num ascending so old
+    #    March topics (#1, #2) still resolve to groups 1 and 2.
+    for group_num in sorted(GROUPS.keys()):
         if f"ჯგუფი #{group_num}" in topic:
             return group_num
+
     logger.debug("No group marker found in topic: %s", topic[:80])
     return None
 

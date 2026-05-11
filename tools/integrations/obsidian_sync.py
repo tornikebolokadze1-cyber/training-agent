@@ -670,23 +670,33 @@ def _build_concept_index(all_entities: dict[str, dict]) -> dict[str, dict]:
 
 
 def _ensure_vault_dirs() -> None:
-    """Create the vault directory structure."""
-    dirs = [
+    """Create the vault directory structure.
+
+    Per-group subdirs (``ლექციები/ჯგუფი N`` and ``ანალიზი/ჯგუფი N``) are
+    derived from the live ``GROUPS`` config rather than being hardcoded, so
+    onboarding a new cohort only requires its env vars on Railway — the
+    vault folders appear automatically on the next sync.
+    """
+    base_dirs = [
         VAULT_ROOT,
         VAULT_ROOT / "ლექციები",
-        VAULT_ROOT / "ლექციები" / "ჯგუფი 1",
-        VAULT_ROOT / "ლექციები" / "ჯგუფი 2",
         VAULT_ROOT / "კონცეფციები",
         VAULT_ROOT / "ინსტრუმენტები",
         VAULT_ROOT / "პრაქტიკული მაგალითები",
         VAULT_ROOT / "WhatsApp დისკუსიები",
         VAULT_ROOT / "ანალიზი",
-        VAULT_ROOT / "ანალიზი" / "ჯგუფი 1",
-        VAULT_ROOT / "ანალიზი" / "ჯგუფი 2",
         VAULT_ROOT / ".obsidian",
     ]
-    for d in dirs:
+    for d in base_dirs:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Per-group subdirs — dynamic from GROUPS so new cohorts light up
+    # without code edits. Falls back to {1, 2} if GROUPS is empty (e.g.
+    # local dev with no env vars), preserving the historical layout.
+    group_nums = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    for n in group_nums:
+        (VAULT_ROOT / "ლექციები" / f"ჯგუფი {n}").mkdir(parents=True, exist_ok=True)
+        (VAULT_ROOT / "ანალიზი" / f"ჯგუფი {n}").mkdir(parents=True, exist_ok=True)
 
 
 def _generate_lecture_note(
@@ -941,32 +951,38 @@ def _generate_moc(all_entities: dict, concept_index: dict) -> str:
         and info.get("category", "concept") not in TOOL_CATEGORIES
     )
 
-    moc = """---
+    # Discover groups dynamically — present in GROUPS config OR with entities in
+    # the vault (handles vault rebuild scenarios where GROUPS might be empty
+    # during a local-dev run but the .tmp/ entities still describe past cohorts).
+    groups_in_entities: set[int] = set()
+    for key in all_entities:
+        m = re.match(r"g(\d+)_l\d+", key)
+        if m:
+            groups_in_entities.add(int(m.group(1)))
+    group_nums = sorted(set(GROUPS.keys()) | groups_in_entities)
+    if not group_nums:
+        group_nums = [1, 2]  # fallback for empty-vault local runs
+
+    cohort_count = len(group_nums)
+    moc = f"""---
 tags: [MOC, ინდექსი]
 ---
 
 # AI კურსი -- ცოდნის რუკა
 
 > 15-ლექციანი AI კურსი ქართველი პროფესიონალებისთვის
-> 2 ჯგუფი | სამშაბათი/პარასკევი და ორშაბათი/ხუთშაბათი
+> {cohort_count} ჯგუფი
 
 ---
 
 ## ლექციები
 
-### ჯგუფი 1 -- მარტის ჯგუფი #1
-
-| # | ლექცია | თარიღი | თემა |
-|---|--------|--------|------|
 """
-    for grp in [1, 2]:
-        if grp == 2:
-            moc += """
-### ჯგუფი 2 -- მარტის ჯგუფი #2
-
-| # | ლექცია | თარიღი | თემა |
-|---|--------|--------|------|
-"""
+    for grp in group_nums:
+        group_label = GROUPS.get(grp, {}).get("name", f"ჯგუფი #{grp}")
+        moc += f"\n### ჯგუფი {grp} -- {group_label}\n\n"
+        moc += "| # | ლექცია | თარიღი | თემა |\n"
+        moc += "|---|--------|--------|------|\n"
         for lec in range(1, 16):
             key = f"g{grp}_l{lec}"
             date = _compute_lecture_date(grp, lec)
@@ -991,27 +1007,20 @@ tags: [MOC, ინდექსი]
         ls = ", ".join(f"G{g}L{lec}" for g, lec in sorted(set(info.get("lectures", []))))
         moc += f"- {_wikilink(c)} ({ls})\n"
 
-    # Determine progress
-    g1_count = sum(1 for k in all_entities if k.startswith("g1_"))
-    g2_count = sum(1 for k in all_entities if k.startswith("g2_"))
+    # Per-group progress counts
+    progress_counts = {
+        g: sum(1 for k in all_entities if k.startswith(f"g{g}_")) for g in group_nums
+    }
 
-    moc += f"""
----
+    moc += "\n---\n\n## პროგრესი\n\n| ჯგუფი | ლექციები | სტატუსი |\n|-------|----------|---------|\n"
+    for grp in group_nums:
+        label = GROUPS.get(grp, {}).get("name", f"#{grp}")
+        moc += f"| {label} | {progress_counts[grp]}/15 | მიმდინარე |\n"
 
-## პროგრესი
-
-| ჯგუფი | ლექციები | სტატუსი |
-|-------|----------|---------|
-| #1 | {g1_count}/15 | მიმდინარე |
-| #2 | {g2_count}/15 | მიმდინარე |
-
----
-
-## ანალიზი
-
-"""
-    for grp in [1, 2]:
-        moc += f"### ჯგუფი {grp}\n"
+    moc += "\n---\n\n## ანალიზი\n\n"
+    for grp in group_nums:
+        label = GROUPS.get(grp, {}).get("name", f"ჯგუფი {grp}")
+        moc += f"### {label}\n"
         for lec in range(1, 16):
             key = f"g{grp}_l{lec}"
             if key in all_entities:
@@ -1278,9 +1287,11 @@ def sync_full() -> dict[str, int]:
 
     idx = get_pinecone_index()
 
-    # Check all possible lectures
+    # Check all possible lectures across every configured group.
+    # Iterates GROUPS dynamically so new cohorts are picked up automatically.
     existing_lectures: list[tuple[int, int]] = []
-    for g in [1, 2]:
+    group_nums = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    for g in group_nums:
         for lec in range(1, 16):
             prefix = f"g{g}_l{lec}_summary_"
             ids = []
@@ -1307,7 +1318,7 @@ def sync_full() -> dict[str, int]:
         except Exception as e:
             logger.error("Failed to sync G%d L%d: %s", g, lec, e)
 
-    # Generate WhatsApp placeholder
+    # Generate WhatsApp placeholder — list every configured group dynamically
     wa_note = """---
 tags: [WhatsApp, დისკუსია]
 ---
@@ -1317,15 +1328,13 @@ tags: [WhatsApp, დისკუსია]
 > WhatsApp ჩატის ისტორია ავტომატურად სინქრონიზდება Green API-ით.
 > გაუშვით: `python -m tools.integrations.obsidian_sync --whatsapp`
 
-## ჯგუფი 1 -- მარტის ჯგუფი #1
-- ჩატის ID: `{g1_id}`
+"""
+    for g_num in (sorted(GROUPS.keys()) if GROUPS else [1, 2]):
+        g_cfg = GROUPS.get(g_num, {})
+        g_name = g_cfg.get("name", f"ჯგუფი #{g_num}")
+        g_chat = g_cfg.get("whatsapp_chat_id", "") or "not configured"
+        wa_note += f"## ჯგუფი {g_num} -- {g_name}\n- ჩატის ID: `{g_chat}`\n\n"
 
-## ჯგუფი 2 -- მარტის ჯგუფი #2
-- ჩატის ID: `{g2_id}`
-""".format(
-        g1_id=WHATSAPP_GROUP1_ID or "not configured",
-        g2_id=WHATSAPP_GROUP2_ID or "not configured",
-    )
     (VAULT_ROOT / "WhatsApp დისკუსიები" / "ინდექსი.md").write_text(
         wa_note, encoding="utf-8"
     )
@@ -1357,10 +1366,22 @@ def sync_whatsapp() -> int:
     _ensure_vault_dirs()
     total_messages = 0
 
-    chats = [
-        (WHATSAPP_GROUP1_ID, 1, "მარტის ჯგუფი #1"),
-        (WHATSAPP_GROUP2_ID, 2, "მარტის ჯგუფი #2"),
-    ]
+    # Build (chat_id, group_num, group_name) tuples dynamically from GROUPS.
+    # Falls back to the legacy WHATSAPP_GROUP1/2_ID env vars when a group's
+    # whatsapp_chat_id is unset so existing March-cohort deployments keep
+    # working unchanged.
+    chats: list[tuple[str, int, str]] = []
+    for g_num in sorted(GROUPS.keys()):
+        cfg = GROUPS[g_num]
+        chat_id = cfg.get("whatsapp_chat_id", "")
+        if not chat_id:
+            # Legacy fallback for groups 1 and 2 from module-level imports
+            if g_num == 1 and WHATSAPP_GROUP1_ID:
+                chat_id = WHATSAPP_GROUP1_ID
+            elif g_num == 2 and WHATSAPP_GROUP2_ID:
+                chat_id = WHATSAPP_GROUP2_ID
+        if chat_id:
+            chats.append((chat_id, g_num, cfg.get("name", f"ჯგუფი #{g_num}")))
 
     for chat_id, group_num, group_name in chats:
         if not chat_id:

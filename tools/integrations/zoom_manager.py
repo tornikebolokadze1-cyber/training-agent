@@ -13,7 +13,8 @@ import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -300,7 +301,15 @@ def create_meeting(
     start_time_utc = start_time.astimezone(ZoneInfo("UTC"))
     start_time_str = start_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    topic = f"AI კურსი — ჯგუფი #{group_number}, ლექცია #{lecture_number}"
+    # Prefer cohort-prefixed group name (e.g. "მაისის ჯგუფი #1") for the topic
+    # so students see consistent naming everywhere; pipeline's
+    # extract_group_from_topic handles both formats. Falls back to short marker
+    # if no name configured.
+    cohort_name = GROUPS.get(group_number, {}).get("name", "")
+    if cohort_name:
+        topic = f"AI კურსი — {cohort_name}, ლექცია #{lecture_number}"
+    else:
+        topic = f"AI კურსი — ჯგუფი #{group_number}, ლექცია #{lecture_number}"
 
     # Build meeting invitees list from group's attendee emails
     group = GROUPS.get(group_number, {})
@@ -347,6 +356,129 @@ def create_meeting(
         "start_url": data["start_url"],
         "topic": data["topic"],
         "start_time": data["start_time"],
+    }
+
+
+def create_recurring_meeting(
+    group_number: int,
+    start_date: date,
+    weekly_days: list[int],
+    *,
+    total_occurrences: int = 15,
+    start_hour: int = 20,
+    start_minute: int = 0,
+    duration_minutes: int = MEETING_DURATION_MINUTES,
+    attendee_emails: list[str] | None = None,
+    topic: str | None = None,
+) -> dict[str, Any]:
+    """Create a single recurring Zoom meeting covering an entire course.
+
+    One recurring meeting is provisioned per group at course start; every
+    lecture reuses the same join URL. Zoom dispatches invitation emails
+    to ``attendee_emails`` automatically (this is the standard project
+    convention — see CLAUDE.md).
+
+    Args:
+        group_number: Training group index (1, 2, 3, ...).
+        start_date: Date of the first lecture (Tbilisi local).
+        weekly_days: Python weekday integers (Mon=0, Sun=6) on which
+            lectures recur. Mapped internally to Zoom's Sun=1..Sat=7
+            numbering.
+        total_occurrences: How many lectures the recurrence covers
+            (typically 15).
+        start_hour: Hour-of-day in Tbilisi local time. Default 20:00.
+        start_minute: Minute-of-hour. Default 0.
+        duration_minutes: Per-lecture duration in minutes.
+        attendee_emails: Optional list of attendee emails. Zoom emails
+            each one a calendar invite with the join URL.
+        topic: Optional custom topic. Defaults to the Georgian course
+            convention used by the recording pipeline.
+
+    Returns:
+        A dict with ``id``, ``uuid``, ``join_url``, ``start_url``,
+        ``topic``, and ``start_time``.
+
+    Raises:
+        ZoomAuthError / ZoomAPIError: As per ``_zoom_request``.
+    """
+    start_dt = datetime.combine(
+        start_date,
+        dtime(start_hour, start_minute),
+        tzinfo=TBILISI_TZ,
+    )
+    start_dt_utc = start_dt.astimezone(ZoneInfo("UTC"))
+    start_time_str = start_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Python Mon=0..Sun=6 → Zoom Sun=1..Sat=7
+    zoom_days = sorted({((d + 1) % 7) + 1 for d in weekly_days})
+    weekly_days_str = ",".join(str(d) for d in zoom_days)
+
+    if topic is None:
+        # Prefer the cohort-prefixed group name (e.g. "მაისის ჯგუფი #1") when
+        # the GROUPS config has one populated, since that's what students see
+        # everywhere else (Drive folder names, WhatsApp chat names). Falls back
+        # to the legacy short marker only if no cohort name is configured —
+        # this keeps the recording-pipeline extractor compatible either way.
+        cohort_name = GROUPS.get(group_number, {}).get("name", "")
+        if cohort_name:
+            topic = f"AI კურსი — {cohort_name}"
+        else:
+            topic = f"AI კურსი — ჯგუფი #{group_number}"
+
+    meeting_invitees = [{"email": e} for e in (attendee_emails or [])]
+
+    payload: dict[str, Any] = {
+        "topic": topic,
+        "type": 8,  # Recurring with fixed time
+        "start_time": start_time_str,
+        "duration": duration_minutes,
+        "timezone": "Asia/Tbilisi",
+        "recurrence": {
+            "type": 2,  # Weekly
+            "repeat_interval": 1,
+            "weekly_days": weekly_days_str,
+            "end_times": total_occurrences,
+        },
+        "settings": {
+            "auto_recording": "cloud",
+            "mute_upon_entry": True,
+            "waiting_room": False,
+            "join_before_host": False,
+            "host_video": True,
+            "participant_video": False,
+            "approval_type": 2,
+            "meeting_invitees": meeting_invitees,
+        },
+    }
+
+    logger.info(
+        "Creating recurring Zoom meeting: group=%d, start=%s, days=%s, "
+        "occurrences=%d, invitees=%d",
+        group_number,
+        start_time_str,
+        weekly_days_str,
+        total_occurrences,
+        len(meeting_invitees),
+    )
+
+    data = _zoom_request("POST", "/users/me/meetings", json=payload)
+
+    logger.info(
+        "Recurring meeting created: id=%s, join_url=%s",
+        data.get("id"),
+        data.get("join_url"),
+    )
+
+    # Recurring-meeting responses omit some fields a single-meeting response
+    # has (e.g. ``start_url``) — use ``.get`` everywhere to stay tolerant.
+    return {
+        "id": data.get("id"),
+        "uuid": data.get("uuid", ""),
+        "join_url": data.get("join_url", ""),
+        "start_url": data.get("start_url", ""),
+        "topic": data.get("topic", ""),
+        "start_time": data.get("start_time", ""),
+        "occurrences": data.get("occurrences", []),
     }
 
 
