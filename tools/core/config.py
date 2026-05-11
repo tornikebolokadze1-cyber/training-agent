@@ -625,8 +625,11 @@ def extract_group_from_topic(topic: str) -> int | None:
         logger.warning("extract_group_from_topic called with invalid topic: %r", topic)
         return None
 
-    # 1. Match cohort-prefixed names (e.g. "მაისის ჯგუფი #1") first.
-    # Sort by name length descending so longer (more specific) names win.
+    # 1. Direct match of the configured GROUPS[n].name as a substring
+    #    (handles cohort-prefixed form "მაისის ჯგუფი #1"). Sort by length
+    #    descending so the longest (most specific) name wins.
+    import re
+
     by_name = sorted(
         ((g_num, cfg.get("name", "")) for g_num, cfg in GROUPS.items() if cfg.get("name")),
         key=lambda kv: len(kv[1]),
@@ -636,9 +639,34 @@ def extract_group_from_topic(topic: str) -> int | None:
         if name and name in topic:
             return group_num
 
-    # 2. Legacy short marker "ჯგუფი #N" — only kicks in when no cohort-prefixed
-    #    name matched. Iteration order is sorted by group_num ascending so old
-    #    March topics (#1, #2) still resolve to groups 1 and 2.
+    # 2. Cohort-marker + short form: handles operator-style topics like
+    #    "AI კურსი — ჯგუფი #1 (მაისი)" where the cohort label sits in
+    #    parentheses or anywhere outside the group prefix. We extract:
+    #      • a Georgian month-stem token ending in -ის (e.g. "მაისის")
+    #        OR the same word without the -ის suffix in parentheses
+    #      • a group number from "ჯგუფი #N"
+    #    Then match against a GROUPS[i] whose ``name`` starts with that
+    #    month and ends with "ჯგუფი #N".
+    short_m = re.search(r"ჯგუფი\s*#?\s*(\d+)", topic)
+    cohort_m = re.search(
+        r"\(\s*(მარტი|მაისი|ივნისი|ივლისი|აგვისტო|სექტემბერი|ოქტომბერი|"
+        r"ნოემბერი|დეკემბერი|იანვარი|თებერვალი|აპრილი)(?:ს)?\s*\)",
+        topic,
+    )
+    if short_m and cohort_m:
+        sub_num = int(short_m.group(1))
+        # Convert captured nominative form ("მაისი") to genitive ("მაისის")
+        # by appending "ს" — Georgian month names all end in -ი or -ო so
+        # adding -ს yields the correct genitive form for matching GROUPS.name
+        month_stem = cohort_m.group(1)
+        month_genitive = month_stem if month_stem.endswith("ის") else month_stem + "ს"
+        candidate = f"{month_genitive} ჯგუფი #{sub_num}"
+        for g_num, gcfg in GROUPS.items():
+            if gcfg.get("name") == candidate:
+                return g_num
+
+    # 3. Legacy short marker "ჯგუფი #N" — only kicks in when no cohort label
+    #    is present at all. Old March topics (#1, #2) still resolve correctly.
     for group_num in sorted(GROUPS.keys()):
         if f"ჯგუფი #{group_num}" in topic:
             return group_num
