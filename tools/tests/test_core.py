@@ -51,12 +51,14 @@ class TestModuleImports:
 
     def test_config_module_loads(self):
         import tools.core.config as cfg
+
         assert hasattr(cfg, "GROUPS")
         assert hasattr(cfg, "TOTAL_LECTURES")
         assert hasattr(cfg, "get_lecture_number")
 
     def test_knowledge_indexer_module_loads(self):
         import tools.integrations.knowledge_indexer as ki
+
         assert hasattr(ki, "chunk_text")
         assert hasattr(ki, "embed_text")
         assert hasattr(ki, "index_lecture_content")
@@ -64,18 +66,21 @@ class TestModuleImports:
 
     def test_whatsapp_sender_module_loads(self):
         import tools.integrations.whatsapp_sender as ws
+
         assert hasattr(ws, "send_message_to_chat")
         assert hasattr(ws, "_split_message")
         assert hasattr(ws, "MESSAGE_MAX_LENGTH")
 
     def test_gemini_analyzer_module_loads(self):
         import tools.integrations.gemini_analyzer as ga
+
         assert hasattr(ga, "split_video_chunks")
         assert hasattr(ga, "_is_quota_error")
         assert hasattr(ga, "CHUNK_DURATION_MINUTES")
 
     def test_server_module_loads(self):
         import tools.app.server as srv
+
         assert hasattr(srv, "verify_webhook_secret")
         assert hasattr(srv, "app")
 
@@ -389,7 +394,7 @@ class TestSplitMessage:
 
     def test_very_long_message_all_chunks_valid(self):
         # Simulate a 3x limit report (typical deep analysis)
-        report = ("ანალიზი " * 600)  # Georgian chars, ~6000 chars total
+        report = "ანალიზი " * 600  # Georgian chars, ~6000 chars total
         chunks = _split_message(report)
         assert len(chunks) >= 1
         for ch in chunks:
@@ -463,32 +468,30 @@ class TestSplitVideoChunks:
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        with self._mock_validate_path(), self._mock_duration(20 * 60):  # 20 min — under 45 min
-            from tools.integrations.gemini_analyzer import split_video_chunks
-            result = split_video_chunks(video)
+        from tools.integrations import gemini_analyzer as ga
+
+        # Use a duration clearly under one chunk so no splitting occurs
+        short_duration = (ga.CHUNK_DURATION_MINUTES - 1) * 60
+
+        with self._mock_validate_path(), self._mock_duration(short_duration):
+            result = ga.split_video_chunks(video)
 
         assert result == [video]
 
-    def test_exact_30min_video_returns_original_path(self, tmp_path):
+    def test_two_chunk_video_splits_correctly(self, tmp_path):
+        """A video exactly 2× the chunk duration should split into exactly 2 chunks."""
+        from tools.integrations import gemini_analyzer as ga
+
+        # Exactly 2× the chunk size: no remainder so smart-merge does not apply
+        two_chunk_duration = ga.CHUNK_DURATION_MINUTES * 60 * 2
+
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        with self._mock_validate_path(), self._mock_duration(30 * 60):  # exactly 30 min (current CHUNK_DURATION_MINUTES)
-            from tools.integrations.gemini_analyzer import split_video_chunks
-            result = split_video_chunks(video)
-
-        assert result == [video]
-
-    def test_46min_video_splits_into_two_chunks(self, tmp_path):
-        video = tmp_path / "lecture.mp4"
-        video.write_bytes(b"fake")
-
-        # Simulate ffmpeg writing chunk files
         chunk0 = video.with_suffix(".chunk0.mp4")
         chunk1 = video.with_suffix(".chunk1.mp4")
 
         def fake_run(cmd, *args, **kwargs):
-            # Identify which chunk is being created from the -ss argument
             ss_idx = cmd.index("-ss")
             start = int(cmd[ss_idx + 1])
             if start == 0:
@@ -499,22 +502,27 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_validate_path(), self._mock_duration(46 * 60):
-            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.integrations.gemini_analyzer import split_video_chunks
-                result = split_video_chunks(video)
+        with self._mock_validate_path(), self._mock_duration(two_chunk_duration):
+            with patch(
+                "tools.integrations.gemini_analyzer.subprocess.run",
+                side_effect=fake_run,
+            ):
+                result = ga.split_video_chunks(video)
 
         assert len(result) == 2
 
-    def test_3hr_video_splits_into_six_chunks(self, tmp_path):
-        """180 min / 30 min = exactly 6 chunks."""
+    def test_six_chunk_video_splits_correctly(self, tmp_path):
+        """A video exactly 6× the chunk duration should split into 6 chunks."""
+        from tools.integrations import gemini_analyzer as ga
+
+        six_chunk_duration = ga.CHUNK_DURATION_MINUTES * 60 * 6  # exactly 6 chunks
+
         video = tmp_path / "lecture_long.mp4"
         video.write_bytes(b"fake")
 
         created_chunks: list[Path] = []
 
         def fake_run(cmd, *args, **kwargs):
-            # Write the output chunk file the command targets (last positional arg)
             out_path = Path(cmd[-1])
             out_path.write_bytes(b"chunk")
             created_chunks.append(out_path)
@@ -522,25 +530,30 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_validate_path(), self._mock_duration(180 * 60):  # 3 hours
-            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.integrations.gemini_analyzer import split_video_chunks
-                result = split_video_chunks(video)
+        with self._mock_validate_path(), self._mock_duration(six_chunk_duration):
+            with patch(
+                "tools.integrations.gemini_analyzer.subprocess.run",
+                side_effect=fake_run,
+            ):
+                result = ga.split_video_chunks(video)
 
         assert len(result) == 6
 
     def test_existing_chunk_not_re_created(self, tmp_path):
-        """If a chunk file already exists on disk, ffmpeg must not be called for it."""
+        """If chunk files already exist on disk, ffmpeg must not be called for them."""
+        from tools.integrations import gemini_analyzer as ga
+
+        # 3 chunks: duration = exactly 3× chunk duration (no smart-merge remainder)
+        three_chunk_duration = ga.CHUNK_DURATION_MINUTES * 60 * 3
+        expected_chunks = 3
+
         video = tmp_path / "lecture.mp4"
         video.write_bytes(b"fake")
 
-        # Pre-create chunk files large enough to pass the stale-chunk validation
-        # (gemini_analyzer considers chunks < 1 MB as corrupted and re-creates them)
+        # Pre-create all chunk files large enough to pass stale-chunk validation
         big_enough = b"\x00" * (2 * 1024 * 1024)  # 2 MB
-        chunk0 = video.with_suffix(".chunk0.mp4")
-        chunk1 = video.with_suffix(".chunk1.mp4")
-        chunk0.write_bytes(big_enough)
-        chunk1.write_bytes(big_enough)
+        for idx in range(expected_chunks):
+            video.with_suffix(f".chunk{idx}.mp4").write_bytes(big_enough)
 
         run_calls: list = []
 
@@ -550,17 +563,16 @@ class TestSplitVideoChunks:
             result.returncode = 0
             return result
 
-        with self._mock_validate_path(), self._mock_duration(100 * 60):  # 100 min → 3 chunks (0,1,2)
-            # Also pre-create chunk2 so none need creating
-            chunk2 = video.with_suffix(".chunk2.mp4")
-            chunk2.write_bytes(big_enough)
-            with patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run):
-                from tools.integrations.gemini_analyzer import split_video_chunks
-                result = split_video_chunks(video)
+        with self._mock_validate_path(), self._mock_duration(three_chunk_duration):
+            with patch(
+                "tools.integrations.gemini_analyzer.subprocess.run",
+                side_effect=fake_run,
+            ):
+                result = ga.split_video_chunks(video)
 
         # ffmpeg should NOT have been called for any pre-existing chunk
         assert len(run_calls) == 0
-        assert len(result) == 3
+        assert len(result) == expected_chunks
 
 
 # ===========================================================================
@@ -574,9 +586,11 @@ class TestVerifyWebhookSecret:
     def _call(self, authorization: str | None, secret: str):
         """Call verify_webhook_secret with a patched WEBHOOK_SECRET."""
         from tools.app import server as srv
+
         with patch.object(srv, "WEBHOOK_SECRET", secret):
             # Re-import the function so it reads the patched module-level var
             from tools.app.server import verify_webhook_secret
+
             verify_webhook_secret(authorization)
 
     def test_correct_secret_does_not_raise(self):
@@ -585,17 +599,20 @@ class TestVerifyWebhookSecret:
 
     def test_missing_header_raises_http_401(self):
         from fastapi import HTTPException
+
         with pytest.raises((HTTPException, Exception)):
             self._call(None, "mysecret")
 
     def test_wrong_secret_raises_http_403(self):
         from fastapi import HTTPException
+
         with pytest.raises((HTTPException, Exception)):
             self._call("Bearer wrongsecret", "mysecret")
 
     def test_no_bearer_prefix_raises(self):
         """Plain token without 'Bearer ' prefix must fail."""
         from fastapi import HTTPException
+
         with pytest.raises((HTTPException, Exception)):
             self._call("mysecret", "mysecret")
 
@@ -613,7 +630,9 @@ class TestVerifyWebhookSecret:
         We confirm this indirectly: both correct and wrong tokens complete
         without timing shortcuts that could leak length information."""
         import tools.app.server as srv
+
         # Both calls must complete — no AttributeError or import issue
         with patch.object(srv, "WEBHOOK_SECRET", "secret123"):
             from tools.app.server import verify_webhook_secret
+
             verify_webhook_secret("Bearer secret123")  # should pass silently
