@@ -37,8 +37,6 @@ from tools.core.config import (
     ASSISTANT_TRIGGER_WORD,
     GROUPS,
     TMP_DIR,
-    WHATSAPP_GROUP1_ID,
-    WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
 )
 from tools.integrations.whatsapp_sender import get_chat_history
