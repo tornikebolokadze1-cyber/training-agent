@@ -115,8 +115,9 @@ def _upload_private_report_to_drive(
 ) -> str | None:
     """Upload combined gap+deep analysis as a private Google Doc.
 
-    Uses the dedicated private analysis folder (კურსი #4 ანალიზი / ჯგუფი #N)
-    which is separate from the shared group folders — only Tornike has access.
+    Uses the dedicated private analysis folder configured per group via
+    DRIVE_GROUP{N}_ANALYSIS_FOLDER_ID — separate from the shared group folders,
+    only Tornike has access.
 
     Returns the document ID, or None on failure.
     """
