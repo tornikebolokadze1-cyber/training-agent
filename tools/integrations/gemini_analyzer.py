@@ -187,7 +187,13 @@ def cleanup_orphaned_gemini_files() -> int:
 # Video Chunking (multimodal — keeps video frames for slides/demos)
 # ---------------------------------------------------------------------------
 
-CHUNK_DURATION_MINUTES = 30  # ~465K tokens/chunk; smaller chunks dodge Gemini phantom-hang observed on >200MB inputs (was 45 — produced 280MB chunks for 187min lectures, ~50% timeout rate on largest chunk)
+CHUNK_DURATION_MINUTES = 8  # Flash-lite degrades catastrophically above ~9 min: starts echoing
+# timestamps, then the prompt itself, then enters an infinite repetition spiral.
+# Root cause: flash-lite has a much smaller reliable output window than standard Flash.
+# At 30 min audio (~960K audio tokens input) the model hits its generation capacity and
+# regurgitates.  8 min = ~122K audio input tokens → well within the safe zone.
+# A 3h lecture becomes ~23 chunks; each chunk is independently clean with full context reset.
+# (was 30 — caused G3 L1 catastrophic degradation after chunk 0, confirmed 2026-05-12)
 
 
 def _get_video_duration_seconds(video_path: Path) -> float:
@@ -460,6 +466,78 @@ def wait_for_processing(client: genai.Client, file_name: str) -> object:
 
 
 # ---------------------------------------------------------------------------
+# Transcript quality guard
+# ---------------------------------------------------------------------------
+
+# Repetition detection: if any 8-word sequence appears more than this many
+# times in a single chunk transcript, treat it as a degradation spiral.
+_MAX_NGRAM_REPEATS = 6
+# Minimum fraction of real Georgian/content chars vs total chars.
+# Degraded output is dominated by ASCII timestamps "00:00:00,000 --> 00:00:03,000".
+_MIN_CONTENT_RATIO = 0.40
+# Prompt-echo detector: if the prompt's opening phrase appears in the output, reject.
+_PROMPT_ECHO_PHRASES = [
+    "გადმოეცი ყველაფერი ზუსტად",
+    "მონიშნე ვინ ლაპარაკობს",
+    "შენ ხარ პროფესიონალი ტრანსკრიპტორი",
+]
+
+
+def _detect_transcript_degradation(text: str, chunk_label: str) -> str | None:
+    """Return a human-readable degradation reason if the transcript looks corrupted.
+
+    Checks three failure modes observed in G3 L1 (2026-05-12):
+    1. Prompt-echo — Gemini regurgitates its own instructions.
+    2. Timestamp spiral — output is dominated by SRT-style "HH:MM:SS --> HH:MM:SS" lines.
+    3. Repetition loop — any 8-word n-gram appears more than _MAX_NGRAM_REPEATS times.
+
+    Returns None if the transcript appears clean.
+    """
+    if not text or len(text.strip()) < 50:
+        return f"{chunk_label}: transcript too short ({len(text)} chars)"
+
+    # 1. Prompt-echo check
+    for phrase in _PROMPT_ECHO_PHRASES:
+        if phrase in text:
+            return f"{chunk_label}: prompt-echo detected (found '{phrase[:40]}...')"
+
+    # 2. Timestamp-spiral check — SRT timestamps are ASCII digits and colons
+    import re as _re
+    # Count lines that look like SRT/VTT timestamps
+    timestamp_lines = _re.findall(
+        r'\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3}',
+        text,
+    )
+    # Also count the simpler bracketed markers that flash-lite echoes: "42:27 - 42:29"
+    bracket_timestamps = _re.findall(r'\[\d+m\d+s\d+ms\s*-\s*\d+m\d+s\d+ms\]', text)
+    total_timestamp_markers = len(timestamp_lines) + len(bracket_timestamps)
+    total_lines = max(1, text.count('\n'))
+    if total_timestamp_markers > 0 and (total_timestamp_markers / total_lines) > 0.30:
+        return (
+            f"{chunk_label}: timestamp spiral detected "
+            f"({total_timestamp_markers} timestamp markers in {total_lines} lines, "
+            f"{total_timestamp_markers / total_lines:.0%} of output)"
+        )
+
+    # 3. N-gram repetition check (8-word windows)
+    words = text.split()
+    if len(words) > 16:
+        n = 8
+        seen: dict[tuple[str, ...], int] = {}
+        for j in range(len(words) - n + 1):
+            gram = tuple(words[j: j + n])
+            seen[gram] = seen.get(gram, 0) + 1
+            if seen[gram] > _MAX_NGRAM_REPEATS:
+                sample = " ".join(gram)
+                return (
+                    f"{chunk_label}: repetition loop detected "
+                    f"('{sample[:60]}' repeated {seen[gram]}x)"
+                )
+
+    return None  # transcript looks clean
+
+
+# ---------------------------------------------------------------------------
 # Step 1: Transcription (multimodal — needs video)
 # ---------------------------------------------------------------------------
 
@@ -712,19 +790,27 @@ def _generate_with_retry(
 
 
 @resilient_api_call(service="gemini", operation="transcribe_video", max_attempts=1, gemini_quota_fallback=True)
-def transcribe_video(file_ref: object, use_free: bool = False,
-                     chunk_number: int = 0, total_chunks: int = 1) -> str:
-    """Transcribe a video chunk using Gemini 2.5 Pro (multimodal — sees slides/demos).
+def transcribe_video(
+    file_ref: object,
+    use_free: bool = False,
+    chunk_number: int = 0,
+    total_chunks: int = 1,
+    prev_chunk_tail: str = "",
+) -> str:
+    """Transcribe an audio/video chunk using Gemini Flash-lite.
 
     Args:
         file_ref: The uploaded file object from upload_video().
         use_free: Whether to use the free API key (default: paid).
         chunk_number: Zero-based chunk index (0 = first/only chunk).
         total_chunks: Total number of chunks for this lecture.
+        prev_chunk_tail: Last ~500 chars of the previous chunk's transcript.
+            Injected into the continuation prompt so the model has a concrete
+            anchor — prevents prompt-echo and repetition spirals at chunk
+            boundaries (the G3 L1 failure mode, 2026-05-12).
 
     Returns:
-        Georgian transcript for this chunk with timestamps, speaker markers,
-        and slide/demo descriptions.
+        Georgian transcript for this chunk with timestamps and speaker markers.
     """
     client = _get_client(use_free=use_free)
 
@@ -734,6 +820,7 @@ def transcribe_video(file_ref: object, use_free: bool = False,
         prompt = TRANSCRIPTION_CONTINUATION_PROMPT.format(
             chunk_number=chunk_number + 1,
             total_chunks=total_chunks,
+            prev_chunk_tail=prev_chunk_tail.strip() if prev_chunk_tail else "(წინა ნაწილი მიუწვდომელია)",
         )
 
     return _generate_with_retry(
@@ -741,7 +828,7 @@ def transcribe_video(file_ref: object, use_free: bool = False,
         model=GEMINI_MODEL_TRANSCRIPTION,
         contents=[file_ref, prompt],
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
-        max_output_tokens=32768,  # Reduced from 65536 — prevents wasteful max-out
+        max_output_tokens=16384,  # 8-min chunks produce ~3K-6K chars; 16K is generous ceiling
         use_free=use_free,
         disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
     )
@@ -887,6 +974,13 @@ def transcribe_chunked_video(
                         f"{file_ref.name}|{use_free}", encoding="utf-8",
                     )
 
+            # Build anchor tail from the previous chunk's transcript.
+            # Injecting the last ~500 chars gives Gemini a concrete anchor for
+            # where the previous chunk ended — preventing prompt-echo and
+            # repetition spirals at chunk boundaries (the G3 L1 failure mode).
+            _TAIL_CHARS = 500
+            prev_chunk_tail = transcripts[-1][-_TAIL_CHARS:] if transcripts else ""
+
             # Transcribe with chunk context — retries reuse the cached file_ref
             # instead of re-uploading the video (saves $2-3 per retry).
             # If paid-tier quota is hit during transcription (not upload),
@@ -897,6 +991,7 @@ def transcribe_chunked_video(
                 transcript = transcribe_video(
                     file_ref, use_free=use_free,
                     chunk_number=i, total_chunks=total_chunks,
+                    prev_chunk_tail=prev_chunk_tail,
                 )
             except Exception as exc:
                 if _is_quota_error(exc) and not use_free and GEMINI_API_KEY:
@@ -924,9 +1019,30 @@ def transcribe_chunked_video(
                     transcript = transcribe_video(
                         file_ref, use_free=True,
                         chunk_number=i, total_chunks=total_chunks,
+                        prev_chunk_tail=prev_chunk_tail,
                     )
                 else:
                     raise
+
+            # Quality guard: detect degradation before committing the chunk
+            chunk_label = f"chunk {i + 1}/{total_chunks}"
+            degradation_reason = _detect_transcript_degradation(transcript, chunk_label)
+            if degradation_reason:
+                # Alert and fail fast — better to abort than to index garbage into Pinecone
+                err_msg = (
+                    f"Transcript degradation detected in {chunk_label}: {degradation_reason}. "
+                    f"This is the flash-lite context-overflow failure mode. "
+                    f"The chunk duration ({CHUNK_DURATION_MINUTES} min) may still be too long, "
+                    f"or the model hit a transient overload. Aborting pipeline."
+                )
+                logger.error(err_msg)
+                try:
+                    from tools.integrations.whatsapp_sender import alert_operator
+                    alert_operator(f"⚠️ Transcript degradation: {degradation_reason}")
+                except Exception:
+                    pass
+                raise ValueError(err_msg)
+
             transcripts.append(transcript)
 
             # Save chunk checkpoint immediately after successful transcription
