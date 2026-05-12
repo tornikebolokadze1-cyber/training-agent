@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape as _esc
 
-from tools.core.config import PROJECT_ROOT, TMP_DIR
+from tools.core.config import GROUPS, PROJECT_ROOT, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -1069,8 +1069,10 @@ def _build_group_data(group_number: int) -> dict:
 
 def get_dashboard_data() -> dict:
     """Assemble all data needed to render the analytics dashboard."""
-    g1 = _build_group_data(1)
-    g2 = _build_group_data(2)
+    group_numbers = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    groups_data = {gn: _build_group_data(gn) for gn in group_numbers}
+    g1 = groups_data.get(1, _build_group_data(1))
+    g2 = groups_data.get(2, _build_group_data(2))
 
     cross_group: dict[str, dict] = {}
     for dim in DIMENSIONS + ["composite"]:
@@ -1087,12 +1089,16 @@ def get_dashboard_data() -> dict:
         }
 
     # Trainer Performance Index: weighted mean of all composites across groups
-    all_composites = g1["composite_series"] + g2["composite_series"]
+    all_composites = [
+        score
+        for group_data in groups_data.values()
+        for score in group_data["composite_series"]
+    ]
     tpi = round(sum(all_composites) / len(all_composites), 2) if all_composites else None
 
     # Overall dimension ranking across both groups
     overall_dim_means: dict[str, list[float]] = {d: [] for d in DIMENSIONS}
-    for g in [g1, g2]:
+    for g in groups_data.values():
         for d in DIMENSIONS:
             m = g["stats"][d].get("mean")
             if m is not None:
@@ -1146,7 +1152,7 @@ def get_dashboard_data() -> dict:
 
     # Cross-group recommendation followthrough (compare last two lectures across all)
     all_scores_ordered = sorted(
-        g1.get("scores", []) + g2.get("scores", []),
+        [row for group_data in groups_data.values() for row in group_data.get("scores", [])],
         key=lambda r: (r.get("group_number", 0), r.get("lecture_number", 0)),
     )
     cross_rec_ft = 0
@@ -1166,8 +1172,8 @@ def get_dashboard_data() -> dict:
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "total_processed": g1["lecture_count"] + g2["lecture_count"],
-        "groups": {1: g1, 2: g2},
+        "total_processed": sum(g["lecture_count"] for g in groups_data.values()),
+        "groups": groups_data,
         "cross_group": cross_group,
         "dimension_labels_ka": DIMENSION_LABELS_KA,
         "dimension_labels_en": DIMENSION_LABELS_EN,
@@ -1293,7 +1299,8 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
             for r in conn.execute("SELECT group_number, lecture_number FROM lecture_scores").fetchall()
         )
 
-    for group in [1, 2]:
+    group_numbers = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    for group in group_numbers:
         for lecture in range(1, 16):
             if (group, lecture) in existing:
                 skipped += 1
@@ -1769,7 +1776,7 @@ def render_dashboard_html(data: dict) -> str:
     def _build_insights_html(dashboard_data: dict) -> str:
         """Build AI insights digest section from all groups' insights."""
         all_insights = []
-        for gn_val in [1, 2]:
+        for gn_val in sorted(dashboard_data["groups"].keys()):
             for ins in dashboard_data["groups"][gn_val].get("insights", []):
                 all_insights.append({"group": gn_val, **ins})
 

@@ -1301,7 +1301,7 @@ def _auto_detect_missing_deep_analysis() -> list[str]:
     from tools.integrations.knowledge_indexer import lecture_exists_in_index
 
     missing: list[str] = []
-    for group in (1, 2):
+    for group in _configured_groups():
         for lecture in range(1, MAX_LECTURES + 1):
             has_transcript = lecture_exists_in_index(group, lecture, "transcript")
             if not has_transcript:

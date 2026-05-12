@@ -1967,7 +1967,7 @@ async def api_scores(
 ):
     """Return raw lecture scores as JSON.
 
-    Query param: group=1|2 (optional, omit for all groups).
+    Query param: group=<configured group number> (optional, omit for all groups).
     """
     verify_operator_secret(authorization)
     if group is not None and group not in GROUPS:
@@ -1987,7 +1987,7 @@ async def api_stats(
 ):
     """Return statistical analysis per dimension as JSON.
 
-    Query param: group=1|2 (optional, omit for both groups).
+    Query param: group=<configured group number> (optional, omit for all groups).
     """
     verify_operator_secret(authorization)
     if group is not None and group not in GROUPS:
@@ -2008,12 +2008,12 @@ async def api_stats(
     return {
         "groups": {
             str(gn): {
-                "lecture_count": data["groups"][gn]["lecture_count"],
-                "stats": data["groups"][gn]["stats"],
-                "best_lecture": data["groups"][gn]["best_lecture"],
-                "worst_lecture": data["groups"][gn]["worst_lecture"],
+                "lecture_count": group_data["lecture_count"],
+                "stats": group_data["stats"],
+                "best_lecture": group_data["best_lecture"],
+                "worst_lecture": group_data["worst_lecture"],
             }
-            for gn in (1, 2)
+            for gn, group_data in sorted(data["groups"].items())
         },
         "cross_group": data["cross_group"],
         "generated_at": data["generated_at"],
