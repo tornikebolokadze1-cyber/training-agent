@@ -455,12 +455,12 @@ def main() -> int:
 
     print()
     print("Open these files to review before sending:")
-    print(f"  Group 3 calendar (HTML): file:///{g3_html_path.as_posix()}")
-    print(f"  Group 4 calendar (HTML): file:///{g4_html_path.as_posix()}")
-    print(f"  Group 3 calendar (PNG):  {g3_png_path}")
-    print(f"  Group 4 calendar (PNG):  {g4_png_path}")
-    print(f"  Group 3 sample msg: {TMP / 'personal_message_sample_group3.txt'}")
-    print(f"  Group 4 sample msg: {TMP / 'personal_message_sample_group4.txt'}")
+    print(f"  მაისის ჯგუფი #1 calendar (HTML): file:///{g3_html_path.as_posix()}")
+    print(f"  მაისის ჯგუფი #2 calendar (HTML): file:///{g4_html_path.as_posix()}")
+    print(f"  მაისის ჯგუფი #1 calendar (PNG):  {g3_png_path}")
+    print(f"  მაისის ჯგუფი #2 calendar (PNG):  {g4_png_path}")
+    print(f"  მაისის ჯგუფი #1 sample msg: {TMP / 'personal_message_sample_group3.txt'}")
+    print(f"  მაისის ჯგუფი #2 sample msg: {TMP / 'personal_message_sample_group4.txt'}")
     return 0
 
 

@@ -43,6 +43,12 @@ from tools.core.config import (
 logger = logging.getLogger(__name__)
 
 
+def _group_label(group_number: int) -> str:
+    """Return the cohort-facing group label for operator reports."""
+    group = GROUPS.get(group_number, {})
+    return group.get("name") or f"ჯგუფი {group_number}"
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -523,7 +529,7 @@ def check_pending_lectures() -> CheckResult:
             pass
 
         issues.append(
-            f"Group {group_num}, Lecture #{lecture_num} — not processed "
+            f"{_group_label(group_num)}, ლექცია #{lecture_num} — not processed "
             f"(meeting ended {(now - meeting_end).total_seconds() / 3600:.1f}h ago)"
         )
 
@@ -962,7 +968,7 @@ def run_daily_morning_report() -> None:
                 except Exception:
                     status = "❓ unknown"
                 yesterday_lectures.append(
-                    f"  ჯგუფი {group_num}, ლექცია #{lecture_num}: {status}"
+                    f"  {_group_label(group_num)}, ლექცია #{lecture_num}: {status}"
                 )
 
     # --- Today's schedule ---
@@ -973,7 +979,7 @@ def run_daily_morning_report() -> None:
             lecture_num = get_lecture_number(group_num, for_date=today)
             if 0 < lecture_num <= TOTAL_LECTURES:
                 today_lectures.append(
-                    f"  ჯგუფი {group_num}, ლექცია #{lecture_num} — 20:00"
+                    f"  {_group_label(group_num)}, ლექცია #{lecture_num} — 20:00"
                 )
 
     # --- Pending retries / stuck pipelines ---
@@ -983,7 +989,9 @@ def run_daily_morning_report() -> None:
 
         active = list_active_pipelines()
         for p in active:
-            pending_info.append(f"  G{p.group} L{p.lecture}: {p.state}")
+            pending_info.append(
+                f"  {_group_label(p.group)}, ლექცია #{p.lecture}: {p.state}"
+            )
     except Exception:
         pass
 

@@ -604,7 +604,10 @@ def _run_post_meeting_pipeline(
                 return
 
         # ---- Step 3: Concatenate if multiple segments ----------------------
-        local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
+        # Keep segment files internal, but use the same human-readable naming
+        # convention students see in Drive. The internal group number still
+        # flows through pipeline state, Pinecone metadata, and logs.
+        local_filename = f"ლექცია #{lecture_number} — ვიდეო ჩანაწერი.mp4"
         local_path = TMP_DIR / local_filename
 
         if len(segment_paths) == 1:
@@ -646,13 +649,19 @@ def _run_post_meeting_pipeline(
         video_already_uploaded = False
         try:
             existing_files = list_files_in_folder(lecture_folder_id)
-            prefix = f"group{group_number}_lecture{lecture_number}_"
+            legacy_prefix = f"group{group_number}_lecture{lecture_number}_"
+            display_name = f"ლექცია #{lecture_number} — ვიდეო ჩანაწერი.mp4"
             existing_video = next(
                 (
                     f
                     for f in existing_files
-                    if f.get("name", "").startswith(prefix)
-                    and f.get("name", "").endswith(".mp4")
+                    if (
+                        (
+                            f.get("name", "").startswith(legacy_prefix)
+                            and f.get("name", "").endswith(".mp4")
+                        )
+                        or f.get("name", "") == display_name
+                    )
                     and not f.get("mimeType", "").startswith("application/vnd.google-apps")
                 ),
                 None,

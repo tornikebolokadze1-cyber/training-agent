@@ -2,8 +2,8 @@
 
 Uses Green API (the operator's own WhatsApp instance — wid 995579225809@c.us)
 to bulk-add 15 students into the two May group chats:
-  - Group 3 (Mon/Thu) — 120363409966993169@g.us
-  - Group 4 (Tue/Fri) — 120363426884083988@g.us
+  - მაისის ჯგუფი #1 (Mon/Thu) — 120363409966993169@g.us
+  - მაისის ჯგუფი #2 (Tue/Fri) — 120363426884083988@g.us
 
 Each addition is preceded by a 2-second sleep to stay polite under
 Green API's rate limits. Already-present participants are not re-added —
@@ -35,7 +35,7 @@ G4_CHAT = "120363426884083988@g.us"  # AI კურსი (მაისის �
 TASKS: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
         G3_CHAT,
-        "Group 3",
+        "მაისის ჯგუფი #1",
         [
             ("ლევან მამალაძე", "995598913234@c.us"),
             ("ალექსანდრე ურუშაძე", "995579444148@c.us"),
@@ -49,7 +49,7 @@ TASKS: list[tuple[str, str, list[tuple[str, str]]]] = [
     ),
     (
         G4_CHAT,
-        "Group 4",
+        "მაისის ჯგუფი #2",
         [
             ("აჩი ბოლქვაძე", "995551499090@c.us"),
             ("შაკო ჯინჭარაძე", "995555145719@c.us"),
