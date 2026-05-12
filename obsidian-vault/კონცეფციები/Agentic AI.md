@@ -27,7 +27,8 @@ AI სისტემების არქიტექტურა, სად�
 ## დაკავშირებული
 
 - [[Computer Use]]
-- [[Browser Action]]
+- [[Multi-agent Architecture]]
+- [[Responsible AI]]
 - [[LLM]]
 - [[Context Engineering]]
 - [[Claude Code]]

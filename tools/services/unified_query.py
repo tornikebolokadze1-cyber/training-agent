@@ -265,11 +265,23 @@ def lecture_context(group_number: int, lecture_number: int) -> dict:
             if _contains_confusion(r["content"] or "")
         ][:10]
 
-    # 3. Obsidian analysis file
+    # 3. Obsidian analysis file — try cohort-named dir first (current), then
+    #    fall back to legacy ``ჯგუფი N`` form for analysis written before the
+    #    naming-fix migration in obsidian_sync.py.
+    from tools.core.config import GROUPS as _GROUPS
+
+    _cohort_label = _GROUPS.get(group_number, {}).get("name") or f"ჯგუფი {group_number}"
     analysis_path = (
-        OBSIDIAN_ROOT / "ანალიზი" / f"ჯგუფი {group_number}"
+        OBSIDIAN_ROOT / "ანალიზი" / _cohort_label
         / f"ლექცია {lecture_number} -- ანალიზი.md"
     )
+    if not analysis_path.exists():
+        legacy_path = (
+            OBSIDIAN_ROOT / "ანალიზი" / f"ჯგუფი {group_number}"
+            / f"ლექცია {lecture_number} -- ანალიზი.md"
+        )
+        if legacy_path.exists():
+            analysis_path = legacy_path
     if analysis_path.exists():
         text = analysis_path.read_text(encoding="utf-8")
         result["analysis_file"] = {

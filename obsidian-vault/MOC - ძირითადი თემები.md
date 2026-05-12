@@ -27,7 +27,7 @@ tags: [MOC, ინდექსი]
 | 10 | [[ლექცია 10]] | 2026-04-14 | AI აგენტების განვითარება — ჯგუფური ქოუჩინგ-სესია |
 | 11 | [[ლექცია 11]] | 2026-04-17 | AI ვიდეო გენერაცია — სესია 2 |
 | 12 | [[ლექცია 12]] | 2026-04-21 | AI აგენტები — მეხსიერების სისტემები, Claude Code და N8N ინტე |
-| 13 | [[ლექცია 13]] | 2026-04-24 | Claude AI-ის პრაქტიკული გამოყენება VS Code-ში |
+| 13 | [[ლექცია 13]] | 2026-04-24 | AI ინსტრუმენტების პრაქტიკული კურსი — Claude Desktop და VS Co |
 | 14 | [[ლექცია 14]] | 2026-04-28 | AI დეველოპერული ინსტრუმენტების კონფიგურაცია და ინტეგრაცია |
 | 15 | [[ლექცია 15]] | 2026-05-01 | AI აგენტის შექმნა Claude-ისა და VS Code-ის გამოყენებით — ინდ |
 
@@ -90,6 +90,7 @@ tags: [MOC, ინდექსი]
 - [[Cinema Studio]]
 - [[ClickHouse]]
 - [[Cloud Services]]
+- [[Cloud-based AI Environment]]
 - [[Compact]]
 - [[Confyu]]
 - [[Continue.dev]]
@@ -106,7 +107,6 @@ tags: [MOC, ინდექსი]
 - [[Figma]]
 - [[Firecrawl]]
 - [[Fish Audio]]
-- [[Genspark AI]]
 
 ---
 
@@ -114,6 +114,7 @@ tags: [MOC, ინდექსი]
 
 - [[AI Agents]] (G1L1, G1L2, G1L3, G1L4, G1L5, G1L6, G1L8, G1L11, G1L14, G1L15, G2L1, G2L3, G2L5, G2L14)
 - [[AI Hallucination Management]] (G1L1, G2L15)
+- [[AI ROI]] (G1L1, G1L13)
 - [[API (Access & Keys)]] (G1L2, G1L5, G2L2)
 - [[Agentic AI]] (G1L13, G2L2, G2L4, G2L7, G2L15)
 - [[Agentic Workflow]] (G1L1, G1L6, G1L12, G1L14)
@@ -125,7 +126,7 @@ tags: [MOC, ინდექსი]
 - [[Cloud Deployment]] (G2L9, G2L13)
 - [[Computer Use]] (G1L5, G1L13, G2L1, G2L2, G2L3, G2L7, G2L14)
 - [[Content Automation Pipeline]] (G1L6, G1L10)
-- [[Context Window]] (G1L2, G1L13, G2L2, G2L5)
+- [[Context Window]] (G1L2, G2L2, G2L5)
 - [[Context Window Management]] (G1L6, G1L12)
 - [[Custom Instructions]] (G1L2, G2L3)
 - [[Data Privacy]] (G2L5, G2L13)
@@ -141,7 +142,6 @@ tags: [MOC, ინდექსი]
 - [[Lip-Sync]] (G2L7, G2L11)
 - [[LipSync]] (G2L9, G2L10)
 - [[Lipsyncing]] (G1L7, G1L9)
-- [[Local AI Models]] (G1L5, G2L5)
 
 ---
 

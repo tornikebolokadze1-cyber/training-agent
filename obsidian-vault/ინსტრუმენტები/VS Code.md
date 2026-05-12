@@ -1,6 +1,6 @@
 ---
 tags: [ინსტრუმენტი, AI]
-aliases: [VS Code — კოდირების გარემო, Visual Studio Code, ვი-ეს კოდი, ვიეს კოდი, ვიჟუალ სტუდიო კოდი]
+aliases: [VS Code — კოდირების გარემო, Visual Studio Code, ვი-ეს კოდი, ვიეს კოდი, ვიზუალ სტუდიო კოდი, ვიჟუალ სტუდიო კოდი]
 category: tool
 ---
 
@@ -34,9 +34,8 @@ VS Code (Visual Studio Code) არის IDE — ინტეგრირებ
 
 - [[Claude Code]]
 - [[Hyperframes]]
-- [[Claude]]
-- [[IDE Configuration]]
-- [[Project Folder Structure]]
+- [[Claude Desktop]]
+- [[AI System Architecture]]
 - [[Chat-First Workflow]]
 - [[Google Antigravity IDE]]
 - [[Four Environments Framework]]
@@ -52,5 +51,5 @@ VS Code (Visual Studio Code) არის IDE — ინტეგრირებ
 
 ## პრაქტიკული გამოყენება
 
-- შორინა ახსნის VS Code-ის გარემოს, სადაც Claude-ის რამდენიმე ფანჯარა გახსნილია წინა სესიებიდან, კოდის რედაქტირებისა და შესრულების ცენტრალური კერძოთი (ჯგუფი 1, ლექცია 13)
+- VS Code-ის Claude-თან ინტეგრირება AI-ასისტირებული კოდირებისთვის ქართული SME-ების პრაქტიკული პრობლემების გადასაჭრელად. (ჯგუფი 1, ლექცია 13)
 - პროექტის ფოლდერის გახსნა და სხვადასხვა AI მოდელებისთვის ერთი და იგივე კოდის კრიტიკული შეფასების დავალება შედეგების შედარების მიზნით. (ჯგუფი 2, ლექცია 5)

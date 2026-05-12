@@ -193,13 +193,13 @@ class TestSplitVideoChunks:
     def test_30_min_video_returns_original_as_single_element(
         self, tmp_path: Path
     ) -> None:
-        """A 30-minute video (1800 s < 2700 s threshold) must be returned as
+        """A video just under one chunk duration must be returned as
         a single-element list pointing to the original file, no ffmpeg call."""
         video = tmp_path / "short.mp4"
         video.write_bytes(b"\x00" * 1000)
 
         def fake_run(cmd, **kwargs):
-            return self._ffprobe_result(30 * 60)  # 30 minutes
+            return self._ffprobe_result((ga.CHUNK_DURATION_MINUTES - 1) * 60)
 
         with (
             patch("tools.integrations.gemini_analyzer.subprocess.run", side_effect=fake_run),
@@ -235,7 +235,7 @@ class TestSplitVideoChunks:
             patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run,
             patch.object(ga, "TMP_DIR", tmp_path),
         ):
-            mock_run.return_value = self._ffprobe_result(20 * 60)
+            mock_run.return_value = self._ffprobe_result((ga.CHUNK_DURATION_MINUTES - 1) * 60)
             ga.split_video_chunks(video)
 
         calls = mock_run.call_args_list
@@ -251,9 +251,10 @@ class TestSplitVideoChunks:
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
-        # 2 full chunks + 10 min remainder. 10 min < 15 min merge threshold,
+        # 2 full chunks + 5 min remainder. 5 min < 15 min merge threshold,
         # so the orchestrator collapses the trailing chunk into the previous one.
-        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (10 * 60)
+        # With CHUNK_DURATION_MINUTES=8: 960 + 300 = 1260s → 3 raw → merge to 2.
+        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (5 * 60)
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
@@ -314,7 +315,7 @@ class TestSplitVideoChunks:
         video.write_bytes(b"\x00" * 1000)
 
         # Same merge scenario as test_smart_merge_reduces_chunk_count.
-        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (10 * 60)
+        duration_seconds = (2 * ga.CHUNK_DURATION_MINUTES * 60) + (5 * 60)
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":

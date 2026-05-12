@@ -208,7 +208,7 @@ class TestHealthEndpoint:
         """GET /health returns 200 and status=healthy when all checks pass."""
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "healthy"
@@ -218,7 +218,7 @@ class TestHealthEndpoint:
         """Health response includes an ISO timestamp."""
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         data = resp.json()
         assert "timestamp" in data
         datetime.fromisoformat(data["timestamp"])
@@ -227,27 +227,27 @@ class TestHealthEndpoint:
         """Health response includes a checks list with check results."""
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         data = resp.json()
         assert "checks" in data
         assert isinstance(data["checks"], list)
         assert len(data["checks"]) > 0
         assert "name" in data["checks"][0]
 
-    async def test_degraded_returns_503(self, tmp_path):
+    async def test_degraded_returns_503(self, patched_secrets, tmp_path):
         """GET /health returns 503 when overall_status is critical."""
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_critical()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         assert resp.status_code == 503
         data = resp.json()
         assert data["status"] == "critical"
 
-    async def test_webhook_secret_check_shows_missing(self, tmp_path):
+    async def test_webhook_secret_check_shows_missing(self, patched_secrets, tmp_path):
         """Health returns degraded (200) when a check is warning-level."""
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_degraded()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         data = resp.json()
         assert data["warnings_count"] == 1
 
@@ -257,7 +257,7 @@ class TestHealthEndpoint:
         _processing_tasks["g2_l5"] = datetime.now()
         with patch("tools.core.health_monitor.get_cached_or_run_full_audit", return_value=self._mock_check_all_healthy()):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
         data = resp.json()
         assert data["tasks_in_progress"] == 2
 
@@ -2079,7 +2079,7 @@ class TestReadinessEndpoint:
 class TestHealthCacheBehaviour:
     """Tests for /health TTL caching and status-code semantics."""
 
-    async def test_health_cache_prevents_repeat_api_calls(self):
+    async def test_health_cache_prevents_repeat_api_calls(self, patched_secrets):
         """Two /health calls within TTL window must invoke full audit only once."""
         from tools.core import health_monitor as _hm
 
@@ -2102,10 +2102,10 @@ class TestHealthCacheBehaviour:
         with patch.object(_hm, "check_all", side_effect=_mock_check_all):
             # First call — should run the full audit
             async with await _async_client() as client:
-                resp1 = await client.get("/health")
+                resp1 = await client.get("/health", headers=_AUTH_HEADER)
             # Second call immediately after — should use cache
             async with await _async_client() as client:
-                resp2 = await client.get("/health")
+                resp2 = await client.get("/health", headers=_AUTH_HEADER)
 
         assert resp1.status_code == 200
         assert resp2.status_code == 200
@@ -2113,7 +2113,7 @@ class TestHealthCacheBehaviour:
             f"Expected check_all() called once (cached), but was called {call_count['n']} times"
         )
 
-    async def test_health_force_param_bypasses_cache(self):
+    async def test_health_force_param_bypasses_cache(self, patched_secrets):
         """Passing ?force=true must bypass the TTL cache and run a fresh audit."""
         from tools.core import health_monitor as _hm
 
@@ -2141,12 +2141,12 @@ class TestHealthCacheBehaviour:
 
         with patch.object(_hm, "check_all", side_effect=_mock_check_all):
             async with await _async_client() as client:
-                resp = await client.get("/health?force=true")
+                resp = await client.get("/health?force=true", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
         assert call_count["n"] == 1, "force=true must bypass cache and call check_all()"
 
-    async def test_health_returns_200_for_degraded_state(self):
+    async def test_health_returns_200_for_degraded_state(self, patched_secrets):
         """/health must return 200 (not 503) when overall_status is 'degraded' (warnings only)."""
         from tools.core import health_monitor as _hm
 
@@ -2160,14 +2160,14 @@ class TestHealthCacheBehaviour:
 
         with patch.object(_hm, "get_cached_or_run_full_audit", return_value=degraded_result):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200, (
             f"Degraded (warning-only) state should return 200, got {resp.status_code}"
         )
         assert resp.json()["status"] == "degraded"
 
-    async def test_health_returns_503_only_for_critical_state(self):
+    async def test_health_returns_503_only_for_critical_state(self, patched_secrets):
         """/health must return 503 only when overall_status is 'critical'."""
         from tools.core import health_monitor as _hm
 
@@ -2181,13 +2181,13 @@ class TestHealthCacheBehaviour:
 
         with patch.object(_hm, "get_cached_or_run_full_audit", return_value=critical_result):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
 
         assert resp.status_code == 503, (
             f"Critical state must return 503, got {resp.status_code}"
         )
 
-    async def test_health_returns_200_for_healthy_state(self):
+    async def test_health_returns_200_for_healthy_state(self, patched_secrets):
         """/health returns 200 when overall_status is 'healthy'."""
         from tools.core import health_monitor as _hm
 
@@ -2201,7 +2201,7 @@ class TestHealthCacheBehaviour:
 
         with patch.object(_hm, "get_cached_or_run_full_audit", return_value=healthy_result):
             async with await _async_client() as client:
-                resp = await client.get("/health")
+                resp = await client.get("/health", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
 

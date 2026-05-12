@@ -131,6 +131,7 @@ class TestValidateCriticalConfig:
         }
         with patch.object(cfg, "IS_RAILWAY", False), \
              patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "OPERATOR_WEBHOOK_SECRET", "op-secret"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \

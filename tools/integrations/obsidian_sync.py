@@ -669,24 +669,87 @@ def _build_concept_index(all_entities: dict[str, dict]) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+def _group_label(group_number: int) -> str:
+    """Return the user-facing label for a group.
+
+    Prefers the configured ``GROUPS[n].name`` (e.g. ``"მაისის ჯგუფი #1"``)
+    so vault paths, MOC headings, and WhatsApp messages all match what the
+    student sees elsewhere (Drive folder names, Zoom topic, chat title).
+    Falls back to ``ჯგუფი N`` (legacy form using internal index) when no
+    ``name`` is configured — keeps old data accessible during partial
+    rollouts where GROUPS isn't populated yet.
+    """
+    name = GROUPS.get(group_number, {}).get("name")
+    return name if name else f"ჯგუფი {group_number}"
+
+
+# Legacy → cohort-prefixed rename map. ``_ensure_vault_dirs`` consults this
+# on every startup so an old ``ლექციები/ჯგუფი 1/`` directory gets renamed
+# to ``ლექციები/მარტის ჯგუფი #1/`` once GROUPS[1] is populated, instead
+# of two parallel trees living side by side. Obsidian indexes notes by
+# filename (not full path), so wikilinks survive the rename.
+def _migrate_legacy_group_dirs() -> None:
+    legacy_roots = [VAULT_ROOT / "ლექციები", VAULT_ROOT / "ანალიზი"]
+    for root in legacy_roots:
+        if not root.exists():
+            continue
+        for n in sorted(GROUPS.keys()):
+            target = _group_label(n)
+            if target == f"ჯგუფი {n}":
+                continue  # nothing to migrate — already in legacy form
+            legacy = root / f"ჯგუფი {n}"
+            new = root / target
+            if legacy.exists() and not new.exists():
+                logger.info("Renaming vault subdir: %s -> %s", legacy, new)
+                legacy.rename(new)
+            elif legacy.exists() and new.exists():
+                # Both exist — merge legacy into new, then drop legacy
+                logger.info("Merging legacy vault subdir %s into %s", legacy, new)
+                for f in legacy.iterdir():
+                    dest = new / f.name
+                    if not dest.exists():
+                        f.rename(dest)
+                try:
+                    legacy.rmdir()
+                except OSError:
+                    logger.warning("Could not remove non-empty legacy dir %s", legacy)
+
+
 def _ensure_vault_dirs() -> None:
-    """Create the vault directory structure."""
-    dirs = [
+    """Create the vault directory structure.
+
+    Per-group subdirs are derived from ``GROUPS[n].name`` (e.g.
+    ``ლექციები/მაისის ჯგუფი #1/``) so vault navigation matches the
+    user-facing cohort name everywhere else (Drive, WhatsApp, Zoom).
+    Onboarding a new cohort only requires its env vars on Railway —
+    folders appear automatically on the next sync. Legacy
+    ``ჯგუფი N`` dirs are migrated in place via
+    ``_migrate_legacy_group_dirs()`` (idempotent, safe to re-run).
+    """
+    base_dirs = [
         VAULT_ROOT,
         VAULT_ROOT / "ლექციები",
-        VAULT_ROOT / "ლექციები" / "ჯგუფი 1",
-        VAULT_ROOT / "ლექციები" / "ჯგუფი 2",
         VAULT_ROOT / "კონცეფციები",
         VAULT_ROOT / "ინსტრუმენტები",
         VAULT_ROOT / "პრაქტიკული მაგალითები",
         VAULT_ROOT / "WhatsApp დისკუსიები",
         VAULT_ROOT / "ანალიზი",
-        VAULT_ROOT / "ანალიზი" / "ჯგუფი 1",
-        VAULT_ROOT / "ანალიზი" / "ჯგუფი 2",
         VAULT_ROOT / ".obsidian",
     ]
-    for d in dirs:
+    for d in base_dirs:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Migrate any ``ჯგუფი N`` legacy dirs before creating cohort-named ones.
+    _migrate_legacy_group_dirs()
+
+    # Per-group subdirs — dynamic from GROUPS using cohort-prefixed labels.
+    # Fallback to {1, 2} with bare ``ჯგუფი N`` only when GROUPS is empty
+    # (local dev / first boot before env vars are populated).
+    group_nums = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    for n in group_nums:
+        label = _group_label(n)
+        (VAULT_ROOT / "ლექციები" / label).mkdir(parents=True, exist_ok=True)
+        (VAULT_ROOT / "ანალიზი" / label).mkdir(parents=True, exist_ok=True)
 
 
 def _generate_lecture_note(
@@ -856,7 +919,7 @@ def _generate_concept_note(name: str, info: dict) -> str:
     best_desc = max(descriptions, key=len) if descriptions else ""
 
     lecture_lines = [
-        f"- [[ლექცია {lec}]] (ჯგუფი {g})" for g, lec in sorted(set(lectures))
+        f"- [[ლექცია {lec}]] ({_group_label(g)})" for g, lec in sorted(set(lectures))
     ]
 
     rel_targets: set[str] = set()
@@ -898,7 +961,7 @@ category: {category}
 
     if practical_uses:
         use_lines = [
-            f"- {u['use_case']} (ჯგუფი {u['group']}, ლექცია {u['lecture']})"
+            f"- {u['use_case']} ({_group_label(u['group'])}, ლექცია {u['lecture']})"
             for u in practical_uses
         ]
         note += f"""
@@ -941,32 +1004,37 @@ def _generate_moc(all_entities: dict, concept_index: dict) -> str:
         and info.get("category", "concept") not in TOOL_CATEGORIES
     )
 
-    moc = """---
+    # Discover groups dynamically — present in GROUPS config OR with entities in
+    # the vault (handles vault rebuild scenarios where GROUPS might be empty
+    # during a local-dev run but the .tmp/ entities still describe past cohorts).
+    groups_in_entities: set[int] = set()
+    for key in all_entities:
+        m = re.match(r"g(\d+)_l\d+", key)
+        if m:
+            groups_in_entities.add(int(m.group(1)))
+    group_nums = sorted(set(GROUPS.keys()) | groups_in_entities)
+    if not group_nums:
+        group_nums = [1, 2]  # fallback for empty-vault local runs
+
+    cohort_count = len(group_nums)
+    moc = f"""---
 tags: [MOC, ინდექსი]
 ---
 
 # AI კურსი -- ცოდნის რუკა
 
 > 15-ლექციანი AI კურსი ქართველი პროფესიონალებისთვის
-> 2 ჯგუფი | სამშაბათი/პარასკევი და ორშაბათი/ხუთშაბათი
+> {cohort_count} ჯგუფი
 
 ---
 
 ## ლექციები
 
-### ჯგუფი 1 -- მარტის ჯგუფი #1
-
-| # | ლექცია | თარიღი | თემა |
-|---|--------|--------|------|
 """
-    for grp in [1, 2]:
-        if grp == 2:
-            moc += """
-### ჯგუფი 2 -- მარტის ჯგუფი #2
-
-| # | ლექცია | თარიღი | თემა |
-|---|--------|--------|------|
-"""
+    for grp in group_nums:
+        moc += f"\n### {_group_label(grp)}\n\n"
+        moc += "| # | ლექცია | თარიღი | თემა |\n"
+        moc += "|---|--------|--------|------|\n"
         for lec in range(1, 16):
             key = f"g{grp}_l{lec}"
             date = _compute_lecture_date(grp, lec)
@@ -991,27 +1059,18 @@ tags: [MOC, ინდექსი]
         ls = ", ".join(f"G{g}L{lec}" for g, lec in sorted(set(info.get("lectures", []))))
         moc += f"- {_wikilink(c)} ({ls})\n"
 
-    # Determine progress
-    g1_count = sum(1 for k in all_entities if k.startswith("g1_"))
-    g2_count = sum(1 for k in all_entities if k.startswith("g2_"))
+    # Per-group progress counts
+    progress_counts = {
+        g: sum(1 for k in all_entities if k.startswith(f"g{g}_")) for g in group_nums
+    }
 
-    moc += f"""
----
+    moc += "\n---\n\n## პროგრესი\n\n| ჯგუფი | ლექციები | სტატუსი |\n|-------|----------|---------|\n"
+    for grp in group_nums:
+        moc += f"| {_group_label(grp)} | {progress_counts[grp]}/15 | მიმდინარე |\n"
 
-## პროგრესი
-
-| ჯგუფი | ლექციები | სტატუსი |
-|-------|----------|---------|
-| #1 | {g1_count}/15 | მიმდინარე |
-| #2 | {g2_count}/15 | მიმდინარე |
-
----
-
-## ანალიზი
-
-"""
-    for grp in [1, 2]:
-        moc += f"### ჯგუფი {grp}\n"
+    moc += "\n---\n\n## ანალიზი\n\n"
+    for grp in group_nums:
+        moc += f"### {_group_label(grp)}\n"
         for lec in range(1, 16):
             key = f"g{grp}_l{lec}"
             if key in all_entities:
@@ -1168,7 +1227,7 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
 
     # Lecture note
     note = _generate_lecture_note(group_number, lecture_number, entity_data)
-    path = VAULT_ROOT / "ლექციები" / f"ჯგუფი {group_number}" / f"ლექცია {lecture_number}.md"
+    path = VAULT_ROOT / "ლექციები" / _group_label(group_number) / f"ლექცია {lecture_number}.md"
     path.write_text(note, encoding="utf-8")
     files_updated += 1
 
@@ -1176,7 +1235,7 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
     analysis = _generate_analysis_note(group_number, lecture_number)
     if analysis:
         path = (
-            VAULT_ROOT / "ანალიზი" / f"ჯგუფი {group_number}"
+            VAULT_ROOT / "ანალიზი" / _group_label(group_number)
             / f"ლექცია {lecture_number} -- ანალიზი.md"
         )
         path.write_text(analysis, encoding="utf-8")
@@ -1225,7 +1284,7 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
         g, lec = _parse_lecture_key(lk)
         examples = all_entities[lk].get("practical_examples", [])
         if examples:
-            examples_note += f"## ჯგუფი {g}, ლექცია {lec}\n\n"
+            examples_note += f"## {_group_label(g)}, ლექცია {lec}\n\n"
             for ex in examples:
                 examples_note += f"- {_wikilink(ex.get('tool', ''))} -- {ex.get('use_case', '')}\n"
             examples_note += "\n"
@@ -1278,9 +1337,11 @@ def sync_full() -> dict[str, int]:
 
     idx = get_pinecone_index()
 
-    # Check all possible lectures
+    # Check all possible lectures across every configured group.
+    # Iterates GROUPS dynamically so new cohorts are picked up automatically.
     existing_lectures: list[tuple[int, int]] = []
-    for g in [1, 2]:
+    group_nums = sorted(GROUPS.keys()) if GROUPS else [1, 2]
+    for g in group_nums:
         for lec in range(1, 16):
             prefix = f"g{g}_l{lec}_summary_"
             ids = []
@@ -1307,7 +1368,7 @@ def sync_full() -> dict[str, int]:
         except Exception as e:
             logger.error("Failed to sync G%d L%d: %s", g, lec, e)
 
-    # Generate WhatsApp placeholder
+    # Generate WhatsApp placeholder — list every configured group dynamically
     wa_note = """---
 tags: [WhatsApp, დისკუსია]
 ---
@@ -1317,15 +1378,12 @@ tags: [WhatsApp, დისკუსია]
 > WhatsApp ჩატის ისტორია ავტომატურად სინქრონიზდება Green API-ით.
 > გაუშვით: `python -m tools.integrations.obsidian_sync --whatsapp`
 
-## ჯგუფი 1 -- მარტის ჯგუფი #1
-- ჩატის ID: `{g1_id}`
+"""
+    for g_num in (sorted(GROUPS.keys()) if GROUPS else [1, 2]):
+        g_cfg = GROUPS.get(g_num, {})
+        g_chat = g_cfg.get("whatsapp_chat_id", "") or "not configured"
+        wa_note += f"## {_group_label(g_num)}\n- ჩატის ID: `{g_chat}`\n\n"
 
-## ჯგუფი 2 -- მარტის ჯგუფი #2
-- ჩატის ID: `{g2_id}`
-""".format(
-        g1_id=WHATSAPP_GROUP1_ID or "not configured",
-        g2_id=WHATSAPP_GROUP2_ID or "not configured",
-    )
     (VAULT_ROOT / "WhatsApp დისკუსიები" / "ინდექსი.md").write_text(
         wa_note, encoding="utf-8"
     )
@@ -1357,10 +1415,22 @@ def sync_whatsapp() -> int:
     _ensure_vault_dirs()
     total_messages = 0
 
-    chats = [
-        (WHATSAPP_GROUP1_ID, 1, "მარტის ჯგუფი #1"),
-        (WHATSAPP_GROUP2_ID, 2, "მარტის ჯგუფი #2"),
-    ]
+    # Build (chat_id, group_num, group_name) tuples dynamically from GROUPS.
+    # Falls back to the legacy WHATSAPP_GROUP1/2_ID env vars when a group's
+    # whatsapp_chat_id is unset so existing March-cohort deployments keep
+    # working unchanged.
+    chats: list[tuple[str, int, str]] = []
+    for g_num in sorted(GROUPS.keys()):
+        cfg = GROUPS[g_num]
+        chat_id = cfg.get("whatsapp_chat_id", "")
+        if not chat_id:
+            # Legacy fallback for groups 1 and 2 from module-level imports
+            if g_num == 1 and WHATSAPP_GROUP1_ID:
+                chat_id = WHATSAPP_GROUP1_ID
+            elif g_num == 2 and WHATSAPP_GROUP2_ID:
+                chat_id = WHATSAPP_GROUP2_ID
+        if chat_id:
+            chats.append((chat_id, g_num, cfg.get("name", f"ჯგუფი #{g_num}")))
 
     for chat_id, group_num, group_name in chats:
         if not chat_id:
@@ -1412,7 +1482,7 @@ group: {group_num}
                     note += f"**{sender}**: _{msg_type}_\n\n"
 
             filepath = (
-                VAULT_ROOT / "WhatsApp დისკუსიები" / f"ჯგუფი {group_num} -- ჩატი.md"
+                VAULT_ROOT / "WhatsApp დისკუსიები" / f"{_group_label(group_num)} -- ჩატი.md"
             )
             filepath.write_text(note, encoding="utf-8")
             total_messages += len(messages)

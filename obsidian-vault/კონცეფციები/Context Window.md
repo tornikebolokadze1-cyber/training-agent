@@ -17,7 +17,6 @@ category: concept
 ## ლექციებში
 
 - [[ლექცია 2]] (ჯგუფი 1)
-- [[ლექცია 13]] (ჯგუფი 1)
 - [[ლექცია 2]] (ჯგუფი 2)
 - [[ლექცია 5]] (ჯგუფი 2)
 
@@ -25,7 +24,6 @@ category: concept
 
 ## დაკავშირებული
 
-- [[Iterative Refinement]]
 - [[Memory Management]]
 - [[Claude Code]]
 - [[Context Engineering]]
