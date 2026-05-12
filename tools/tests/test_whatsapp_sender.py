@@ -246,7 +246,7 @@ class TestSendGroupReminder:
     def test_raises_for_missing_group_id(self):
         with patch.object(ws, "_GROUP_CHAT_IDS", {}), \
              patch.object(ws, "GROUPS", {3: {"name": "test"}}):
-            with pytest.raises(ValueError, match="No WhatsApp group ID"):
+            with pytest.raises(ValueError, match="WhatsApp chat ID not configured for group"):
                 ws.send_group_reminder(3, "https://zoom.us", 1)
 
 

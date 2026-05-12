@@ -35,6 +35,7 @@ from typing import Any
 from tools.core.config import (
     ASSISTANT_SIGNATURE,
     ASSISTANT_TRIGGER_WORD,
+    GROUPS,
     TMP_DIR,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
@@ -219,10 +220,10 @@ def _allowed_chats() -> list[str]:
     chats: list[str] = []
     if WHATSAPP_TORNIKE_PHONE:
         chats.append(f"{WHATSAPP_TORNIKE_PHONE}@c.us")
-    if WHATSAPP_GROUP1_ID:
-        chats.append(WHATSAPP_GROUP1_ID)
-    if WHATSAPP_GROUP2_ID:
-        chats.append(WHATSAPP_GROUP2_ID)
+    for group_cfg in GROUPS.values():
+        chat_id = group_cfg.get("whatsapp_chat_id")
+        if chat_id:
+            chats.append(chat_id)
     return chats
 
 

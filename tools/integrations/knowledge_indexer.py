@@ -24,6 +24,7 @@ from tools.core.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_EMBEDDING_MODEL,
+    GROUPS,
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
     PINECONE_SCORE_THRESHOLD_DIRECT,
@@ -427,7 +428,7 @@ def check_pinecone_health() -> PineconeHealthReport:
 
         # Build per-group, per-lecture counts by listing with prefixes
         lecture_counts: dict[str, int] = {}
-        for group_num in (1, 2):
+        for group_num in sorted(GROUPS.keys()):
             for lecture_num in range(1, 16):
                 prefix = f"g{group_num}_l{lecture_num}_"
                 try:
@@ -772,8 +773,6 @@ def index_whatsapp_chats() -> int:
     from tools.core.config import (
         GREEN_API_INSTANCE_ID,
         GREEN_API_TOKEN,
-        WHATSAPP_GROUP1_ID,
-        WHATSAPP_GROUP2_ID,
     )
 
     if not GREEN_API_INSTANCE_ID or not GREEN_API_TOKEN:
@@ -782,8 +781,9 @@ def index_whatsapp_chats() -> int:
 
     total = 0
     chats = [
-        (WHATSAPP_GROUP1_ID, 1),
-        (WHATSAPP_GROUP2_ID, 2),
+        (group_cfg["whatsapp_chat_id"], group_num)
+        for group_num, group_cfg in sorted(GROUPS.items())
+        if group_cfg.get("whatsapp_chat_id")
     ]
 
     for chat_id, group_num in chats:

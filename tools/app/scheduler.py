@@ -1352,16 +1352,19 @@ def start_scheduler() -> AsyncIOScheduler:
 
         instance_id = os.environ.get("GREEN_API_INSTANCE_ID")
         token = os.environ.get("GREEN_API_TOKEN")
-        g1 = os.environ.get("WHATSAPP_GROUP1_ID")
-        g2 = os.environ.get("WHATSAPP_GROUP2_ID")
         dm = os.environ.get("WHATSAPP_TORNIKE_PHONE")
-        if not all((instance_id, token, g1, g2)):
+        if not all((instance_id, token)):
             logger.warning(
-                "[archive_catchup] missing Green API or chat env vars; skipping"
+                "[archive_catchup] missing Green API env vars; skipping"
             )
             return
 
-        chats: list[tuple[str, str]] = [(g1, "group_1"), (g2, "group_2")]
+        from tools.core.config import GROUPS as _GROUPS
+        chats: list[tuple[str, str]] = [
+            (group_cfg["whatsapp_chat_id"], f"group_{group_num}")
+            for group_num, group_cfg in sorted(_GROUPS.items())
+            if group_cfg.get("whatsapp_chat_id")
+        ]
         if dm:
             dm_id = dm if dm.endswith("@c.us") else f"{dm}@c.us"
             chats.append((dm_id, "tornike_dm"))

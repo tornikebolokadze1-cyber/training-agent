@@ -413,8 +413,8 @@ def send_group_reminder(group_number: int, zoom_link: str, lecture_number: int) 
 
     if not chat_id:
         raise ValueError(
-            f"No WhatsApp group ID configured for Group {group_number}. "
-            "Set WHATSAPP_GROUP1_ID / WHATSAPP_GROUP2_ID in .env"
+            f"WhatsApp chat ID not configured for group {group_number}. "
+            f"Set WHATSAPP_GROUP{group_number}_ID in .env"
         )
 
     message = (

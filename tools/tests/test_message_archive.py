@@ -121,10 +121,12 @@ class TestNormalize:
         assert m.content == "სურათის აღწერა"
 
     def test_group_inferred_from_env(self, sample_payload, monkeypatch):
-        monkeypatch.setenv("WHATSAPP_GROUP1_ID", "120363XX@g.us")
-        ma._GROUP_ID_MAP = None  # reset cache
+        # _load_group_map now reads from GROUPS config dict, not env vars.
+        # Patch the module-level cache directly with the test chat ID.
+        ma._GROUP_ID_MAP = {"120363XX@g.us": 1}
         m = ma.normalize_green_api_message(sample_payload, "120363XX@g.us")
         assert m.group_number == 1
+        ma._GROUP_ID_MAP = None  # reset cache for subsequent tests
 
     def test_extended_text_message_content(self):
         """Fix 1: extendedTextMessage should be extracted correctly."""
@@ -478,10 +480,12 @@ class TestWebhookNormalize:
     def test_group_inferred_from_env(
         self, monkeypatch, webhook_text_payload
     ):
-        monkeypatch.setenv("WHATSAPP_GROUP1_ID", "120363425514041539@g.us")
-        ma._GROUP_ID_MAP = None  # reset cache
+        # _load_group_map now reads from GROUPS config dict, not env vars.
+        # Patch the module-level cache directly with the real Group 1 chat ID.
+        ma._GROUP_ID_MAP = {"120363425514041539@g.us": 1}
         msg = ma.normalize_webhook_message(webhook_text_payload)
         assert msg.group_number == 1
+        ma._GROUP_ID_MAP = None  # reset cache for subsequent tests
 
 
 class TestArchiveWebhookPayload:
