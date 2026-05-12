@@ -411,13 +411,18 @@ class TestTranscribeChunkedVideoCheckpointResume:
         video.write_bytes(b"fake-video")
 
         # Pre-populate the chunk-0 transcript checkpoint
-        ckpt_content = "Chunk 0 transcript content." * 20  # >100 chars
+        # Content must be long (>50 chars) and varied (no 8-word n-gram repeated >6x)
+        # to pass the degradation guard in transcribe_chunked_video.
+        ckpt_content = (
+            "In this lecture we covered the fundamentals of supervised learning algorithms. "
+            "The students practiced classification using decision trees and random forests. "
+            "We also discussed model evaluation metrics including precision recall and F1 score. "
+        )
         (tmp_path / "g1_l3_chunk0_transcript.txt").write_text(ckpt_content, encoding="utf-8")
 
         with (
             patch.object(ga, "TMP_DIR", tmp_path),
-            patch("tools.integrations.gemini_analyzer._get_video_duration_seconds",
-                  return_value=20 * 60),  # 20 min — single chunk, no splitting
+            patch.object(ga, "split_video_chunks", return_value=[video]),
             patch("tools.integrations.gemini_analyzer.upload_video") as mock_upload,
             patch("tools.integrations.gemini_analyzer.transcribe_video") as mock_transcribe,
         ):
@@ -441,12 +446,16 @@ class TestTranscribeChunkedVideoCheckpointResume:
 
         fake_file_ref = MagicMock()
         fake_file_ref.name = "files/abc123"
-        transcript_text = "Full transcript from Gemini. " * 10
+        # Long enough (>50 chars) and varied enough to pass the degradation guard
+        transcript_text = (
+            "The lecturer introduced machine learning concepts in the first section. "
+            "Students asked questions about neural networks and deep learning architectures. "
+            "The second part covered practical exercises with Python libraries and tools. "
+        )
 
         with (
             patch.object(ga, "TMP_DIR", tmp_path),
-            patch("tools.integrations.gemini_analyzer._get_video_duration_seconds",
-                  return_value=20 * 60),
+            patch.object(ga, "split_video_chunks", return_value=[video]),
             patch("tools.integrations.gemini_analyzer.upload_video",
                   return_value=(fake_file_ref, False)) as mock_upload,
             patch("tools.integrations.gemini_analyzer.transcribe_video",

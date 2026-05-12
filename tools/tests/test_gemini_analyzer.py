@@ -435,26 +435,31 @@ class TestSplitVideoChunks:
         _reset_client_caches()
 
     def test_short_video_returns_original(self, tmp_path):
-        """Video under 45 min returns original path as single-element list."""
+        """Video under one chunk duration returns original path as single-element list."""
         video = tmp_path / "short.mp4"
         video.write_bytes(b"\x00" * 1000)
 
+        # Use a duration strictly below CHUNK_DURATION_MINUTES so no splitting occurs
+        short_duration = (ga.CHUNK_DURATION_MINUTES - 1) * 60
+
         with patch("tools.integrations.gemini_analyzer.subprocess.run") as mock_run, \
              patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
-            # ffprobe returns 30 minutes
-            mock_run.return_value = MagicMock(returncode=0, stdout="1800.0\n", stderr="")
+            mock_run.return_value = MagicMock(returncode=0, stdout=f"{short_duration}.0\n", stderr="")
             result = ga.split_video_chunks(video)
 
         assert result == [video]
 
     def test_long_video_splits_into_chunks(self, tmp_path):
-        """Video of 100 min should produce 3 chunks (~45+45+10)."""
+        """Video of exactly 2 chunk durations should produce 2 chunks."""
         video = tmp_path / "long.mp4"
         video.write_bytes(b"\x00" * 1000)
 
+        # Exactly 2 * CHUNK_DURATION_MINUTES — no remainder, no smart merge → 2 chunks
+        long_duration = ga.CHUNK_DURATION_MINUTES * 60 * 2
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
+                return MagicMock(returncode=0, stdout=f"{long_duration}.0\n", stderr="")
             # ffmpeg — create the chunk file
             # The output path is the last argument (after --)
             out_path = Path(cmd[-1])
@@ -465,7 +470,7 @@ class TestSplitVideoChunks:
              patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             result = ga.split_video_chunks(video)
 
-        assert len(result) == 3
+        assert len(result) == 2
         for p in result:
             assert p.suffix == ".mp4"
 
@@ -498,9 +503,12 @@ class TestSplitVideoChunks:
         chunk0 = tmp_path / "lecture.chunk0.mp4"
         chunk0.write_bytes(b"\x00" * 200_000)
 
+        # Exactly 2 chunks so chunk0 is reused and only chunk1 triggers ffmpeg
+        two_chunk_duration = ga.CHUNK_DURATION_MINUTES * 60 * 2
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
+                return MagicMock(returncode=0, stdout=f"{two_chunk_duration}.0\n", stderr="")
             out_path = Path(cmd[-1])
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -509,9 +517,9 @@ class TestSplitVideoChunks:
              patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             ga.split_video_chunks(video)
 
-        # ffprobe call + ffmpeg for chunk1 and chunk2 only (chunk0 reused)
+        # ffprobe call + ffmpeg for chunk1 only (chunk0 reused)
         ffmpeg_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "ffmpeg"]
-        assert len(ffmpeg_calls) == 2  # chunk1, chunk2 — not chunk0
+        assert len(ffmpeg_calls) == 1  # chunk1 only — chunk0 reused
 
     def test_existing_small_chunk_recreated(self, tmp_path):
         """If a chunk file exists but is too small, it is deleted and re-created."""
@@ -522,9 +530,12 @@ class TestSplitVideoChunks:
         chunk0 = tmp_path / "lecture.chunk0.mp4"
         chunk0.write_bytes(b"\x00" * 50)
 
+        # Exactly 2 chunks — both chunk0 (recreated) and chunk1 trigger ffmpeg
+        two_chunk_duration = ga.CHUNK_DURATION_MINUTES * 60 * 2
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return MagicMock(returncode=0, stdout="6000.0\n", stderr="")
+                return MagicMock(returncode=0, stdout=f"{two_chunk_duration}.0\n", stderr="")
             out_path = Path(cmd[-1])
             out_path.write_bytes(b"\x00" * 200_000)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -533,9 +544,9 @@ class TestSplitVideoChunks:
              patch("tools.integrations.gemini_analyzer.TMP_DIR", tmp_path):
             ga.split_video_chunks(video)
 
-        # All 3 chunks should have ffmpeg calls (chunk0 was recreated)
+        # Both chunks have ffmpeg calls (chunk0 was recreated, chunk1 is new)
         ffmpeg_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "ffmpeg"]
-        assert len(ffmpeg_calls) == 3
+        assert len(ffmpeg_calls) == 2
 
     def test_ffprobe_failure_raises_runtime_error(self, tmp_path):
         video = tmp_path / "bad.mp4"
@@ -1099,13 +1110,16 @@ class TestTranscribeChunkedVideo:
 
         fake_client = MagicMock()
 
+        # Transcript must be ≥50 chars to pass the degradation guard
+        fake_transcript = "transcript chunk 1 " * 5  # 95 chars
+
         with patch.object(ga, "split_video_chunks", return_value=[video]), \
              patch.object(ga, "upload_video", return_value=(fake_file_ref, False)), \
-             patch.object(ga, "transcribe_video", return_value="transcript chunk 1"), \
+             patch.object(ga, "transcribe_video", return_value=fake_transcript), \
              patch.object(ga, "_get_client", return_value=fake_client):
             transcript, use_free = ga.transcribe_chunked_video(video, use_free=False)
 
-        assert transcript == "transcript chunk 1"
+        assert transcript == fake_transcript
         assert use_free is False
 
     def test_multi_chunk_concatenation(self, tmp_path):
@@ -1125,7 +1139,10 @@ class TestTranscribeChunkedVideo:
         fake_client = MagicMock()
 
         upload_returns = iter([(file_ref0, False), (file_ref1, False)])
-        transcribe_returns = iter(["Part one text", "Part two text"])
+        # Each transcript must be ≥50 chars to pass the degradation guard
+        part_one = "Part one text of the lecture content section. " * 2  # >50 chars
+        part_two = "Part two text of the lecture content section. " * 2  # >50 chars
+        transcribe_returns = iter([part_one, part_two])
 
         with patch.object(ga, "split_video_chunks", return_value=[chunk0, chunk1]), \
              patch.object(ga, "upload_video", side_effect=lambda p, **kw: next(upload_returns)), \
@@ -1133,7 +1150,7 @@ class TestTranscribeChunkedVideo:
              patch.object(ga, "_get_client", return_value=fake_client):
             transcript, use_free = ga.transcribe_chunked_video(video, use_free=False)
 
-        assert transcript == "Part one text\n\nPart two text"
+        assert transcript == f"{part_one}\n\n{part_two}"
 
     def test_cleanup_on_failure(self, tmp_path):
         """On transcription failure, Gemini files and local chunks are cleaned up."""
@@ -1166,9 +1183,12 @@ class TestTranscribeChunkedVideo:
         file_ref.name = "files/f"
         fake_client = MagicMock()
 
+        # Transcript must be ≥50 chars to pass the degradation guard
+        fake_transcript = "lecture content text " * 5  # 105 chars
+
         with patch.object(ga, "split_video_chunks", return_value=[video]), \
              patch.object(ga, "upload_video", return_value=(file_ref, True)), \
-             patch.object(ga, "transcribe_video", return_value="text") as mock_tv, \
+             patch.object(ga, "transcribe_video", return_value=fake_transcript) as mock_tv, \
              patch.object(ga, "_get_client", return_value=fake_client):
             transcript, use_free = ga.transcribe_chunked_video(video, use_free=False)
 

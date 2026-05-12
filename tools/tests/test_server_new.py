@@ -136,7 +136,7 @@ class TestDashboardEndpoint:
             ),
         ):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard")
+                resp = await client.get("/dashboard", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
@@ -153,7 +153,7 @@ class TestDashboardEndpoint:
             },
         ):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard")
+                resp = await client.get("/dashboard", headers=_AUTH_HEADER)
 
         assert "html" in resp.headers.get("content-type", "").lower()
 
