@@ -1579,7 +1579,7 @@ async def process_recording(
     verify_webhook_secret(authorization)
 
     # Input validation
-    if payload.group_number not in (1, 2):
+    if payload.group_number not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group_number: {payload.group_number}")
     if not (1 <= payload.lecture_number <= 15):
         raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {payload.lecture_number}")
@@ -1913,7 +1913,7 @@ async def manual_trigger(
     """
     verify_operator_secret(authorization)
 
-    if payload.group_number not in (1, 2):
+    if payload.group_number not in GROUPS:
         raise HTTPException(status_code=422, detail=f"Invalid group_number: {payload.group_number}")
     if not (1 <= payload.lecture_number <= 15):
         raise HTTPException(status_code=422, detail=f"Invalid lecture_number: {payload.lecture_number}")

@@ -390,11 +390,19 @@ class TestLectureStatus:
         data = resp.json()
         assert "summary" in data
         assert "groups" in data
-        assert "group_1" in data["groups"]
-        assert "group_2" in data["groups"]
-        assert len(data["groups"]["group_1"]) == 15
-        assert len(data["groups"]["group_2"]) == 15
-        assert data["summary"]["total_lectures"] == 30
+        # Endpoint surfaces every configured cohort keyed by its human-readable
+        # name (e.g. "მარტის ჯგუფი #1", "მაისის ჯგუფი #2"). Keep the assertions
+        # dynamic so adding a future cohort doesn't break this test.
+        from tools.app.admin_routes import _configured_group_numbers
+        from tools.core.config import GROUPS
+
+        configured = _configured_group_numbers()
+        assert configured, "expected at least one group configured"
+        for g in configured:
+            label = GROUPS[g]["name"]
+            assert label in data["groups"], f"missing {label!r} in response"
+            assert len(data["groups"][label]) == 15
+        assert data["summary"]["total_lectures"] == 15 * len(configured)
 
     @patch("tools.app.admin_routes._server_internals")
     @patch("tools.app.admin_routes._get_pinecone_counts", return_value={})
@@ -430,7 +438,8 @@ class TestLectureStatus:
             resp = await c.get("/admin/lecture-status", headers=_AUTH_HEADER)
 
         data = resp.json()
-        g1 = data["groups"]["group_1"]
+        from tools.core.config import GROUPS
+        g1 = data["groups"][GROUPS[1]["name"]]
 
         # Lecture 1 — complete
         l1 = g1[0]
@@ -573,8 +582,12 @@ class TestSystemReport:
         report = data["report"]
         assert "Training Agent System Report" in report
         assert "Uptime:" in report
-        assert "Group 1" in report
-        assert "Group 2" in report
+        # Report shows every configured cohort by its human-readable name —
+        # don't hardcode "Group 1"/"Group 2", read from GROUPS so the test
+        # stays valid as cohorts are added (May 2026 added მაისის ჯგუფი #1/#2).
+        from tools.core.config import GROUPS
+        for g_num, cfg in GROUPS.items():
+            assert cfg["name"] in report, f"missing {cfg['name']!r} in report"
 
     @patch("tools.app.admin_routes._server_internals")
     async def test_report_includes_errors(self, mock_internals, patched_secrets):
@@ -651,7 +664,11 @@ class TestSystemReport:
 
         data = resp.json()
         assert data["active_pipelines"] == 1
-        assert "G2 L4: ANALYZING" in data["report"]
+        # Active-pipelines line uses the human-readable group label that
+        # /admin/system-report adopted when cohorts gained Georgian names.
+        from tools.core.config import GROUPS
+        g2_label = GROUPS[2]["name"]
+        assert f"{g2_label} L4: ANALYZING" in data["report"]
 
 
 # ===========================================================================

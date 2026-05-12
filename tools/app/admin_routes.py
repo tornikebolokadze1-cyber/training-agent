@@ -561,18 +561,25 @@ def _parse_lecture_key(key: str) -> tuple[int, int]:
     """Parse 'g1_l3' into (group=1, lecture=3).
 
     Raises:
-        ValueError: If the format is not 'g{int}_l{int}'.
+        ValueError: If the format is not 'g{int}_l{int}' or the group/lecture
+        falls outside the configured range.
     """
     try:
         parts = key.split("_")
         group = int(parts[0][1:])
         lecture = int(parts[1][1:])
-        if group not in (1, 2) or not (1 <= lecture <= MAX_LECTURES):
+        configured = _configured_group_numbers()
+        if group not in configured or not (1 <= lecture <= MAX_LECTURES):
             raise ValueError
         return group, lecture
     except (IndexError, ValueError) as exc:
+        configured = _configured_group_numbers()
+        valid_range = (
+            f"{min(configured)}-{max(configured)}" if configured else "1-2"
+        )
         raise ValueError(
-            f"Invalid lecture key '{key}'. Expected format: g1_l3 (group 1-2, lecture 1-15)"
+            f"Invalid lecture key '{key}'. Expected format: g{{N}}_l{{M}} "
+            f"(group {valid_range}, lecture 1-{MAX_LECTURES})"
         ) from exc
 
 
@@ -761,27 +768,30 @@ def _read_lecture_context_from_drive(group: int, lecture: int) -> tuple[str, str
 def _calculate_lecture_date(group: int, lecture: int):  # -> date | None
     """Calculate the calendar date when a lecture happened.
 
-    Group 1: Tuesdays and Fridays, started 2026-03-13 (Friday).
-    Group 2: Thursdays and Mondays, started 2026-03-12 (Thursday).
+    Reads ``start_date`` and ``meeting_days`` from ``GROUPS[group]`` so it
+    works for every configured cohort (March #1/#2 and the May cohorts loaded
+    via ``_load_optional_groups``).
 
     Args:
-        group: Group number (1 or 2).
+        group: Group number from GROUPS (1, 2, 3, 4, ...).
         lecture: Lecture number (1-15).
 
     Returns:
-        The date on which that lecture occurred, or None for invalid inputs.
+        The date on which that lecture occurred, or None when the group is
+        not configured or the lecture index falls outside the 15-lecture
+        sequence.
     """
-    from datetime import date, timedelta
+    from datetime import timedelta
 
-    from tools.core.config import EXCLUDED_DATES
+    from tools.core.config import EXCLUDED_DATES, GROUPS
 
-    if group == 1:
-        start = date(2026, 3, 13)  # First lecture: Friday
-        weekdays = {4, 1}          # Fri=4, Tue=1
-    elif group == 2:
-        start = date(2026, 3, 12)  # First lecture: Thursday
-        weekdays = {3, 0}          # Thu=3, Mon=0
-    else:
+    cfg = GROUPS.get(group)
+    if not cfg:
+        return None
+
+    start = cfg.get("start_date")
+    weekdays = set(cfg.get("meeting_days") or [])
+    if start is None or not weekdays:
         return None
 
     count = 0
