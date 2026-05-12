@@ -66,13 +66,12 @@ _SCHEMA_CHECKED = False
 def _load_group_map() -> dict[str, int]:
     global _GROUP_ID_MAP
     if _GROUP_ID_MAP is None:
-        _GROUP_ID_MAP = {}
-        g1 = os.environ.get("WHATSAPP_GROUP1_ID")
-        g2 = os.environ.get("WHATSAPP_GROUP2_ID")
-        if g1:
-            _GROUP_ID_MAP[g1] = 1
-        if g2:
-            _GROUP_ID_MAP[g2] = 2
+        from tools.core.config import GROUPS
+        _GROUP_ID_MAP = {
+            group_cfg["whatsapp_chat_id"]: group_num
+            for group_num, group_cfg in GROUPS.items()
+            if group_cfg.get("whatsapp_chat_id")
+        }
     return _GROUP_ID_MAP
 
 

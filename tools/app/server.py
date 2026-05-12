@@ -1342,7 +1342,7 @@ def _handle_recording_completed_via_polling(
     _evict_stale_tasks()
     with _processing_lock:
         key = _task_key(group_number, lecture_number)
-        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number) or is_pipeline_done(group_number, lecture_number):
             return {"status": "duplicate", "message": f"{key} already processing"}
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
@@ -1541,7 +1541,7 @@ async def zoom_webhook(
         _evict_stale_tasks()
         with _processing_lock:
             key = _task_key(ctx["group_number"], ctx["lecture_number"])
-            if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]):
+            if key in _processing_tasks or is_pipeline_active(ctx["group_number"], ctx["lecture_number"]) or is_pipeline_done(ctx["group_number"], ctx["lecture_number"]):
                 return {"status": "duplicate", "message": f"{key} already processing"}
             _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
@@ -2013,7 +2013,8 @@ async def api_stats(
                 "best_lecture": data["groups"][gn]["best_lecture"],
                 "worst_lecture": data["groups"][gn]["worst_lecture"],
             }
-            for gn in (1, 2)
+            for gn in sorted(GROUPS.keys())
+            if gn in data["groups"]
         },
         "cross_group": data["cross_group"],
         "generated_at": data["generated_at"],

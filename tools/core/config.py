@@ -132,7 +132,11 @@ def _load_attendees() -> dict[str, list[str]]:
     if attendees_path.exists():
         with open(attendees_path, encoding="utf-8") as f:
             return json.load(f)
-    return {"1": [], "2": []}
+    # Build a fallback dict covering every statically known group key.
+    # Optional groups (3+) pick up their attendee lists via
+    # _ATTENDEES.get(str(n), []) inside _load_optional_groups(), which
+    # runs after _ATTENDEES is assigned, so they always fall back to [].
+    return {str(n): [] for n in range(1, 10)}
 
 
 _ATTENDEES = _load_attendees()
@@ -480,15 +484,23 @@ def validate_critical_config() -> list[str]:
         )
 
     # These are HIGH-risk if missing — warn at startup
-    _warn_vars = [
+    _warn_vars: list[tuple[str, str]] = [
         ("ZOOM_WEBHOOK_SECRET_TOKEN", "Zoom webhooks will return 503"),
-        ("DRIVE_GROUP1_FOLDER_ID", "Group 1 Drive uploads will fail"),
-        ("DRIVE_GROUP2_FOLDER_ID", "Group 2 Drive uploads will fail"),
-        ("DRIVE_GROUP1_ANALYSIS_FOLDER_ID", "Group 1 analysis reports won't upload"),
-        ("DRIVE_GROUP2_ANALYSIS_FOLDER_ID", "Group 2 analysis reports won't upload"),
-        ("WHATSAPP_GROUP1_ID", "Group 1 WhatsApp notifications will fail"),
-        ("WHATSAPP_GROUP2_ID", "Group 2 WhatsApp notifications will fail"),
     ]
+    for _n, _cfg in iter_all_groups():
+        _group_name = _cfg["name"]
+        _warn_vars.append((
+            f"DRIVE_GROUP{_n}_FOLDER_ID",
+            f"{_group_name} Drive uploads will fail",
+        ))
+        _warn_vars.append((
+            f"DRIVE_GROUP{_n}_ANALYSIS_FOLDER_ID",
+            f"{_group_name} analysis reports won't upload",
+        ))
+        _warn_vars.append((
+            f"WHATSAPP_GROUP{_n}_ID",
+            f"{_group_name} WhatsApp notifications will fail",
+        ))
     for var_name, consequence in _warn_vars:
         if not os.environ.get(var_name):
             logger.warning("Missing %s — %s", var_name, consequence)
