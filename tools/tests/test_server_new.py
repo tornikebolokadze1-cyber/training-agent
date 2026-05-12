@@ -165,7 +165,7 @@ class TestDashboardEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard")
+                resp = await client.get("/dashboard", headers=_AUTH_HEADER)
 
         assert resp.status_code == 500
 
@@ -177,7 +177,7 @@ class TestDashboardEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard")
+                resp = await client.get("/dashboard", headers=_AUTH_HEADER)
 
         body = resp.text
         assert "Dashboard Error" in body or "Something broke" in body or "Error" in body
@@ -198,7 +198,7 @@ class TestDashboardDataEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard/data")
+                resp = await client.get("/dashboard/data", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
 
@@ -208,7 +208,7 @@ class TestDashboardDataEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard/data")
+                resp = await client.get("/dashboard/data", headers=_AUTH_HEADER)
 
         assert "application/json" in resp.headers.get("content-type", "")
 
@@ -218,7 +218,7 @@ class TestDashboardDataEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard/data")
+                resp = await client.get("/dashboard/data", headers=_AUTH_HEADER)
 
         assert resp.status_code == 500
         body = resp.json()
@@ -230,7 +230,7 @@ class TestDashboardDataEndpoint:
 
         with patch.dict(sys.modules, {"tools.services.analytics": analytics_mock}):
             async with await _async_client() as client:
-                resp = await client.get("/dashboard/data")
+                resp = await client.get("/dashboard/data", headers=_AUTH_HEADER)
 
         body = resp.json()
         assert "Pinecone timeout" in body.get("error", "")

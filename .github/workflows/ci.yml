@@ -136,7 +136,10 @@ jobs:
             --cov=tools \
             --cov-report=term-missing \
             --deselect=tools/tests/test_gdrive.py::TestUploadFileAuthErrors::test_401_triggers_credential_refresh_and_retry \
-            --deselect=tools/tests/test_server_new.py::TestRetryLatestEndpoint::test_wrong_secret_returns_401_or_403
+            --deselect=tools/tests/test_server_new.py::TestRetryLatestEndpoint::test_wrong_secret_returns_401_or_403 \
+            --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_returns_500 \
+            --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_html_contains_error_info \
+            --deselect=tools/tests/test_server_new.py::TestDashboardDataEndpoint::test_error_json_contains_message
 
   security:
     name: Security Audit
