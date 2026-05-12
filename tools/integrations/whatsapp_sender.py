@@ -729,8 +729,8 @@ if __name__ == "__main__":
     print(f"Instance ID: {'Yes' if GREEN_API_INSTANCE_ID else 'No'}")
     print(f"API Token: {'Yes' if GREEN_API_TOKEN else 'No'}")
     print(f"Tornike phone: {'Yes' if WHATSAPP_TORNIKE_PHONE else 'No'}")
-    print(f"Group 1 ID: {'Yes' if WHATSAPP_GROUP1_ID else 'No'}")
-    print(f"Group 2 ID: {'Yes' if WHATSAPP_GROUP2_ID else 'No'}")
+    for _grp_num, _grp_id in _GROUP_CHAT_IDS.items():
+        print(f"Group {_grp_num} ID: {'Yes' if _grp_id else 'No'}")
 
     if GREEN_API_INSTANCE_ID and GREEN_API_TOKEN:
         print("\nFetching WhatsApp groups...")
