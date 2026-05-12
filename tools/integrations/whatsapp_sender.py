@@ -28,8 +28,6 @@ from tools.core.config import (
     GROUPS,
     TMP_DIR,
     WEBHOOK_SECRET,
-    WHATSAPP_GROUP1_ID,
-    WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
 )
 from tools.core.retry import retry_with_backoff
@@ -49,11 +47,20 @@ DLQ_MAX_RETRIES = 3
 
 MISSED_ALERTS_PATH = TMP_DIR / "missed_alerts.json"
 
-# Group ID mapping
-_GROUP_CHAT_IDS = {
-    1: WHATSAPP_GROUP1_ID,
-    2: WHATSAPP_GROUP2_ID,
-}
+# Group ID mapping — built dynamically from the GROUPS config so every enabled
+# cohort is routable. Previously this dict was hardcoded to {1, 2} only, which
+# silently dropped Group 3/4 reminders introduced by the May 2026 cohort
+# wire-up (Group 4's first lecture had its 18:00 Zoom reminder swallowed
+# because the lookup returned None).
+def _build_group_chat_ids() -> dict[int, str]:
+    return {
+        g_num: cfg["whatsapp_chat_id"]
+        for g_num, cfg in GROUPS.items()
+        if cfg.get("whatsapp_chat_id")
+    }
+
+
+_GROUP_CHAT_IDS: dict[int, str] = _build_group_chat_ids()
 
 
 # ---------------------------------------------------------------------------
