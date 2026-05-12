@@ -25,7 +25,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tools.core.config import TBILISI_TZ
+from tools.core.config import GROUPS, TBILISI_TZ
 from tools.core.pipeline_state import (
     COMPLETE,
     FAILED,
@@ -42,8 +42,17 @@ logger = logging.getLogger(__name__)
 
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 
-NUM_GROUPS = 2
 MAX_LECTURES = 15
+
+
+def _configured_group_numbers() -> list[int]:
+    """Return all configured training groups, including newer cohorts."""
+    return sorted(GROUPS.keys()) if GROUPS else [1, 2]
+
+
+def _group_label(group_number: int) -> str:
+    """Return the user-facing cohort label for admin reports."""
+    return GROUPS.get(group_number, {}).get("name") or f"Group {group_number}"
 
 
 def _server_internals() -> tuple:
@@ -76,8 +85,10 @@ class LectureRequest(BaseModel):
     @field_validator("group_number")
     @classmethod
     def validate_group(cls, v: int) -> int:
-        if v not in (1, 2):
-            raise ValueError("group_number must be 1 or 2")
+        if v not in _configured_group_numbers():
+            raise ValueError(
+                f"group_number must be one of {_configured_group_numbers()}"
+            )
         return v
 
     @field_validator("lecture_number")
@@ -290,7 +301,7 @@ async def lecture_status(
     request: Request,
     authorization: str | None = Header(None),
 ) -> JSONResponse:
-    """Full status for all lectures across both groups.
+    """Full status for all lectures across all configured groups.
 
     Returns pipeline state, Pinecone indexing, Drive files,
     and error info for each lecture.
@@ -300,12 +311,12 @@ async def lecture_status(
 
     results: dict[str, list[dict[str, Any]]] = {}
 
-    for group_num in range(1, NUM_GROUPS + 1):
+    for group_num in _configured_group_numbers():
         group_statuses: list[dict[str, Any]] = []
         for lec in range(1, MAX_LECTURES + 1):
             status = _get_lecture_status(group_num, lec)
             group_statuses.append(status)
-        results[f"group_{group_num}"] = group_statuses
+        results[_group_label(group_num)] = group_statuses
 
     # Try to enrich with Pinecone vector counts (non-fatal)
     try:
@@ -361,7 +372,7 @@ async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
     try:
         from tools.integrations.knowledge_indexer import get_lecture_vector_count
 
-        for group_num in range(1, NUM_GROUPS + 1):
+        for group_num in _configured_group_numbers():
             for lec in range(1, MAX_LECTURES + 1):
                 count = await asyncio.to_thread(
                     get_lecture_vector_count, group_num, lec,
@@ -460,7 +471,7 @@ async def system_report(
     active = [p for p in all_pipelines if p.state not in (COMPLETE, FAILED, "UNKNOWN")]
     lines.append(f"\nActive pipelines: {len(active)}")
     for p in active:
-        lines.append(f"  G{p.group} L{p.lecture}: {p.state}")
+        lines.append(f"  {_group_label(p.group)} L{p.lecture}: {p.state}")
 
     # In-flight tasks
     with _processing_lock:
@@ -468,8 +479,8 @@ async def system_report(
     lines.append(f"In-flight dedup tasks: {task_count}")
 
     # Per-group lecture matrix
-    for group_num in range(1, NUM_GROUPS + 1):
-        lines.append(f"\n--- Group {group_num} ---")
+    for group_num in _configured_group_numbers():
+        lines.append(f"\n--- {_group_label(group_num)} ---")
         row: list[str] = []
         for lec in range(1, MAX_LECTURES + 1):
             state = load_state(group_num, lec)
@@ -495,9 +506,13 @@ async def system_report(
                     updated = updated.replace(tzinfo=TBILISI_TZ)
                 age_hours = (now - updated).total_seconds() / 3600.0
                 if age_hours <= 24:
-                    recent_errors.append(f"  G{p.group} L{p.lecture}: {p.error[:80]}")
+                    recent_errors.append(
+                        f"  {_group_label(p.group)} L{p.lecture}: {p.error[:80]}"
+                    )
             except (ValueError, TypeError):
-                recent_errors.append(f"  G{p.group} L{p.lecture}: {p.error[:80]}")
+                recent_errors.append(
+                    f"  {_group_label(p.group)} L{p.lecture}: {p.error[:80]}"
+                )
 
     if recent_errors:
         lines.append(f"\nRecent errors ({len(recent_errors)}):")
