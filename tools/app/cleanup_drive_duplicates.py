@@ -338,8 +338,8 @@ def main() -> None:
     parser.add_argument(
         "--group",
         type=int,
-        choices=[1, 2],
-        help="Scan only this group (default: both groups)",
+        choices=sorted(GROUPS.keys()),
+        help="Scan only this group (default: all groups)",
     )
     parser.add_argument(
         "--lectures",

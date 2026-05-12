@@ -84,8 +84,8 @@ def main():
         description="Process a Zoom recording: upload, analyze, report"
     )
     parser.add_argument("video", help="Path to the video file")
-    parser.add_argument("--group", type=int, required=True, choices=[1, 2],
-                        help="Group number (1 or 2)")
+    parser.add_argument("--group", type=int, required=True, choices=sorted(GROUPS.keys()),
+                        help=f"Group number ({', '.join(str(k) for k in sorted(GROUPS.keys()))})")
     parser.add_argument("--lecture", type=int, required=True,
                         help="Lecture number (1-15)")
     parser.add_argument("--skip-drive", action="store_true",
