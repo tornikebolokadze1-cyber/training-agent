@@ -82,4 +82,4 @@ def test_alert_on_drift_sends_message():
     assert sent is True
     assert mock_alert.call_count == 1
     message = mock_alert.call_args[0][0]
-    assert "G2 L7" in message
+    assert "L7" in message  # cohort label uses GROUPS[2]["name"] not "G2"

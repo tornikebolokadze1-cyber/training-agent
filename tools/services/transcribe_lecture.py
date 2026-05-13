@@ -21,6 +21,12 @@ from tools.core.config import (
     get_drive_file_url,
     get_lecture_folder_name,
 )
+
+
+def _label(group_number: int) -> str:
+    """Return the human-facing cohort name for operator messages."""
+    cfg = GROUPS.get(group_number)
+    return cfg["name"] if cfg else f"Group {group_number}"
 from tools.core.pipeline_state import (
     load_state,
     transition,
@@ -312,7 +318,7 @@ def transcribe_and_index(
             budget_ok, remaining = check_daily_budget()
             if not budget_ok:
                 msg = (
-                    f"Daily cost limit reached. Pipeline for G{group_number}/L{lecture_number} "
+                    f"Daily cost limit reached. Pipeline for {_label(group_number)}/L{lecture_number} "
                     f"refused to prevent overspend."
                 )
                 logger.error(msg)
@@ -373,7 +379,7 @@ def transcribe_and_index(
         empty_analyses = [k for k in ("summary", "gap_analysis", "deep_analysis") if not results.get(k)]
         if empty_analyses:
             failure_msg = (
-                f"Pipeline FAILED with EMPTY analyses for G{group_number} L#{lecture_number}: "
+                f"Pipeline FAILED with EMPTY analyses for {_label(group_number)} L#{lecture_number}: "
                 f"{', '.join(empty_analyses)}"
             )
             logger.error(failure_msg)

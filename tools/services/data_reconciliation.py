@@ -19,7 +19,15 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tools.core.config import GROUPS
+
 logger = logging.getLogger(__name__)
+
+
+def _label(group_number: int) -> str:
+    """Return the human-facing cohort name for operator messages."""
+    cfg = GROUPS.get(group_number)
+    return cfg["name"] if cfg else f"Group {group_number}"
 
 _SCORES_DB_PATH = Path("data/scores.db")
 _STATE_DIR = Path(".tmp")
@@ -162,7 +170,7 @@ def _format_drift_message(report: ReconciliationReport) -> str:
     lines = ["Data reconciliation drift detected:"]
 
     def _fmt(pairs: list[tuple[int, int]]) -> str:
-        return ", ".join(f"G{g} L{lec}" for g, lec in pairs) or "(none)"
+        return ", ".join(f"{_label(g)} L{lec}" for g, lec in pairs) or "(none)"
 
     if report.in_scores_db_only:
         lines.append(

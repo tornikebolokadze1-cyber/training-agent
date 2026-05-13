@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape as _esc
 
-from tools.core.config import PROJECT_ROOT, TMP_DIR
+from tools.core.config import GROUPS, PROJECT_ROOT, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -1068,9 +1068,20 @@ def _build_group_data(group_number: int) -> dict:
 
 
 def get_dashboard_data() -> dict:
-    """Assemble all data needed to render the analytics dashboard."""
+    """Assemble all data needed to render the analytics dashboard.
+
+    Groups 1 and 2 drive the cross-group narrative (legacy behaviour).
+    All configured GROUPS are included in ``data["groups"]`` so that
+    /api/stats?group=N works for any enabled cohort without a 500.
+    """
     g1 = _build_group_data(1)
     g2 = _build_group_data(2)
+
+    # Build data for every enabled cohort (gracefully handles empty score sets).
+    all_group_data: dict[int, dict] = {1: g1, 2: g2}
+    for gn in GROUPS:
+        if gn not in all_group_data:
+            all_group_data[gn] = _build_group_data(gn)
 
     cross_group: dict[str, dict] = {}
     for dim in DIMENSIONS + ["composite"]:
@@ -1166,8 +1177,8 @@ def get_dashboard_data() -> dict:
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "total_processed": g1["lecture_count"] + g2["lecture_count"],
-        "groups": {1: g1, 2: g2},
+        "total_processed": sum(gd["lecture_count"] for gd in all_group_data.values()),
+        "groups": all_group_data,
         "cross_group": cross_group,
         "dimension_labels_ka": DIMENSION_LABELS_KA,
         "dimension_labels_en": DIMENSION_LABELS_EN,
@@ -2926,10 +2937,11 @@ document.addEventListener("DOMContentLoaded", function() {{
   }})();
 
   /* ── Bar Chart: Dimension Comparison ── */
+  /* TODO(multi-cohort): chart hardcoded to groups 1+2; redesign to iterate DATA.groups dynamically */
   (function() {{
     var g1 = DATA.groups[1];
     var g2 = DATA.groups[2];
-    if (!g1.lecture_count && !g2.lecture_count) return;
+    if (!g1 || !g2 || (!g1.lecture_count && !g2.lecture_count)) return;
     var dimLabels = ["\u10e8\u10d8\u10dc\u10d0\u10d0\u10e0\u10e1\u10d8\u10e1 \u10e1\u10d8\u10e6\u10e0\u10db\u10d4","\u10de\u10e0\u10d0\u10e5\u10e2\u10d8\u10d9\u10e3\u10da\u10d8 \u10e6\u10d8\u10e0\u10d4\u10d1\u10e3\u10da\u10d4\u10d1\u10d0","\u10e9\u10d0\u10e0\u10d7\u10e3\u10da\u10dd\u10d1\u10d0","\u10e2\u10d4\u10e5\u10dc\u10d8\u10d9\u10e3\u10e0\u10d8 \u10e1\u10d8\u10d6\u10e3\u10e1\u10e2\u10d4","\u10d1\u10d0\u10d6\u10e0\u10d8\u10e1 \u10e0\u10d4\u10da\u10d4\u10d5\u10d0\u10dc\u10e2\u10e3\u10e0\u10dd\u10d1\u10d0"];
     var ds = [];
     function avgDims(g) {{
@@ -2979,9 +2991,11 @@ document.addEventListener("DOMContentLoaded", function() {{
   }})();
 
   /* ── Combined Trend Chart ── */
+  /* TODO(multi-cohort): chart hardcoded to groups 1+2; redesign to iterate DATA.groups dynamically */
   (function() {{
     var g1 = DATA.groups[1];
     var g2 = DATA.groups[2];
+    if (!g1 || !g2) return;
     var maxLen = Math.max(g1.lecture_count || 0, g2.lecture_count || 0);
     if (!maxLen) return;
     var labels = [];
