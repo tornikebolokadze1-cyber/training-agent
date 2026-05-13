@@ -24,6 +24,12 @@ from tools.core.config import GROUPS, TBILISI_TZ, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
+
+def _label(group_number: int) -> str:
+    """Return the human-facing cohort name for operator messages."""
+    cfg = GROUPS.get(group_number)
+    return cfg["name"] if cfg else f"Group {group_number}"
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -648,7 +654,7 @@ def process_lecture_pipeline(
             )
         elif is_pipeline_active(group, lecture):
             raise PipelineClaimError(
-                f"Pipeline already active for G{group} L{lecture} in state "
+                f"Pipeline already active for {_label(group)} L{lecture} in state "
                 f"{existing.state} — refusing to launch second instance from "
                 f"{entry_source}"
             )
@@ -900,7 +906,7 @@ def _check_stuck_pipelines(
         if age_hours < 4.0:
             continue
 
-        label = f"G{pipeline.group} L{pipeline.lecture}"
+        label = f"{_label(pipeline.group)} L{pipeline.lecture}"
         logger.warning(
             "[nightly] Stuck pipeline %s in state %s for %.1f hours — marking failed",
             label, pipeline.state, age_hours,
@@ -969,7 +975,7 @@ async def _check_zoom_recordings(
         if lecture_number == 0:
             continue
 
-        label = f"G{group_number} L{lecture_number}"
+        label = f"{_label(group_number)} L{lecture_number}"
 
         if is_pipeline_done(group_number, lecture_number):
             actions["already_complete"].append(label)
@@ -1035,7 +1041,7 @@ async def _check_pinecone_gaps(
             continue
 
         for lecture_number in range(1, max_lecture + 1):
-            label = f"G{group_number} L{lecture_number}"
+            label = f"{_label(group_number)} L{lecture_number}"
 
             # Already complete per pipeline state?
             if is_pipeline_done(group_number, lecture_number):

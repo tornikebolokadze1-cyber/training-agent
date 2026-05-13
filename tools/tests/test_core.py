@@ -333,7 +333,8 @@ class TestIndexLectureContentValidation:
         assert "whatsapp_chat" in CONTENT_TYPES
         assert "obsidian_concept" in CONTENT_TYPES
         assert "obsidian_tool" in CONTENT_TYPES
-        assert len(CONTENT_TYPES) == 7
+        assert "presentation" in CONTENT_TYPES
+        assert len(CONTENT_TYPES) == 8
 
 
 # ===========================================================================

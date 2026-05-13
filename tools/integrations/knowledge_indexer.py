@@ -56,6 +56,7 @@ UPSERT_BATCH_SIZE = 100
 CONTENT_TYPES = frozenset({
     "transcript", "summary", "gap_analysis", "deep_analysis",
     "whatsapp_chat", "obsidian_concept", "obsidian_tool",
+    "presentation",
 })
 
 

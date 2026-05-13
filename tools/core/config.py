@@ -372,7 +372,7 @@ TOTAL_LECTURES = 15
 
 # Lecture folder IDs will be populated after folder creation.
 # Format: {group_number: {lecture_number: folder_id}}
-LECTURE_FOLDER_IDS: dict[int, dict[int, str]] = {1: {}, 2: {}}
+LECTURE_FOLDER_IDS: dict[int, dict[int, str]] = {g_num: {} for g_num in GROUPS}
 
 # ---------------------------------------------------------------------------
 # API Credentials

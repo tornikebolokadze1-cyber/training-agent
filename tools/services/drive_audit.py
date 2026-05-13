@@ -18,6 +18,12 @@ import re
 from dataclasses import dataclass, field
 
 from tools.core.config import GROUPS, TBILISI_TZ  # noqa: F401  (used by callers)
+
+
+def _label(group_number: int) -> str:
+    """Return the human-facing cohort name for operator messages."""
+    cfg = GROUPS.get(group_number)
+    return cfg["name"] if cfg else f"Group {group_number}"
 from tools.integrations.gdrive_manager import get_drive_service
 
 logger = logging.getLogger(__name__)
@@ -246,7 +252,7 @@ def alert_on_issues(report: dict) -> None:
             "",
         ]
         for issue in report.get("issues", []):
-            label = f"G{issue['group']} L{issue['lecture']}"
+            label = f"{_label(issue['group'])} L{issue['lecture']}"
             lines.append(f"  • {label}: {', '.join(issue['issues'])}")
         lines.append("")
         lines.append("Run audit manually: python -m tools.services.drive_audit")
