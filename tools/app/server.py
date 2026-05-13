@@ -142,14 +142,22 @@ def _evict_stale_tasks() -> list[str]:
     """Remove tasks that have been running longer than STALE_TASK_HOURS.
 
     Returns list of evicted task keys (for logging).
+
+    Concurrency: snapshots the dict under the lock so the sweep iterates a
+    copy, never the live structure. Each pop is then re-acquired under the
+    lock — bounded work per critical section, no "dictionary changed size
+    during iteration" race with concurrent webhook handlers.
     """
     now = datetime.now(tz=TBILISI_TZ)
+    with _processing_lock:
+        snapshot = list(_processing_tasks.items())
     stale = [
-        key for key, started in _processing_tasks.items()
+        key for key, started in snapshot
         if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
     ]
     for key in stale:
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
         logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
     if stale:
         try:
@@ -331,7 +339,8 @@ async def _check_unprocessed_recordings() -> None:
             except PipelineClaimError as exc:
                 logger.info("[startup-recovery] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
@@ -817,7 +826,8 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
     finally:
         key = _task_key(group, lecture)
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
 
         if local_path and local_path.exists():
             local_path.unlink()
@@ -991,12 +1001,14 @@ async def readiness(request: Request):  # noqa: ARG001
             status_code=503,
         )
 
+    with _processing_lock:
+        tasks_in_progress = len(_processing_tasks)
     return JSONResponse(
         content={
             "status": "ready",
             "uptime_s": int(time.time() - _server_start_time),
             "version": _APP_VERSION,
-            "tasks_in_progress": len(_processing_tasks),
+            "tasks_in_progress": tasks_in_progress,
         },
         status_code=200,
     )
@@ -1046,7 +1058,8 @@ async def health_check(
     report["status"] = report["overall_status"]
     report["version"] = _APP_VERSION
     report["commit"] = _GIT_COMMIT
-    report["tasks_in_progress"] = len(_processing_tasks)
+    with _processing_lock:
+        report["tasks_in_progress"] = len(_processing_tasks)
 
     # Only 503 on CRITICAL — warning-level ("degraded") returns 200 so
     # Railway and Docker do not restart the service for dependency noise.
@@ -1400,7 +1413,8 @@ def _handle_recording_completed_via_polling(
         except PipelineClaimError as exc:
             logger.info("[recording.completed fallback] Claim rejected: %s", exc)
         finally:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
 
     background_tasks.add_task(_run_and_cleanup)
 
@@ -1511,7 +1525,8 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         except PipelineClaimError as exc:
             logger.info("[meeting.ended] Claim rejected: %s", exc)
         finally:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
 
     background_tasks.add_task(_run_and_cleanup)
 
@@ -1655,7 +1670,8 @@ async def process_recording(
         group_cfg = GROUPS.get(payload.group_number, {})
         meeting_id = group_cfg.get("zoom_meeting_id", "")
         if not meeting_id:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
             raise HTTPException(
                 status_code=422,
                 detail=f"No zoom_meeting_id configured for Group {payload.group_number} "
@@ -1679,7 +1695,8 @@ async def process_recording(
             except PipelineClaimError as exc:
                 logger.info("[process-recording/auto] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         # add_task expects a sync callable — _run_auto runs in a thread pool
         # Do NOT wrap in asyncio.to_thread — BackgroundTasks handles threading
@@ -1854,7 +1871,8 @@ async def retry_latest(
             except PipelineClaimError as exc:
                 logger.info("[retry-latest] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         # add_task expects a sync callable — do NOT wrap in asyncio.to_thread
         background_tasks.add_task(
@@ -1925,7 +1943,8 @@ async def _manual_pipeline_task(
         )
     finally:
         key = _task_key(group_number, lecture_number)
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
         if local_path and local_path.exists():
             local_path.unlink()
             logger.info("Cleaned up temp file: %s", local_path)
