@@ -1463,6 +1463,27 @@ def start_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # ------------------------------------------------------------------ #
+    #  Daily messages.db backup — 03:00 Tbilisi every day (US-027).        #
+    #  messages.db has no other backup; a Railway volume wipe would lose   #
+    #  all chat history (Green API only retains hours-days of forward      #
+    #  history). Uses sqlite3.backup() so concurrent writes don't lock     #
+    #  the source. Retention keeps the 7 most recent backups. Fires at     #
+    #  03:00 — off-peak and after the 02:00 nightly catch-all.             #
+    # ------------------------------------------------------------------ #
+    from tools.services.message_archive import backup_messages_db
+
+    scheduler.add_job(
+        backup_messages_db,
+        trigger=CronTrigger(hour=3, minute=0, timezone=TBILISI_TZ),
+        id="messages_db_backup",
+        name="messages.db daily backup",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
     scheduler.start()
     _scheduler_ref = scheduler
 
