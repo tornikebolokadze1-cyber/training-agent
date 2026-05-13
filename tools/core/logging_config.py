@@ -68,8 +68,10 @@ def configure_logging(
     root = logging.getLogger()
     root.setLevel(logging.INFO)
 
-    # Console handler — stdout
-    console = logging.StreamHandler(sys.stdout)
+    # Console handler — stdout (force UTF-8 so Georgian filenames don't crash
+    # on Railway's POSIX/C locale where sys.stdout defaults to ASCII encoding)
+    _stdout_utf8 = open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
+    console = logging.StreamHandler(_stdout_utf8)
     if use_json:
         console.setFormatter(JSONFormatter())
     else:
