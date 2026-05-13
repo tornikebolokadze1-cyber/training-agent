@@ -60,7 +60,7 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 - **Zoom**: Server-to-Server OAuth (meeting:write, recording:read)
 - **Google Drive/Docs**: OAuth2 with refresh tokens
 - **Gemini**: API key, 2.5 Flash for video transcription, 3.1 Pro Preview for Georgian text
-- **Claude/Anthropic**: API key, Opus 4.6 with extended thinking for analysis reasoning
+- **Claude/Anthropic**: API key, Sonnet 4.6 for analysis reasoning (Sonnet chosen over Opus for ~$150/course savings; see `tools/core/config.py:558` `ASSISTANT_CLAUDE_MODEL`)
 - **Pinecone**: Vector DB (gemini-embedding-001, 3072 dims) for course knowledge RAG
 - **WhatsApp (Green API)**: REST API via WhatsApp Web QR code connection
 - **Email**: Gmail OAuth2 (backup — Zoom handles meeting invitations directly)

@@ -8,7 +8,7 @@ The WhatsApp AI Assistant is an interactive bot embedded in the training group c
 
 The assistant uses two AI models in sequence, each playing a distinct role:
 
-1. **Claude Opus 4.6** (decision + reasoning engine)
+1. **Claude Sonnet 4.6** (decision + reasoning engine — was Opus; switched to Sonnet for ~$150/course savings)
    - Decides whether the assistant should respond to a given message.
    - Produces a structured English bullet-list plan (3-5 key points) describing what the response should cover.
    - Does NOT write the final user-facing text.
@@ -49,7 +49,7 @@ Incoming WhatsApp message
 [6.5] Recall personal memories from Mem0 (limit=3)
     |
     v
-[7] Claude Opus 4.6: decide + reason
+[7] Claude Sonnet 4.6: decide + reason
     |   - Returns key-points plan, or None (stay silent)
     |
     v
@@ -299,7 +299,7 @@ python -m tools.services.whatsapp_assistant --live '<chat_id>' '<sender_id>' '<s
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `ANTHROPIC_API_KEY` | Yes | Claude Opus 4.6 API access |
+| `ANTHROPIC_API_KEY` | Yes | Claude Sonnet 4.6 API access |
 | `GEMINI_API_KEY` | Yes | Gemini API access (free tier) |
 | `GEMINI_API_KEY_PAID` | No | Paid Gemini key for 3.1 Pro (falls back to `GEMINI_API_KEY`) |
 | `QDRANT_URL` | No | Qdrant Cloud endpoint for Mem0 |

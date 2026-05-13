@@ -213,7 +213,7 @@ All use:
 **Code:** `tools/services/whatsapp_assistant.py`
 
 **Pipeline:**
-1. ✅ Claude Opus 4.6 reasons in English (internal)
+1. ✅ Claude Sonnet 4.6 reasons in English (internal; was Opus, switched for ~$150/course savings)
 2. ✅ Output passed to `_gemini_write_georgian()` (line 572)
 3. ✅ Gemini 3.1 Pro outputs native Georgian response
 4. ✅ Response passed to WhatsApp sender with no re-encoding

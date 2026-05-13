@@ -1336,7 +1336,11 @@ def _claude_reason(
     max_tokens: int = 16000,
     budget_tokens: int = 10000,
 ) -> str:
-    """Use Claude Opus 4.6 with extended thinking to reason about the transcript.
+    """Use Claude Sonnet 4.6 with extended thinking to reason about the transcript.
+
+    Model is configured via ``ASSISTANT_CLAUDE_MODEL`` in ``tools/core/config.py``
+    (currently ``claude-sonnet-4-6``; Sonnet was chosen over Opus for
+    ~$150/course savings with minimal quality loss).
 
     Returns Claude's analysis in English (reasoning output), which will then
     be sent to Gemini for Georgian writing.

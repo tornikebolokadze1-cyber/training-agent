@@ -24,7 +24,7 @@ slowapi==0.1.9
 # Scheduler
 apscheduler==3.11.2
 
-# Anthropic (Claude Opus 4.6 — assistant reasoning)
+# Anthropic (Claude Sonnet 4.6 — assistant reasoning; was Opus, see ADR 007)
 anthropic==0.84.0
 
 # Pinecone (vector DB for course knowledge RAG)
