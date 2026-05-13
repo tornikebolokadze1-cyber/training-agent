@@ -341,7 +341,7 @@ class TestDownloadRecording:
         mock_client.stream.return_value = mock_response
 
         with patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
-            result = zm.download_recording("https://zoom/dl", "tok", dest)
+            result = zm.download_recording("https://zoom.us/dl", "tok", dest)
 
         assert result.exists()
 

@@ -56,6 +56,11 @@ DISK_SPACE_SAFETY_MARGIN = 1.2  # require 1.2x file size free
 # proactively after 50 minutes so we never hit the cliff.
 TOKEN_REFRESH_AGE_SECONDS = 3000  # 50 minutes
 
+# Hosts allowed in `download_url`. Each entry matches the exact host or any
+# subdomain (`example.com` matches `cdn.example.com`). Defends against SSRF
+# and access-token leak if a crafted Zoom webhook delivers a hostile URL.
+ALLOWED_ZOOM_HOSTS: tuple[str, ...] = ("zoom.us",)
+
 # In-memory token cache: {"access_token": str, "expires_at": float}
 _token_cache: dict[str, Any] = {}
 _token_lock = threading.Lock()
@@ -80,6 +85,43 @@ class ZoomAPIError(Exception):
 
 class ZoomDownloadError(Exception):
     """Raised when a recording file download fails."""
+
+
+# ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_download_url(url: str) -> str:
+    """Validate that ``url`` is a safe Zoom CDN download target.
+
+    Rejects URLs that use a non-HTTPS scheme, contain userinfo
+    (``user:pass@host`` form), or target a host outside ``ALLOWED_ZOOM_HOSTS``.
+    Defends against SSRF and access-token leak when the Zoom webhook secret
+    is compromised: the access token appended in ``download_recording``
+    would otherwise be sent to any host the attacker named in ``download_url``.
+
+    Raises:
+        ZoomDownloadError: when validation fails. Caller should treat this
+            as a permanent error and not retry.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ZoomDownloadError(
+            f"download_url must use https, got scheme={parsed.scheme!r}"
+        )
+    if parsed.username or parsed.password:
+        raise ZoomDownloadError("download_url must not contain userinfo")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ZoomDownloadError("download_url is missing a hostname")
+    if not any(host == h or host.endswith("." + h) for h in ALLOWED_ZOOM_HOSTS):
+        raise ZoomDownloadError(
+            f"download_url host {host!r} is not in ALLOWED_ZOOM_HOSTS"
+        )
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -730,8 +772,11 @@ def download_recording(
 
     Raises:
         ZoomDownloadError: On HTTP error, incomplete download, exhausted
-            retries, or insufficient disk space.
+            retries, insufficient disk space, or a download_url that fails
+            the Zoom-host allowlist check.
     """
+    _validate_download_url(download_url)
+
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
 

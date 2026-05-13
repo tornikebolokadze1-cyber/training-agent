@@ -247,8 +247,14 @@ async def paperclip_task_bridge(
 
 @router.get("/paperclip/health")
 async def paperclip_health() -> JSONResponse:
-    """Liveness probe — no auth required."""
-    return JSONResponse(content={"ok": True, "agent": "training-ops-lead"})
+    """Liveness probe — no auth required.
+
+    Intentionally returns no agent identity; authenticated callers should
+    use ``/paperclip/status`` for identity, uptime, and scheduler state.
+    Withholding identity here avoids unauthenticated reconnaissance of
+    which Paperclip-managed agent runs at this URL.
+    """
+    return JSONResponse(content={"ok": True})
 
 
 @router.get("/paperclip/status")
