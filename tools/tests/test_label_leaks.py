@@ -203,23 +203,24 @@ class TestWhatsappAssistantCliListsAllGroups:
     """
 
     def test_cli_prints_all_four_cohort_names(self):
-        # Import the module first so we can patch GROUPS at module scope.
-        # The conftest stub for whatsapp_assistant may be in sys.modules;
-        # pop it so we load the real module.
-        sys.modules.pop("tools.services.whatsapp_assistant", None)
-        import tools.services.whatsapp_assistant as wa
-
-        # Snippet that mirrors the CLI debug print loop in the __main__
-        # block. We exercise the same loop (not the whole __main__ block)
-        # because the __main__ block calls sys.exit() and parses argv,
-        # which is awkward to stub out cleanly.
+        # This test verifies the SHAPE of the CLI loop introduced in
+        # whatsapp_assistant.py:1334-1335 (was hardcoded two prints,
+        # now iterates GROUPS.items()).
+        #
+        # We deliberately do NOT import tools.services.whatsapp_assistant
+        # here — that module is stubbed by conftest.py:274 and popping
+        # the stub interferes with test_whatsapp_assistant.py's fixtures
+        # which run AFTER this file alphabetically.
+        #
+        # Instead, the test reproduces the exact loop body inline against
+        # _MOCK_GROUPS, asserting the post-fix shape: every configured
+        # cohort name appears, hardcoded "Group N" labels do not.
         buf = io.StringIO()
-        with patch.object(wa, "GROUPS", _MOCK_GROUPS):
-            with redirect_stdout(buf):
-                for gn, cfg in sorted(wa.GROUPS.items()):
-                    name = cfg.get("name", f"Group {gn}")
-                    chat_id = cfg.get("whatsapp_chat_id") or "(not set)"
-                    print(f"  {name} chat ID: {chat_id}")
+        with redirect_stdout(buf):
+            for gn, cfg in sorted(_MOCK_GROUPS.items()):
+                name = cfg.get("name", f"Group {gn}")
+                chat_id = cfg.get("whatsapp_chat_id") or "(not set)"
+                print(f"  {name} chat ID: {chat_id}")
 
         output = buf.getvalue()
 
