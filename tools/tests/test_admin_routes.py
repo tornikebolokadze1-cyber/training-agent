@@ -142,13 +142,53 @@ class TestRetryLecture:
         assert resp.status_code == 403
 
     async def test_validates_group_number(self, patched_secrets):
+        """group_number=99 must always be rejected (never a configured cohort).
+
+        This uses 99 rather than 3 because the set of configured groups is
+        dynamic: in CI only groups 1 and 2 are configured; locally groups
+        1-4 may be present.  99 is guaranteed to be unconfigured in all
+        environments, so this assertion is never vacuous.
+        """
         async with await _client() as c:
             resp = await c.post(
                 "/admin/retry-lecture",
-                json={"group_number": 3, "lecture_number": 1},
+                json={"group_number": 99, "lecture_number": 1},
                 headers=_AUTH_HEADER,
             )
         assert resp.status_code == 422
+
+    async def test_configured_group_number_accepted(self, patched_secrets):
+        """A group_number from the live GROUPS dict must not be rejected with 422.
+
+        We read the currently-configured group numbers at test time rather than
+        hard-coding 1 or 3, so the assertion stays correct whether CI has two
+        cohorts or four.
+        """
+        from tools.app.admin_routes import _configured_group_numbers
+
+        configured = _configured_group_numbers()
+        assert configured, "expected at least one group configured"
+        first_valid = configured[0]
+
+        with patch("tools.app.admin_routes.create_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
+                with patch("tools.app.admin_routes._server_internals") as mock_internals:
+                    mock_internals.return_value = (
+                        srv.verify_webhook_secret,
+                        _processing_lock,
+                        _processing_tasks,
+                        _task_key,
+                    )
+                    async with await _client() as c:
+                        resp = await c.post(
+                            "/admin/retry-lecture",
+                            json={"group_number": first_valid, "lecture_number": 1},
+                            headers=_AUTH_HEADER,
+                        )
+        # Must not be a validation error (the group is configured)
+        assert resp.status_code != 422, (
+            f"group_number={first_valid} is configured but was rejected with 422"
+        )
 
     async def test_validates_lecture_number(self, patched_secrets):
         async with await _client() as c:

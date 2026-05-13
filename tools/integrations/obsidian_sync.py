@@ -811,7 +811,7 @@ lecture: {lec}
 
 # {title}
 
-> ჯგუფი #{g} -- ლექცია #{lec}
+> {_group_label(g)} -- ლექცია #{lec}
 > თარიღი: {date}
 
 ---
@@ -1075,7 +1075,10 @@ tags: [MOC, ინდექსი]
     for c in multi[:30]:
         norm = _normalize_concept_name(c)
         info = concept_index.get(norm, {})
-        ls = ", ".join(f"G{g}L{lec}" for g, lec in sorted(set(info.get("lectures", []))))
+        ls = ", ".join(
+            _lecture_link(g, lec)
+            for g, lec in sorted(set(info.get("lectures", [])))
+        )
         moc += f"- {_wikilink(c)} ({ls})\n"
 
     # Per-group progress counts

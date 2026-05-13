@@ -384,10 +384,6 @@ class TestCourseCompletedFlag:
     # ------------------------------------------------------------------
     # New per-group completion behaviour (xfail until config edit lands)
     # ------------------------------------------------------------------
-    @pytest.mark.xfail(
-        reason="config edit pending: GROUPS[1]['course_completed'] not yet True",
-        strict=False,  # non-strict: flips to xpass once the config edit lands (already happened)
-    )
     def test_groups_1_and_2_marked_course_completed_in_config_after_refactor(self):
         """Groups 1 and 2 must carry course_completed=True in the live GROUPS dict."""
         from tools.core.config import GROUPS
@@ -399,13 +395,6 @@ class TestCourseCompletedFlag:
             "Group 2 must have course_completed=True after the config edit"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "is_course_completed() aggregate logic not yet implemented: "
-            "currently checks only COURSE_COMPLETED env var, not per-group flags"
-        ),
-        strict=False,
-    )
     def test_is_course_completed_returns_true_when_all_groups_flagged(self, monkeypatch):
         """is_course_completed() must return True when all GROUPS have course_completed=True.
 
@@ -426,13 +415,6 @@ class TestCourseCompletedFlag:
             "even without the global env flag"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "is_course_completed() aggregate logic not yet implemented: "
-            "must return False when at least one group is still active"
-        ),
-        strict=False,  # non-strict: xpass once the per-group aggregation is implemented
-    )
     def test_is_course_completed_returns_false_when_any_group_active(self, monkeypatch):
         """is_course_completed() must be False when any group lacks course_completed=True."""
         import tools.core.config as cfg

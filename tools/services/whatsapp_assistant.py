@@ -36,6 +36,7 @@ from tools.core.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_MODEL_ANALYSIS,
+    GROUPS,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
@@ -1331,8 +1332,10 @@ if __name__ == "__main__":
     print(f"  Gemini model      : {GEMINI_MODEL_ANALYSIS}")
     print(f"  Trigger word      : {ASSISTANT_TRIGGER_WORD}")
     print(f"  Cooldown          : {ASSISTANT_COOLDOWN_SECONDS}s")
-    print(f"  Group 1 chat ID   : {WHATSAPP_GROUP1_ID or '(not set)'}")
-    print(f"  Group 2 chat ID   : {WHATSAPP_GROUP2_ID or '(not set)'}")
+    for gn, cfg in sorted(GROUPS.items()):
+        name = cfg.get("name", f"Group {gn}")
+        chat_id = cfg.get("whatsapp_chat_id") or "(not set)"
+        print(f"  {name} chat ID: {chat_id}")
 
     if "--live" not in sys.argv:
         print(
