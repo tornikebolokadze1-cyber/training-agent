@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -117,41 +118,72 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 # ---------------------------------------------------------------------------
 _PENDING_JOBS_FILE = Path(TMP_DIR) / "pending_post_meeting_jobs.json"
 
+# Module-level lock protecting read-modify-write sequences on
+# _PENDING_JOBS_FILE. The scheduler tick (saving a new job) and the
+# webhook handler / post-meeting pipeline (removing a completed job)
+# can otherwise interleave reads and writes and corrupt the JSON.
+_pending_jobs_lock = threading.Lock()
+
 
 def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
                       fire_time_iso: str) -> None:
-    """Persist a pending post-meeting job to disk so it survives restarts."""
-    jobs: list[dict] = []
-    if _PENDING_JOBS_FILE.exists():
-        try:
-            jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Replace existing entry for same group+lecture
-    jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-    jobs.append({
-        "group": group_number,
-        "lecture": lecture_number,
-        "meeting_id": meeting_id,
-        "fire_time": fire_time_iso,
-    })
-    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
-    tmp_path.replace(_PENDING_JOBS_FILE)
-    logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
-                group_number, lecture_number, fire_time_iso)
+    """Persist a pending post-meeting job to disk so it survives restarts.
+
+    Acquires the module-level ``_pending_jobs_lock`` to serialize with
+    ``_remove_pending_job``; writes atomically via a temp file + rename.
+    """
+    with _pending_jobs_lock:
+        jobs: list[dict] = []
+        if _PENDING_JOBS_FILE.exists():
+            try:
+                jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        # Replace existing entry for same group+lecture
+        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+        jobs.append({
+            "group": group_number,
+            "lecture": lecture_number,
+            "meeting_id": meeting_id,
+            "fire_time": fire_time_iso,
+        })
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+        tmp_path.replace(_PENDING_JOBS_FILE)
+        logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
+                    group_number, lecture_number, fire_time_iso)
 
 
 def _remove_pending_job(group_number: int, lecture_number: int) -> None:
-    """Remove a completed/consumed post-meeting job from the persistent store."""
-    if not _PENDING_JOBS_FILE.exists():
-        return
-    try:
-        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+    """Remove a completed/consumed post-meeting job from the persistent store.
+
+    Acquires ``_pending_jobs_lock`` and writes atomically (temp file +
+    ``Path.replace``) to mirror ``_save_pending_job`` and prevent partial
+    writes from concurrent callers (scheduler tick vs webhook handler).
+    Silently returns when the pending-jobs file does not exist.
+    """
+    with _pending_jobs_lock:
+        try:
+            raw = _PENDING_JOBS_FILE.read_text()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("[persist] Failed to read pending jobs file: %s", exc)
+            return
+
+        try:
+            jobs = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("[persist] Pending jobs file is corrupt: %s", exc)
+            return
+
         jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-        _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("[persist] Failed to remove pending job: %s", exc)
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        try:
+            tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            tmp_path.replace(_PENDING_JOBS_FILE)
+        except OSError as exc:
+            logger.warning("[persist] Failed to remove pending job: %s", exc)
 
 
 def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
