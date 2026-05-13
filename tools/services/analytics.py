@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape as _esc
 
-from tools.core.config import PROJECT_ROOT, TMP_DIR
+from tools.core.config import GROUPS, PROJECT_ROOT, TMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -1069,8 +1069,14 @@ def _build_group_data(group_number: int) -> dict:
 
 def get_dashboard_data() -> dict:
     """Assemble all data needed to render the analytics dashboard."""
-    g1 = _build_group_data(1)
-    g2 = _build_group_data(2)
+    # Build data for every configured group (including course-completed ones
+    # so the dashboard always shows the full history).
+    groups_data: dict[int, dict] = {gn: _build_group_data(gn) for gn in sorted(GROUPS.keys())}
+
+    # Keep g1/g2 aliases for the cross-group block below (Groups 1 and 2 are
+    # always present in GROUPS; fallback to empty build if somehow missing).
+    g1 = groups_data.get(1) or _build_group_data(1)
+    g2 = groups_data.get(2) or _build_group_data(2)
 
     cross_group: dict[str, dict] = {}
     for dim in DIMENSIONS + ["composite"]:
@@ -1086,15 +1092,17 @@ def get_dashboard_data() -> dict:
             ),
         }
 
-    # Trainer Performance Index: weighted mean of all composites across groups
-    all_composites = g1["composite_series"] + g2["composite_series"]
+    # Trainer Performance Index: weighted mean of all composites across ALL groups
+    all_composites: list[float] = []
+    for gd in groups_data.values():
+        all_composites.extend(gd["composite_series"])
     tpi = round(sum(all_composites) / len(all_composites), 2) if all_composites else None
 
-    # Overall dimension ranking across both groups
+    # Overall dimension ranking across ALL groups
     overall_dim_means: dict[str, list[float]] = {d: [] for d in DIMENSIONS}
-    for g in [g1, g2]:
+    for gd in groups_data.values():
         for d in DIMENSIONS:
-            m = g["stats"][d].get("mean")
+            m = gd["stats"][d].get("mean")
             if m is not None:
                 overall_dim_means[d].append(m)
     dim_rankings = []
@@ -1104,7 +1112,7 @@ def get_dashboard_data() -> dict:
         dim_rankings.append({"dim": d, "mean": avg})
     dim_rankings.sort(key=lambda x: x["mean"] if x["mean"] is not None else 0, reverse=True)
 
-    # ── Cross-group computed metrics (averages across BOTH groups) ──
+    # ── Cross-group computed metrics (averages across ALL groups) ──
     # These are used by competency gauges, Kirkpatrick, and deep metrics
     cross_dim_avgs: dict[str, float] = {}
     for d in DIMENSIONS:
@@ -1131,7 +1139,7 @@ def get_dashboard_data() -> dict:
     cross_practice = (cross_dim_avgs.get("practical_value", 0) + cross_dim_avgs.get("engagement", 0) + cross_dim_avgs.get("market_relevance", 0)) / 3
     cross_tp_ratio = round(cross_theory / cross_practice, 2) if cross_practice else None
 
-    # Combined velocity from all composites
+    # Combined velocity from all composites across ALL groups
     if len(all_composites) >= 2:
         n_c = len(all_composites)
         x_mean = (n_c - 1) / 2
@@ -1144,9 +1152,9 @@ def get_dashboard_data() -> dict:
     cross_vel_label = "აჩქარებს" if cross_velocity > 0.3 else ("ანელებს" if cross_velocity < -0.3 else "სტაბილური")
     cross_ltt = round((7.0 - (tpi or 0)) / cross_velocity) if cross_velocity > 0 and tpi and tpi < 7 else None
 
-    # Cross-group recommendation followthrough (compare last two lectures across all)
+    # Cross-group recommendation followthrough (compare last two lectures across all groups)
     all_scores_ordered = sorted(
-        g1.get("scores", []) + g2.get("scores", []),
+        [score for gd in groups_data.values() for score in gd.get("scores", [])],
         key=lambda r: (r.get("group_number", 0), r.get("lecture_number", 0)),
     )
     cross_rec_ft = 0
@@ -1166,8 +1174,8 @@ def get_dashboard_data() -> dict:
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "total_processed": g1["lecture_count"] + g2["lecture_count"],
-        "groups": {1: g1, 2: g2},
+        "total_processed": sum(gd["lecture_count"] for gd in groups_data.values()),
+        "groups": groups_data,
         "cross_group": cross_group,
         "dimension_labels_ka": DIMENSION_LABELS_KA,
         "dimension_labels_en": DIMENSION_LABELS_EN,
@@ -1293,7 +1301,7 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
             for r in conn.execute("SELECT group_number, lecture_number FROM lecture_scores").fetchall()
         )
 
-    for group in [1, 2]:
+    for group in sorted(GROUPS.keys()):
         for lecture in range(1, 16):
             if (group, lecture) in existing:
                 skipped += 1
@@ -1743,6 +1751,23 @@ def render_dashboard_html(data: dict) -> str:
     """
     json_data = json.dumps(data, ensure_ascii=False, default=str)
 
+    # Build per-group dot CSS dynamically so G3/G4/… get distinct colours.
+    _DOT_PALETTE = [
+        "var(--accent)",           # G1 — indigo
+        "var(--cyan)",             # G2 — cyan
+        "#a855f7",                 # G3 — violet
+        "#ec4899",                 # G4 — pink
+        "#f59e0b",                 # G5 — amber
+        "#10b981",                 # G6 — emerald
+        "#f97316",                 # G7 — orange
+        "#06b6d4",                 # G8 — light-cyan
+        "#8b5cf6",                 # G9 — purple
+    ]
+    _dot_css = "\n".join(
+        f".g{gn}-dot {{ background:{_DOT_PALETTE[(idx) % len(_DOT_PALETTE)]}; }}"
+        for idx, gn in enumerate(sorted(data["groups"].keys()))
+    )
+
     g1 = data["groups"][1]
     g2 = data["groups"][2]
     total = data["total_lectures"]
@@ -1769,7 +1794,7 @@ def render_dashboard_html(data: dict) -> str:
     def _build_insights_html(dashboard_data: dict) -> str:
         """Build AI insights digest section from all groups' insights."""
         all_insights = []
-        for gn_val in [1, 2]:
+        for gn_val in sorted(dashboard_data["groups"].keys()):
             for ins in dashboard_data["groups"][gn_val].get("insights", []):
                 all_insights.append({"group": gn_val, **ins})
 
@@ -1780,7 +1805,7 @@ def render_dashboard_html(data: dict) -> str:
         for ins in all_insights:
             gn = ins["group"]
             ln = ins["lecture_number"]
-            dot_cls = "g1-dot" if gn == 1 else "g2-dot"
+            dot_cls = f"g{gn}-dot"
 
             # Score justifications — show full text (no truncation)
             just_html = ""
@@ -2412,8 +2437,7 @@ h2.sec::before {{
 .ins-card {{ padding:1.25rem; }}
 .group-header {{ display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; }}
 .group-dot {{ width:10px; height:10px; border-radius:50%; }}
-.g1-dot {{ background:var(--accent); }}
-.g2-dot {{ background:var(--cyan); }}
+{_dot_css}
 .group-name {{ font-size:0.85rem; font-weight:700; }}
 .insights-grid {{ display:grid; grid-template-columns:repeat(6,1fr); gap:0.4rem; margin:0.5rem 0; }}
 @media (max-width:640px) {{ .insights-grid {{ grid-template-columns:repeat(3,1fr); }} }}
@@ -2889,16 +2913,18 @@ document.addEventListener("DOMContentLoaded", function() {{
   /* ── Radar Chart ── */
   (function() {{
     var ds = [];
-    var rc = ["rgba(99,102,241,0.85)", "rgba(34,211,238,0.85)"];
-    var rf = ["rgba(99,102,241,0.12)", "rgba(34,211,238,0.08)"];
-    [1,2].forEach(function(gn, i) {{
+    var rc = ["rgba(99,102,241,0.85)","rgba(34,211,238,0.85)","rgba(168,85,247,0.85)","rgba(236,72,153,0.85)","rgba(245,158,11,0.85)","rgba(16,185,129,0.85)","rgba(249,115,22,0.85)","rgba(6,182,212,0.85)","rgba(139,92,246,0.85)"];
+    var rf = ["rgba(99,102,241,0.12)","rgba(34,211,238,0.08)","rgba(168,85,247,0.10)","rgba(236,72,153,0.08)","rgba(245,158,11,0.08)","rgba(16,185,129,0.08)","rgba(249,115,22,0.08)","rgba(6,182,212,0.08)","rgba(139,92,246,0.08)"];
+    var COHORT_GROUPS = {json.dumps(sorted(data["groups"].keys()))};
+    var COHORT_NAMES = {json.dumps({gn: GROUPS[gn]["name"] for gn in sorted(data["groups"].keys())})};
+    COHORT_GROUPS.forEach(function(gn, i) {{
       var g = DATA.groups[gn];
-      if (!g.lecture_count) return;
+      if (!g || !g.lecture_count) return;
       var last = g.scores[g.scores.length - 1];
       ds.push({{
-        label: "\u10ef\u10d2 #" + gn + " (\u10da#" + last.lecture_number + ")",
+        label: (COHORT_NAMES[gn] || ("\u10ef\u10d2 #" + gn)) + " (\u10da#" + last.lecture_number + ")",
         data: DIMS.map(function(d) {{ return last[d]; }}),
-        borderColor: rc[i], backgroundColor: rf[i], pointBackgroundColor: rc[i], borderWidth: 2.5
+        borderColor: rc[i % rc.length], backgroundColor: rf[i % rf.length], pointBackgroundColor: rc[i % rc.length], borderWidth: 2.5
       }});
     }});
     if (!ds.length) return;
