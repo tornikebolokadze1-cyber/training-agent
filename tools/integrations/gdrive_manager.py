@@ -378,6 +378,41 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes}B"
 
 
+def _coerce_http_status(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _http_error_status(exc: BaseException) -> int:
+    """Extract an HTTP status from real google errors and lightweight stubs."""
+    direct = _coerce_http_status(getattr(exc, "status_code", None))
+    if direct:
+        return direct
+
+    resp = getattr(exc, "resp", None)
+    for attr in ("status", "status_code"):
+        status = _coerce_http_status(getattr(resp, attr, None))
+        if status:
+            return status
+
+    if exc.args:
+        first_arg = exc.args[0]
+        for attr in ("status", "status_code"):
+            status = _coerce_http_status(getattr(first_arg, attr, None))
+            if status:
+                return status
+        if isinstance(first_arg, dict):
+            for key in ("status", "status_code"):
+                status = _coerce_http_status(first_arg.get(key))
+                if status:
+                    return status
+
+    return 0
+
+
 def trash_old_recordings(folder_id: str, group: int, lecture: int) -> int:
     """Trash old recording versions matching group{N}_lecture{N}_*.mp4 pattern.
 
@@ -513,7 +548,7 @@ def upload_file(
                 else:
                     logger.info("Upload progress: %d%%", progress)
         except HttpError as e:
-            status_code = e.resp.status if hasattr(e, "resp") else 0
+            status_code = _http_error_status(e)
 
             # 401: Token expired — refresh credentials, rebuild service, retry once
             if status_code == 401 and not auth_retried:

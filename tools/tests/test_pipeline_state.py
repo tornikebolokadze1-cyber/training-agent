@@ -208,6 +208,28 @@ class TestAtomicWrite:
         finally:
             path.unlink(missing_ok=True)
 
+    def test_retries_transient_windows_replace_permission_error(self, monkeypatch):
+        import tools.core.pipeline_state as pipeline_state_module
+
+        path = TMP_DIR / "test_atomic_retry.txt"
+        calls = 0
+        real_replace = pipeline_state_module.os.replace
+
+        def flaky_replace(src, dst):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError("transient file lock")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(pipeline_state_module.os, "replace", flaky_replace)
+        try:
+            atomic_write(path, "after retry")
+            assert path.read_text() == "after retry"
+            assert calls == 2
+        finally:
+            path.unlink(missing_ok=True)
+
 
 # ===========================================================================
 # 5. Serialization round-trip
@@ -290,6 +312,21 @@ class TestSaveLoadState:
             assert load_state(77, 77) is None
         finally:
             path.unlink(missing_ok=True)
+
+    def test_load_deleted_between_exists_and_read_returns_none(self, monkeypatch):
+        path = state_file_path(77, 78)
+        path.write_text("{}", encoding="utf-8")
+
+        real_read_text = Path.read_text
+
+        def disappearing_read_text(self, *args, **kwargs):
+            if self == path:
+                path.unlink(missing_ok=True)
+                raise FileNotFoundError(path)
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", disappearing_read_text)
+        assert load_state(77, 78) is None
 
     def test_save_creates_file_on_disk(self):
         s = PipelineState(group=_G, lecture=_L, state=PENDING)
@@ -405,6 +442,14 @@ class TestCreatePipeline:
 
     def test_allows_recreation_after_complete(self):
         s = create_pipeline(_G, _L)
+        s = transition(
+            s, INDEXING,
+            drive_video_id="vid-test",
+            analysis_done=True,
+            summary_doc_id="doc-summary",
+            report_doc_id="doc-report",
+            pinecone_indexed=True,
+        )
         mark_complete(s)
         # Now we should be able to create a new one
         s2 = create_pipeline(_G, _L)
@@ -431,6 +476,7 @@ class TestMarkFailedComplete:
         # transitions to COMPLETE rather than coercing to FAILED.
         s = transition(
             s, INDEXING,
+            drive_video_id="vid-test",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -449,6 +495,7 @@ class TestMarkFailedComplete:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="vid-test",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -502,6 +549,7 @@ class TestQueryHelpers:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="vid-test",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -580,6 +628,26 @@ class TestListPipelines:
         finally:
             corrupt_path.unlink(missing_ok=True)
 
+    def test_list_skips_file_deleted_during_scan(self, monkeypatch):
+        create_pipeline(_G, 1)
+        vanishing_path = state_file_path(_G, 2)
+        vanishing_path.write_text("{}", encoding="utf-8")
+
+        real_read_text = Path.read_text
+
+        def disappearing_read_text(self, *args, **kwargs):
+            if self == vanishing_path:
+                vanishing_path.unlink(missing_ok=True)
+                raise FileNotFoundError(vanishing_path)
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", disappearing_read_text)
+
+        all_states = list_all_pipelines()
+        g88 = [s for s in all_states if s.group == _G]
+        assert len(g88) == 1
+        assert g88[0].lecture == 1
+
 
 # ===========================================================================
 # 12. Cleanup completed
@@ -593,6 +661,7 @@ class TestCleanupCompleted:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="vid-test",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -737,6 +806,7 @@ class TestTryClaimPipeline:
         s = transition(
             s,
             INDEXING,
+            drive_video_id="vid-test",
             analysis_done=True,
             summary_doc_id="doc-summary-test",
             report_doc_id="doc-report-test",

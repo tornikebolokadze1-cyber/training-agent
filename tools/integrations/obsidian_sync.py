@@ -683,6 +683,24 @@ def _group_label(group_number: int) -> str:
     return name if name else f"ჯგუფი {group_number}"
 
 
+def _lecture_link(group_number: int, lecture_number: int) -> str:
+    """Return a path-qualified lecture wikilink.
+
+    Multiple cohorts all have files named ``ლექცია 1.md``. Bare links like
+    ``[[ლექცია 1]]`` are ambiguous in Obsidian and pollute local graphs with
+    backlinks from the wrong cohort.
+    """
+    label = _group_label(group_number)
+    return f"[[ლექციები/{label}/ლექცია {lecture_number}|ლექცია {lecture_number}]]"
+
+
+def _analysis_link(group_number: int, lecture_number: int) -> str:
+    """Return a path-qualified analysis wikilink."""
+    label = _group_label(group_number)
+    title = f"ლექცია {lecture_number} -- ანალიზი"
+    return f"[[ანალიზი/{label}/{title}|{title}]]"
+
+
 # Legacy → cohort-prefixed rename map. ``_ensure_vault_dirs`` consults this
 # on every startup so an old ``ლექციები/ჯგუფი 1/`` directory gets renamed
 # to ``ლექციები/მარტის ჯგუფი #1/`` once GROUPS[1] is populated, instead
@@ -775,8 +793,8 @@ def _generate_lecture_note(
     for c in concepts:
         concept_by_cat[c.get("category", "concept")].append(c)
 
-    prev_link = f"[[ლექცია {lec - 1}]]" if lec > 1 else "---"
-    next_link = f"[[ლექცია {lec + 1}]]" if lec < 15 else "---"
+    prev_link = _lecture_link(g, lec - 1) if lec > 1 else "---"
+    next_link = _lecture_link(g, lec + 1) if lec < 15 else "---"
 
     related = set()
     for r in relationships:
@@ -793,7 +811,7 @@ lecture: {lec}
 
 # {title}
 
-> ჯგუფი #{g} -- ლექცია #{lec}
+> {_group_label(g)} -- ლექცია #{lec}
 > თარიღი: {date}
 
 ---
@@ -881,9 +899,9 @@ group: {g}
 lecture: {lec}
 ---
 
-# ანალიზი -- ლექცია #{lec} (ჯგუფი #{g})
+# ანალიზი -- ლექცია #{lec} ({_group_label(g)})
 
-> დაკავშირებული ლექცია: [[ლექცია {lec}]]
+> დაკავშირებული ლექცია: {_lecture_link(g, lec)}
 
 ---
 
@@ -919,7 +937,8 @@ def _generate_concept_note(name: str, info: dict) -> str:
     best_desc = max(descriptions, key=len) if descriptions else ""
 
     lecture_lines = [
-        f"- [[ლექცია {lec}]] ({_group_label(g)})" for g, lec in sorted(set(lectures))
+        f"- {_lecture_link(g, lec)} ({_group_label(g)})"
+        for g, lec in sorted(set(lectures))
     ]
 
     rel_targets: set[str] = set()
@@ -1040,7 +1059,7 @@ tags: [MOC, ინდექსი]
             date = _compute_lecture_date(grp, lec)
             if key in all_entities:
                 title = all_entities[key].get("lecture_title", "")[:60]
-                moc += f"| {lec} | [[ლექცია {lec}]] | {date} | {title} |\n"
+                moc += f"| {lec} | {_lecture_link(grp, lec)} | {date} | {title} |\n"
             else:
                 moc += f"| {lec} | ლექცია {lec} | -- | _მოლოდინში_ |\n"
 
@@ -1056,7 +1075,10 @@ tags: [MOC, ინდექსი]
     for c in multi[:30]:
         norm = _normalize_concept_name(c)
         info = concept_index.get(norm, {})
-        ls = ", ".join(f"G{g}L{lec}" for g, lec in sorted(set(info.get("lectures", []))))
+        ls = ", ".join(
+            _lecture_link(g, lec)
+            for g, lec in sorted(set(info.get("lectures", [])))
+        )
         moc += f"- {_wikilink(c)} ({ls})\n"
 
     # Per-group progress counts
@@ -1074,7 +1096,7 @@ tags: [MOC, ინდექსი]
         for lec in range(1, 16):
             key = f"g{grp}_l{lec}"
             if key in all_entities:
-                moc += f"- [[ლექცია {lec} -- ანალიზი]]\n"
+                moc += f"- {_analysis_link(grp, lec)}\n"
         moc += "\n"
 
     moc += """---

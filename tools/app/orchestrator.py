@@ -19,10 +19,23 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-import uvicorn
+# ---------------------------------------------------------------------------
+# Early logging bootstrap — MUST come before any tools.* import.
+#
+# tools.core.config (imported below) has module-level logger.warning() calls
+# for missing optional env vars.  Without this early init, those records hit
+# Python's lastResort handler which writes to raw sys.stderr using the
+# platform's default encoding (ASCII on Railway's POSIX locale), causing
+# UnicodeEncodeError for Georgian text before the app even starts.
+# ---------------------------------------------------------------------------
+from tools.core.bootstrap import init_logging_early
 
-from tools.app.server import app, verify_webhook_secret
-from tools.core.config import (
+init_logging_early()
+
+import uvicorn  # noqa: E402
+
+from tools.app.server import app, verify_webhook_secret  # noqa: E402
+from tools.core.config import (  # noqa: E402
     ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
     GOOGLE_CREDENTIALS_PATH,

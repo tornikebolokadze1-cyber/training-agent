@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,6 +40,7 @@ from tools.core.config import (
 from tools.core.pipeline_state import (
     is_pipeline_active,
     is_pipeline_done,
+    set_drive_video_id,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -117,27 +119,33 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 # ---------------------------------------------------------------------------
 _PENDING_JOBS_FILE = Path(TMP_DIR) / "pending_post_meeting_jobs.json"
 
+# Protects all reads and writes to _PENDING_JOBS_FILE so two pre_meeting_job
+# callbacks firing simultaneously (one per group) cannot interleave their
+# load → mutate → write cycles and silently lose an entry (audit finding H-2).
+_pending_jobs_lock = threading.Lock()
+
 
 def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
                       fire_time_iso: str) -> None:
     """Persist a pending post-meeting job to disk so it survives restarts."""
-    jobs: list[dict] = []
-    if _PENDING_JOBS_FILE.exists():
-        try:
-            jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Replace existing entry for same group+lecture
-    jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-    jobs.append({
-        "group": group_number,
-        "lecture": lecture_number,
-        "meeting_id": meeting_id,
-        "fire_time": fire_time_iso,
-    })
-    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
-    tmp_path.replace(_PENDING_JOBS_FILE)
+    with _pending_jobs_lock:
+        jobs: list[dict] = []
+        if _PENDING_JOBS_FILE.exists():
+            try:
+                jobs = json.loads(_PENDING_JOBS_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        # Replace existing entry for same group+lecture
+        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+        jobs.append({
+            "group": group_number,
+            "lecture": lecture_number,
+            "meeting_id": meeting_id,
+            "fire_time": fire_time_iso,
+        })
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+        tmp_path.replace(_PENDING_JOBS_FILE)
     logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
                 group_number, lecture_number, fire_time_iso)
 
@@ -146,12 +154,16 @@ def _remove_pending_job(group_number: int, lecture_number: int) -> None:
     """Remove a completed/consumed post-meeting job from the persistent store."""
     if not _PENDING_JOBS_FILE.exists():
         return
-    try:
-        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-        _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("[persist] Failed to remove pending job: %s", exc)
+    with _pending_jobs_lock:
+        try:
+            jobs = json.loads(_PENDING_JOBS_FILE.read_text(encoding="utf-8"))
+            jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+            # Atomic replace — safe against mid-write SIGKILL (audit finding C-4).
+            tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            tmp_path.replace(_PENDING_JOBS_FILE)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("[persist] Failed to remove pending job: %s", exc)
 
 
 def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
@@ -407,7 +419,7 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
     ]
     logger.info("[post] Concatenating %d segments with ffmpeg...", len(segment_paths))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     concat_list.unlink(missing_ok=True)
 
     if result.returncode != 0:
@@ -482,9 +494,10 @@ def _run_post_meeting_pipeline(
     # Helper to clean up dedup key on ALL exit paths (including early returns)
     def _cleanup_dedup() -> None:
         try:
-            from tools.app.server import _processing_tasks, _task_key
+            from tools.app.server import _processing_lock, _processing_tasks, _task_key
             key = _task_key(group_number, lecture_number)
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
             logger.info("[post] Dedup key %s removed from _processing_tasks", key)
         except (ImportError, ValueError, RuntimeError) as exc:
             # ValueError: WhatsAppAssistant init may fail during import
@@ -495,13 +508,28 @@ def _run_post_meeting_pipeline(
     # (prevents retry storms for already-backfilled lectures)
     try:
         from tools.integrations.knowledge_indexer import lecture_exists_in_index
+        from tools.core.pipeline_state import COMPLETE, FAILED, load_state, state_file_path
         required = ("transcript", "summary", "gap_analysis", "deep_analysis")
         if all(lecture_exists_in_index(group_number, lecture_number, t) for t in required):
             logger.info(
                 "[post] Skipping — G%d L%d already fully indexed in Pinecone",
                 group_number, lecture_number,
             )
-            _durable_abort(f"already_indexed: G{group_number} L{lecture_number}")
+            retry_orchestrator.clear_retry(group_number, lecture_number)
+            current = load_state(group_number, lecture_number)
+            if current and current.state not in (COMPLETE, FAILED):
+                try:
+                    state_file_path(group_number, lecture_number).unlink(missing_ok=True)
+                    logger.info(
+                        "[post] Removed transient state for already-indexed G%d L%d",
+                        group_number,
+                        lecture_number,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "[post] Could not remove already-indexed state file: %s",
+                        exc,
+                    )
             _cleanup_dedup()
             return
     except Exception as exc:
@@ -604,10 +632,10 @@ def _run_post_meeting_pipeline(
                 return
 
         # ---- Step 3: Concatenate if multiple segments ----------------------
-        # Keep segment files internal, but use the same human-readable naming
-        # convention students see in Drive. The internal group number still
-        # flows through pipeline state, Pinecone metadata, and logs.
-        local_filename = f"ლექცია #{lecture_number} — ვიდეო ჩანაწერი.mp4"
+        # Keep the temporary filename ASCII-only. Windows service/stdout
+        # environments can still run with a non-UTF console encoding, and some
+        # downstream libraries encode filenames while preparing uploads.
+        local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
         local_path = TMP_DIR / local_filename
 
         if len(segment_paths) == 1:
@@ -647,6 +675,7 @@ def _run_post_meeting_pipeline(
 
         # Check if video already uploaded (crash recovery — avoid duplicates)
         video_already_uploaded = False
+        recovered_drive_video_id: str = ""
         try:
             existing_files = list_files_in_folder(lecture_folder_id)
             legacy_prefix = f"group{group_number}_lecture{lecture_number}_"
@@ -668,6 +697,7 @@ def _run_post_meeting_pipeline(
             )
             if existing_video is not None:
                 video_already_uploaded = True
+                recovered_drive_video_id = existing_video.get("id", "")
                 logger.info(
                     "[post] Video already in Drive (crash recovery): %s — skipping upload",
                     existing_video["name"],
@@ -680,10 +710,28 @@ def _run_post_meeting_pipeline(
 
         if video_already_uploaded:
             logger.info("[post] Skipped duplicate upload to Drive")
+            if recovered_drive_video_id:
+                set_drive_video_id(group_number, lecture_number, recovered_drive_video_id)
+                logger.info(
+                    "[post] Recorded recovered drive_video_id=%s in pipeline state",
+                    recovered_drive_video_id,
+                )
         else:
             trash_old_recordings(lecture_folder_id, group_number, lecture_number)
-            upload_file(local_path, lecture_folder_id)
+            uploaded_video_id = upload_file(local_path, lecture_folder_id)
             logger.info("[post] Recording uploaded to Drive")
+            if uploaded_video_id:
+                set_drive_video_id(group_number, lecture_number, uploaded_video_id)
+                logger.info(
+                    "[post] Recorded drive_video_id=%s in pipeline state",
+                    uploaded_video_id,
+                )
+            else:
+                logger.error(
+                    "[post] upload_file returned empty ID for g%d/l%d — "
+                    "drive_video_id not recorded; mark_complete will reject this pipeline",
+                    group_number, lecture_number,
+                )
 
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,
@@ -1050,12 +1098,28 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     await asyncio.wait_for(
         loop.run_in_executor(
             None,
-            _run_post_meeting_pipeline,
+            _run_post_meeting_pipeline_canonical,
             group_number,
             lecture_number,
             meeting_id,
         ),
         timeout=4 * 3600,  # 4-hour absolute cap — prevents indefinite hang
+    )
+
+
+def _run_post_meeting_pipeline_canonical(
+    group_number: int,
+    lecture_number: int,
+    meeting_id: str,
+) -> None:
+    """Run the scheduler fallback through the canonical retry wrapper."""
+    from tools.core.pipeline_retry import process_lecture_pipeline
+
+    process_lecture_pipeline(
+        group_number,
+        lecture_number,
+        meeting_id,
+        entry_source="scheduler_post_meeting",
     )
 
 

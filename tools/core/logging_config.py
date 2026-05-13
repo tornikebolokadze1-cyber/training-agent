@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import logging.handlers
@@ -51,6 +52,51 @@ LOCAL_FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
 LOCAL_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+def _wrap_stdout_utf8() -> io.TextIOBase:
+    """Return a UTF-8-capable stream for stdout.
+
+    Tries three strategies in order of preference:
+
+    1. ``reconfigure(encoding="utf-8")`` — works for any ``TextIOWrapper``
+       including pytest's capture streams.  This is the standard Python 3.7+
+       path and the one used on Railway after today's fix.
+
+    2. ``open(fileno(), ...)`` — legacy path for streams that expose a real
+       file descriptor but don't support ``reconfigure``.  ``closefd=False``
+       is critical: we must not close the underlying fd when the wrapper is
+       garbage-collected, because that would kill stdout.
+
+    3. Return ``sys.stdout`` as-is — last resort so this function never
+       raises.  Encoding may not be UTF-8 in this case; a WARNING is emitted
+       so it's visible in logs.
+    """
+    stream = sys.stdout
+
+    # --- Strategy 1: reconfigure (handles pytest EncodedFile, TextIOWrapper) ---
+    if hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+            return stream  # type: ignore[return-value]
+        except (io.UnsupportedOperation, ValueError, AttributeError):
+            pass
+
+    # --- Strategy 2: re-wrap the underlying file descriptor ---
+    try:
+        fd = stream.fileno()
+        return open(fd, mode="w", encoding="utf-8", closefd=False)
+    except (io.UnsupportedOperation, AttributeError, OSError):
+        pass
+
+    # --- Strategy 3: last resort — return as-is, warn about degraded encoding ---
+    _bootstrap_warn = logging.getLogger(__name__)
+    _bootstrap_warn.warning(
+        "Could not force UTF-8 on sys.stdout (encoding=%r). "
+        "Georgian characters in log messages may fail on non-UTF-8 terminals.",
+        getattr(stream, "encoding", "unknown"),
+    )
+    return stream  # type: ignore[return-value]
+
+
 def configure_logging(
     *,
     project_root: Path | None = None,
@@ -69,9 +115,10 @@ def configure_logging(
     root.setLevel(logging.INFO)
 
     # Console handler — stdout (force UTF-8 so Georgian filenames don't crash
-    # on Railway's POSIX/C locale where sys.stdout defaults to ASCII encoding)
-    _stdout_utf8 = open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
-    console = logging.StreamHandler(_stdout_utf8)
+    # on Railway's POSIX/C locale where sys.stdout defaults to ASCII encoding).
+    # _wrap_stdout_utf8() is robust to pytest capture streams (no fileno()),
+    # TextIOWrapper (reconfigure), and plain file descriptors (open+closefd=False).
+    console = logging.StreamHandler(_wrap_stdout_utf8())
     if use_json:
         console.setFormatter(JSONFormatter())
     else:

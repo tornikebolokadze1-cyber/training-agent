@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -33,6 +36,7 @@ BACKOFF_MINUTES: tuple[int, ...] = (15, 30, 60, 120, 240)  # 15m, 30m, 1h, 2h, 4
 PERMANENTLY_FAILED = "PERMANENTLY_FAILED"
 BLOCKED_ON_TOKEN = "BLOCKED_ON_TOKEN"  # Halt retries until Google OAuth re-auth
 RETRY_TRACKER_PATH = TMP_DIR / "retry_tracker.json"
+_TRACKER_LOCK = threading.Lock()
 
 # Window during which a freshly-scheduled retry suppresses competing launches
 # from startup recovery scans. Keeps phase-2 unification decisions idempotent.
@@ -174,13 +178,15 @@ def _load_tracker() -> dict[str, dict[str, Any]]:
 
 def _save_tracker(data: dict[str, dict[str, Any]]) -> None:
     """Atomically persist the retry tracker to disk."""
-    tmp = RETRY_TRACKER_PATH.with_suffix(".json.tmp")
+    tmp = RETRY_TRACKER_PATH.with_name(
+        f"{RETRY_TRACKER_PATH.name}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
     try:
         tmp.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        tmp.replace(RETRY_TRACKER_PATH)
+        os.replace(tmp, RETRY_TRACKER_PATH)
     except OSError as exc:
         logger.error("Failed to save retry tracker: %s", exc)
         try:
@@ -222,6 +228,17 @@ class RetryOrchestrator:
     """
 
     def schedule_retry(
+        self,
+        group: int,
+        lecture: int,
+        meeting_id: str,
+        error_msg: str,
+    ) -> dict[str, Any]:
+        """Thread-safe wrapper for recording and scheduling a retry."""
+        with _TRACKER_LOCK:
+            return self._schedule_retry_locked(group, lecture, meeting_id, error_msg)
+
+    def _schedule_retry_locked(
         self,
         group: int,
         lecture: int,
@@ -391,6 +408,11 @@ class RetryOrchestrator:
         Returns:
             True if the record was found and removed.
         """
+        with _TRACKER_LOCK:
+            return self._clear_retry_locked(group, lecture)
+
+    def _clear_retry_locked(self, group: int, lecture: int) -> bool:
+        """Remove a retry tracker record while the tracker lock is held."""
         tracker = _load_tracker()
         key = _record_key(group, lecture)
         if key in tracker:
@@ -610,6 +632,7 @@ def process_lecture_pipeline(
         PipelineClaimError: If the pipeline is already active.
     """
     from tools.core.pipeline_state import (
+        COMPLETE,
         FAILED,
         PipelineClaimError,
         create_pipeline,
@@ -640,6 +663,13 @@ def process_lecture_pipeline(
         if existing.state == FAILED:
             reset_failed(group, lecture)
             existing = None
+        elif existing.state == COMPLETE:
+            logger.info(
+                "[pipeline] G%d L%d already COMPLETE; skipping launch from %s",
+                group, lecture, entry_source,
+            )
+            retry_orchestrator.clear_retry(group, lecture)
+            return {"status": "already_complete"}
         elif existing.state == PENDING:
             # Pre-claimed PENDING — acceptable, we'll adopt it.
             logger.info(
@@ -714,6 +744,22 @@ def process_lecture_pipeline(
         if record is None:
             retry_orchestrator.schedule_retry(group, lecture, meeting_id, str(exc))
         return {"status": classification, "error": str(exc)}
+
+    # _run_post_meeting_pipeline catches and records some failures internally
+    # so callers that use this canonical wrapper must inspect durable state
+    # before declaring success.
+    current = load_state(group, lecture)
+    if current and current.state == FAILED:
+        err = current.error or f"Pipeline ended in FAILED state for G{group} L{lecture}"
+        classification = classify_error(err)
+        logger.error(
+            "[pipeline] G%d L%d ended FAILED after %s: %s",
+            group, lecture, entry_source, err,
+        )
+        if retry_orchestrator.get_record(group, lecture) is None:
+            retry_orchestrator.schedule_retry(group, lecture, meeting_id, err)
+        status = "retry_scheduled" if classification == "retryable" else classification
+        return {"status": status, "error": err}
 
     # --- Step 3: Success cleanup -------------------------------------------
     retry_orchestrator.clear_retry(group, lecture)
@@ -805,6 +851,22 @@ async def _execute_retry(group: int, lecture: int, meeting_id: str) -> None:
             timeout=4 * 3600,
         )
         # Success — clear the retry record
+        current = load_state(group, lecture)
+        if current and current.state == FAILED:
+            logger.error(
+                "[retry] G%d L%d retry ended FAILED; keeping retry record: %s",
+                group,
+                lecture,
+                current.error,
+            )
+            if retry_orchestrator.get_record(group, lecture) is None:
+                retry_orchestrator.schedule_retry(
+                    group,
+                    lecture,
+                    meeting_id,
+                    current.error or "Retry ended in FAILED state",
+                )
+            return
         retry_orchestrator.clear_retry(group, lecture)
         logger.info("[retry] G%d L%d retry succeeded — record cleared", group, lecture)
     except Exception as exc:

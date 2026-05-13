@@ -7,10 +7,10 @@ Provides operator-level curl commands for:
 - Forcing Google OAuth token refresh
 - Generating WhatsApp-friendly system reports
 
-All endpoints require WEBHOOK_SECRET auth and are rate-limited to 5/min.
+All endpoints require OPERATOR_WEBHOOK_SECRET auth and are rate-limited to 5/min.
 
 Note: server.py internals (_processing_lock, _processing_tasks, _task_key,
-verify_webhook_secret) are imported lazily inside each endpoint function
+verify_operator_secret) are imported lazily inside each endpoint function
 to avoid circular imports (server.py imports admin_router at module level).
 """
 
@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from tools.core.config import GROUPS, TBILISI_TZ
+from tools.core.error_handling import safe_exception_detail
 from tools.core.pipeline_state import (
     COMPLETE,
     FAILED,
@@ -59,12 +60,12 @@ def _server_internals() -> tuple:
     """Lazy import of server.py internals to avoid circular import.
 
     Returns:
-        (verify_webhook_secret, _processing_lock, _processing_tasks, _task_key)
+        (verify_operator_secret, _processing_lock, _processing_tasks, _task_key)
     """
     import tools.app.server as srv
 
     return (
-        srv.verify_webhook_secret,
+        srv.verify_operator_secret,
         srv._processing_lock,
         srv._processing_tasks,
         srv._task_key,
@@ -115,10 +116,10 @@ async def retry_lecture(
     Resets the pipeline state (if FAILED or COMPLETE) and starts
     the pipeline in background. Returns immediately.
     """
-    verify_webhook_secret, _processing_lock, _processing_tasks, _task_key = (
+    verify_operator_secret, _processing_lock, _processing_tasks, _task_key = (
         _server_internals()
     )
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
 
     group = body.group_number
     lecture = body.lecture_number
@@ -126,6 +127,9 @@ async def retry_lecture(
     # Check current state
     existing = load_state(group, lecture)
     previous_state = existing.state if existing else "NONE"
+    meeting_id = existing.meeting_id if existing else ""
+    if not meeting_id:
+        meeting_id = GROUPS.get(group, {}).get("zoom_meeting_id", "")
 
     # Clear any existing state so pipeline can restart
     if existing:
@@ -149,23 +153,24 @@ async def retry_lecture(
     with _processing_lock:
         _processing_tasks.pop(key, None)
 
-    # Start pipeline in background
-    from tools.app.scheduler import _run_post_meeting_pipeline
+    # Start pipeline in background through the canonical retry wrapper.
+    from tools.core.pipeline_retry import process_lecture_pipeline
 
     loop = asyncio.get_running_loop()
     with _processing_lock:
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
-            create_pipeline(group, lecture)
+            create_pipeline(group, lecture, meeting_id=meeting_id)
         except ValueError:
             pass  # State file already exists — fine
 
     loop.run_in_executor(
         None,
-        lambda: _run_post_meeting_pipeline(
+        lambda: process_lecture_pipeline(
             group,
             lecture,
-            "",
+            meeting_id,
+            entry_source="admin_manual",
             skip_initial_delay=True,
         ),
     )
@@ -203,10 +208,10 @@ async def reset_pipeline(
     Marks the pipeline as FAILED, clears the dedup key, and removes
     the state file. Does NOT start processing — just unblocks.
     """
-    verify_webhook_secret, _processing_lock, _processing_tasks, _task_key = (
+    verify_operator_secret, _processing_lock, _processing_tasks, _task_key = (
         _server_internals()
     )
-    verify_webhook_secret(authorization)
+    verify_operator_secret(authorization)
 
     group = body.group_number
     lecture = body.lecture_number
@@ -306,8 +311,8 @@ async def lecture_status(
     Returns pipeline state, Pinecone indexing, Drive files,
     and error info for each lecture.
     """
-    verify_webhook_secret = _server_internals()[0]
-    verify_webhook_secret(authorization)
+    verify_operator_secret = _server_internals()[0]
+    verify_operator_secret(authorization)
 
     results: dict[str, list[dict[str, Any]]] = {}
 
@@ -400,8 +405,8 @@ async def force_refresh_token(
     Calls get_drive_service() which triggers credential refresh internally.
     Useful when the cached token has expired.
     """
-    verify_webhook_secret = _server_internals()[0]
-    verify_webhook_secret(authorization)
+    verify_operator_secret = _server_internals()[0]
+    verify_operator_secret(authorization)
 
     try:
         from tools.integrations.gdrive_manager import get_drive_service
@@ -425,10 +430,9 @@ async def force_refresh_token(
         )
 
     except Exception as exc:
-        logger.error("Admin: Google token refresh failed: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail=f"Token refresh failed: {exc}",
+            detail=safe_exception_detail(exc, "Token refresh"),
         ) from exc
 
 
@@ -447,8 +451,8 @@ async def system_report(
     Includes system uptime, active pipelines, per-lecture status,
     and recent errors.
     """
-    verify_webhook_secret, _processing_lock, _processing_tasks, _ = _server_internals()
-    verify_webhook_secret(authorization)
+    verify_operator_secret, _processing_lock, _processing_tasks, _ = _server_internals()
+    verify_operator_secret(authorization)
 
     import tools.app.server as srv
 
@@ -1301,7 +1305,7 @@ def _auto_detect_missing_deep_analysis() -> list[str]:
     from tools.integrations.knowledge_indexer import lecture_exists_in_index
 
     missing: list[str] = []
-    for group in (1, 2):
+    for group in sorted(GROUPS.keys()):
         for lecture in range(1, MAX_LECTURES + 1):
             has_transcript = lecture_exists_in_index(group, lecture, "transcript")
             if not has_transcript:
@@ -1338,8 +1342,8 @@ async def backfill_deep_analysis(
     The work runs as a FastAPI BackgroundTask; the endpoint returns 202 immediately
     with the list of queued lectures.
     """
-    verify_webhook_secret, _, _, _ = _server_internals()
-    verify_webhook_secret(authorization)
+    verify_operator_secret, _, _, _ = _server_internals()
+    verify_operator_secret(authorization)
 
     body_bytes = await request.body()
     req_body = BackfillRequest()
@@ -1367,9 +1371,9 @@ async def backfill_deep_analysis(
         try:
             lectures_to_deep = await asyncio.to_thread(_auto_detect_missing_deep_analysis)
         except Exception as exc:
-            logger.error("[backfill] Auto-detect failed: %s", exc)
             raise HTTPException(
-                status_code=503, detail=f"Pinecone auto-detect failed: {exc}"
+                status_code=503,
+                detail=safe_exception_detail(exc, "Pinecone auto-detect"),
             ) from exc
 
     lectures_to_reprocess = req_body.reprocess
@@ -1452,8 +1456,8 @@ async def whatsapp_webhook_status(
 
     Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
     """
-    verify_webhook_secret, _, _, _ = _server_internals()
-    verify_webhook_secret(authorization)
+    verify_operator_secret, _, _, _ = _server_internals()
+    verify_operator_secret(authorization)
 
     import os
 
@@ -1462,8 +1466,10 @@ async def whatsapp_webhook_status(
     try:
         settings = await asyncio.to_thread(get_webhook_settings)
     except Exception as exc:
-        logger.error("[admin] whatsapp-webhook-status failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Green API call failed: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=safe_exception_detail(exc, "Green API call"),
+        )
 
     webhook_url = str(settings.get("webhookUrl") or "").strip()
     incoming_flag = str(settings.get("incomingWebhook") or "").lower()
@@ -1511,8 +1517,8 @@ async def whatsapp_webhook_repair(
 
     Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
     """
-    verify_webhook_secret, _, _, _ = _server_internals()
-    verify_webhook_secret(authorization)
+    verify_operator_secret, _, _, _ = _server_internals()
+    verify_operator_secret(authorization)
 
     import os
 
@@ -1538,8 +1544,10 @@ async def whatsapp_webhook_repair(
     try:
         result = await asyncio.to_thread(configure_webhook, target_url)
     except Exception as exc:
-        logger.error("[admin] whatsapp-webhook-repair failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Green API call failed: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=safe_exception_detail(exc, "Green API call"),
+        )
 
     return JSONResponse(
         content={
@@ -1577,8 +1585,8 @@ async def whatsapp_catchup(
     Returns:
         ``{"status": "ok", "result": {"checked": N, "replied": N, ...}}``
     """
-    verify_webhook_secret, _, _, _ = _server_internals()
-    verify_webhook_secret(authorization)
+    verify_operator_secret, _, _, _ = _server_internals()
+    verify_operator_secret(authorization)
 
     if since_minutes < 1 or since_minutes > 24 * 60:
         raise HTTPException(
@@ -1595,7 +1603,9 @@ async def whatsapp_catchup(
     try:
         result = await replay_recent(_srv.assistant, since_minutes=since_minutes)
     except Exception as exc:
-        logger.error("[admin] whatsapp-catchup failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"catchup failed: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=safe_exception_detail(exc, "catchup"),
+        )
 
     return JSONResponse(content={"status": "ok", "result": result}, status_code=200)

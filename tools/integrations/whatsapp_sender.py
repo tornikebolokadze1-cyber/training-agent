@@ -18,7 +18,8 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 
 import httpx
 
@@ -26,6 +27,7 @@ from tools.core.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     GROUPS,
+    PRESENTATION_APP_URL,
     TMP_DIR,
     WEBHOOK_SECRET,
     WHATSAPP_TORNIKE_PHONE,
@@ -44,6 +46,13 @@ RATE_LIMIT_WINDOW_SECONDS = 60
 
 # DLQ retry config
 DLQ_MAX_RETRIES = 3
+
+# Edit-in-place: safe window before WhatsApp's hard 15-minute cut-off.
+# At 14 minutes we skip straight to delete+resend to avoid the silent-200 trap.
+EDIT_SAFE_WINDOW_MINUTES = 14
+
+# Seconds to wait between issuing editMessage and re-fetching history to verify.
+WHATSAPP_EDIT_VERIFY_DELAY_SECONDS = 2
 
 MISSED_ALERTS_PATH = TMP_DIR / "missed_alerts.json"
 
@@ -437,6 +446,7 @@ def send_group_upload_notification(
     lecture_number: int,
     drive_recording_url: str,
     summary_doc_url: str,
+    presentation_url: str | None = PRESENTATION_APP_URL,
 ) -> dict[str, Any]:
     """Notify the training group's WhatsApp chat that recording + summary are uploaded.
 
@@ -445,6 +455,7 @@ def send_group_upload_notification(
         lecture_number: Current lecture number.
         drive_recording_url: Google Drive URL of the uploaded recording.
         summary_doc_url: Google Docs URL of the lecture summary.
+        presentation_url: Link to the presentation web app, if available.
 
     Returns:
         Green API response dict.
@@ -459,12 +470,19 @@ def send_group_upload_notification(
         )
         chat_id = f"{WHATSAPP_TORNIKE_PHONE}@c.us"
 
+    presentation_section = (
+        f"პრეზენტაცია:\n{presentation_url}\n\n"
+        if presentation_url
+        else ""
+    )
+
     message = (
         f"✅ ლექცია #{lecture_number} — მასალა ატვირთულია!\n\n"
         f"ჯგუფი: {group['name']}\n"
         f"{'─' * 30}\n\n"
         f"📹 ჩანაწერი:\n{drive_recording_url}\n\n"
         f"📝 შეჯამება:\n{summary_doc_url}\n\n"
+        f"{presentation_section}"
         f"წარმატებებს გისურვებთ! 🚀"
     )
 
@@ -716,6 +734,165 @@ def _split_message(text: str) -> list[str]:
         remaining = remaining[split_at:].lstrip()
 
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Edit-in-place with verification
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EditResult:
+    """Result of an edit_message_with_verification call.
+
+    Attributes:
+        success: True if the corrected text is now visible in the chat.
+        method: Which path was taken to achieve the correction.
+        new_id_message: idMessage of the edit event or resent message.
+            None when editing failed entirely.
+        error: Human-readable error description, or None on success.
+    """
+
+    success: bool
+    method: Literal["edited", "deleted_and_resent", "skipped_too_old"]
+    new_id_message: str | None
+    error: str | None
+
+
+def _delete_and_resend(chat_id: str, id_message: str, new_text: str) -> EditResult:
+    """Delete the original message and resend with corrected text.
+
+    Delete errors are logged but do not abort the resend — the message may
+    already be too old to delete, yet resending is still the right move.
+
+    Args:
+        chat_id: WhatsApp chat ID of the conversation.
+        id_message: idMessage of the stale/incorrect message to remove.
+        new_text: Corrected message body to send.
+
+    Returns:
+        EditResult with method="deleted_and_resent".
+    """
+    # Attempt delete — non-fatal if it fails
+    try:
+        _send_request_raw(
+            "deleteMessage",
+            {"chatId": chat_id, "idMessage": id_message, "onlySenderDelete": False},
+            f"deleteMessage for {id_message[:20]}",
+        )
+        logger.info("Deleted original message %s before resend", id_message[:20])
+    except Exception as exc:
+        logger.warning(
+            "deleteMessage failed for %s (proceeding with resend anyway): %s",
+            id_message[:20], exc,
+        )
+
+    # Resend with corrected text
+    try:
+        resend_data = send_message_to_chat(chat_id, new_text)
+        new_id = resend_data.get("idMessage")
+        if new_id:
+            logger.info("Resent corrected message as %s", new_id[:20])
+            return EditResult(success=True, method="deleted_and_resent", new_id_message=new_id, error=None)
+        return EditResult(
+            success=False,
+            method="deleted_and_resent",
+            new_id_message=None,
+            error="Resend returned no idMessage",
+        )
+    except Exception as exc:
+        logger.error("Resend failed after delete for %s: %s", id_message[:20], exc)
+        return EditResult(
+            success=False,
+            method="deleted_and_resent",
+            new_id_message=None,
+            error=str(exc),
+        )
+
+
+def edit_message_with_verification(
+    chat_id: str,
+    id_message: str,
+    new_text: str,
+    *,
+    sent_at: datetime | None = None,
+) -> EditResult:
+    """Edit a WhatsApp message in place, with fallback to delete-and-resend.
+
+    Green API's editMessage returns HTTP 200 even when WhatsApp silently rejects
+    the edit (e.g. the 15-minute window has passed). This function always verifies
+    the edit landed by re-fetching chat history.  If the old text is still there,
+    it falls back to deleting the stale message and sending a new one.
+
+    Args:
+        chat_id: WhatsApp chat ID of the conversation.
+        id_message: idMessage of the message to correct.
+        new_text: The corrected message body.
+        sent_at: UTC-aware datetime when the original message was sent.
+            When provided and older than EDIT_SAFE_WINDOW_MINUTES, the function
+            skips editMessage and goes straight to delete+resend.
+            When None, always attempts editMessage with verification.
+
+    Returns:
+        EditResult describing what happened and whether the chat now shows the
+        corrected text.
+    """
+    # Guard: if the message is outside the safe edit window, skip editMessage
+    if sent_at is not None:
+        now = datetime.now(tz=timezone.utc)
+        age = now - sent_at
+        if age > timedelta(minutes=EDIT_SAFE_WINDOW_MINUTES):
+            logger.info(
+                "Message %s is %.1f minutes old — outside safe edit window, going straight to delete+resend",
+                id_message[:20], age.total_seconds() / 60,
+            )
+            return _delete_and_resend(chat_id, id_message, new_text)
+
+    # Attempt editMessage
+    try:
+        edit_data = _send_request_raw(
+            "editMessage",
+            {"chatId": chat_id, "idMessage": id_message, "message": new_text},
+            f"editMessage for {id_message[:20]}",
+        )
+    except Exception as exc:
+        logger.error("editMessage HTTP error for %s: %s", id_message[:20], exc)
+        return EditResult(success=False, method="edited", new_id_message=None, error=str(exc))
+
+    edit_event_id: str | None = edit_data.get("idMessage")
+
+    # Wait for WhatsApp to propagate the edit
+    time.sleep(WHATSAPP_EDIT_VERIFY_DELAY_SECONDS)
+
+    # Verify by re-fetching history
+    try:
+        recent_messages = get_chat_history(chat_id, count=20)
+    except Exception as exc:
+        logger.warning("getChatHistory failed during edit verification for %s: %s", id_message[:20], exc)
+        # Cannot verify — be conservative and fall back
+        return _delete_and_resend(chat_id, id_message, new_text)
+
+    matching = [m for m in recent_messages if m.get("idMessage") == id_message]
+
+    if not matching:
+        # The original message is no longer in history — edit cannot be verified
+        logger.warning(
+            "Original message %s not found in chat history — falling back to delete+resend",
+            id_message[:20],
+        )
+        return _delete_and_resend(chat_id, id_message, new_text)
+
+    actual_text = matching[0].get("textMessage", "")
+    if actual_text == new_text:
+        logger.info("editMessage verified for %s — chat shows corrected text", id_message[:20])
+        return EditResult(success=True, method="edited", new_id_message=edit_event_id, error=None)
+
+    # Green API returned 200 but the chat content is unchanged — silent failure
+    logger.warning(
+        "editMessage returned 200 but chat content unchanged for %s — falling back to delete+resend",
+        id_message[:20],
+    )
+    return _delete_and_resend(chat_id, id_message, new_text)
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,7 @@ from tools.core.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_MODEL_ANALYSIS,
+    GROUPS,
     WHATSAPP_GROUP1_ID,
     WHATSAPP_GROUP2_ID,
     WHATSAPP_TORNIKE_PHONE,
@@ -997,7 +998,10 @@ class WhatsAppAssistant:
         if self._memory:
             try:
                 user_id = message.sender_name or message.sender_id[:10]
-                memories = self._memory.search(message.text, user_id=user_id, limit=3)
+                search_kwargs = {"user_id": user_id, "limit": 3}
+                if group_number is not None:
+                    search_kwargs["filters"] = {"group": {"eq": group_number}}
+                memories = self._memory.search(message.text, **search_kwargs)
                 if memories and memories.get("results"):
                     mem_items = [m["memory"] for m in memories["results"] if m.get("memory")]
                     if mem_items:
@@ -1071,7 +1075,8 @@ class WhatsAppAssistant:
                     {"role": "user", "content": message.text},
                     {"role": "assistant", "content": response_text},
                 ]
-                self._memory.add(conversation, user_id=user_id)
+                metadata = {"group": group_number} if group_number is not None else {}
+                self._memory.add(conversation, user_id=user_id, metadata=metadata)
                 logger.debug("Saved interaction to memory for %s", user_id)
             except Exception as exc:
                 logger.debug("Memory save failed (non-critical): %s", exc)
@@ -1331,8 +1336,10 @@ if __name__ == "__main__":
     print(f"  Gemini model      : {GEMINI_MODEL_ANALYSIS}")
     print(f"  Trigger word      : {ASSISTANT_TRIGGER_WORD}")
     print(f"  Cooldown          : {ASSISTANT_COOLDOWN_SECONDS}s")
-    print(f"  Group 1 chat ID   : {WHATSAPP_GROUP1_ID or '(not set)'}")
-    print(f"  Group 2 chat ID   : {WHATSAPP_GROUP2_ID or '(not set)'}")
+    for gn, cfg in sorted(GROUPS.items()):
+        name = cfg.get("name", f"Group {gn}")
+        chat_id = cfg.get("whatsapp_chat_id") or "(not set)"
+        print(f"  {name} chat ID: {chat_id}")
 
     if "--live" not in sys.argv:
         print(

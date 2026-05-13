@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -59,6 +60,7 @@ from tools.core.pipeline_state import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _TEST_WEBHOOK_SECRET = "test-secret-abc"
+_TEST_OPERATOR_SECRET = "operator-secret-xyz"
 _AUTH_HEADER = {"Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}"}
 
 
@@ -104,9 +106,15 @@ def patched_secrets():
     points to) rather than whatever is currently in sys.modules.
     """
     live_srv = sys.modules.get("tools.app.server", srv)
-    with patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+    with (
+        patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET),
+        patch.object(srv, "OPERATOR_WEBHOOK_SECRET", ""),
+    ):
         if live_srv is not srv:
-            with patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+            with (
+                patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET),
+                patch.object(live_srv, "OPERATOR_WEBHOOK_SECRET", ""),
+            ):
                 yield
         else:
             yield
@@ -142,13 +150,53 @@ class TestRetryLecture:
         assert resp.status_code == 403
 
     async def test_validates_group_number(self, patched_secrets):
+        """group_number=99 must always be rejected (never a configured cohort).
+
+        This uses 99 rather than 3 because the set of configured groups is
+        dynamic: in CI only groups 1 and 2 are configured; locally groups
+        1-4 may be present.  99 is guaranteed to be unconfigured in all
+        environments, so this assertion is never vacuous.
+        """
         async with await _client() as c:
             resp = await c.post(
                 "/admin/retry-lecture",
-                json={"group_number": 3, "lecture_number": 1},
+                json={"group_number": 99, "lecture_number": 1},
                 headers=_AUTH_HEADER,
             )
         assert resp.status_code == 422
+
+    async def test_configured_group_number_accepted(self, patched_secrets):
+        """A group_number from the live GROUPS dict must not be rejected with 422.
+
+        We read the currently-configured group numbers at test time rather than
+        hard-coding 1 or 3, so the assertion stays correct whether CI has two
+        cohorts or four.
+        """
+        from tools.app.admin_routes import _configured_group_numbers
+
+        configured = _configured_group_numbers()
+        assert configured, "expected at least one group configured"
+        first_valid = configured[0]
+
+        with patch("tools.app.admin_routes.create_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
+                with patch("tools.app.admin_routes._server_internals") as mock_internals:
+                    mock_internals.return_value = (
+                        srv.verify_webhook_secret,
+                        _processing_lock,
+                        _processing_tasks,
+                        _task_key,
+                    )
+                    async with await _client() as c:
+                        resp = await c.post(
+                            "/admin/retry-lecture",
+                            json={"group_number": first_valid, "lecture_number": 1},
+                            headers=_AUTH_HEADER,
+                        )
+        # Must not be a validation error (the group is configured)
+        assert resp.status_code != 422, (
+            f"group_number={first_valid} is configured but was rejected with 422"
+        )
 
     async def test_validates_lecture_number(self, patched_secrets):
         async with await _client() as c:
@@ -182,7 +230,7 @@ class TestRetryLecture:
         save_state(ps)
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
@@ -198,6 +246,43 @@ class TestRetryLecture:
         assert data["previous_state"] == "FAILED"
 
     @patch("tools.app.admin_routes._server_internals")
+    async def test_retry_preserves_existing_meeting_id(
+        self, mock_internals, patched_secrets
+    ):
+        mock_internals.return_value = (
+            srv.verify_webhook_secret,
+            _processing_lock,
+            _processing_tasks,
+            _task_key,
+        )
+
+        save_state(
+            PipelineState(
+                group=1,
+                lecture=6,
+                state=FAILED,
+                meeting_id="uuid-from-original-webhook",
+                error="transient",
+            )
+        )
+
+        with patch("tools.app.admin_routes.create_pipeline") as mock_create:
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
+                async with await _client() as c:
+                    resp = await c.post(
+                        "/admin/retry-lecture",
+                        json={"group_number": 1, "lecture_number": 6},
+                        headers=_AUTH_HEADER,
+                    )
+
+        assert resp.status_code == 200
+        mock_create.assert_called_once_with(
+            1,
+            6,
+            meeting_id="uuid-from-original-webhook",
+        )
+
+    @patch("tools.app.admin_routes._server_internals")
     async def test_retry_complete_lecture(self, mock_internals, patched_secrets):
         mock_internals.return_value = (
             srv.verify_webhook_secret,
@@ -210,7 +295,7 @@ class TestRetryLecture:
         save_state(ps)
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
@@ -255,7 +340,7 @@ class TestRetryLecture:
         )
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
@@ -372,6 +457,43 @@ class TestLectureStatus:
         async with await _client() as c:
             resp = await c.get("/admin/lecture-status")
         assert resp.status_code == 401
+
+    async def test_admin_endpoint_prefers_operator_secret(self):
+        operator_auth = {"Authorization": f"Bearer {_TEST_OPERATOR_SECRET}"}
+        webhook_auth = {"Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}"}
+        live_srv = sys.modules.get("tools.app.server", srv)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET))
+            stack.enter_context(
+                patch.object(srv, "OPERATOR_WEBHOOK_SECRET", _TEST_OPERATOR_SECRET)
+            )
+            if live_srv is not srv:
+                stack.enter_context(
+                    patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET)
+                )
+                stack.enter_context(
+                    patch.object(
+                        live_srv,
+                        "OPERATOR_WEBHOOK_SECRET",
+                        _TEST_OPERATOR_SECRET,
+                    )
+                )
+            stack.enter_context(
+                patch("tools.app.admin_routes._get_pinecone_counts", return_value={})
+            )
+            async with await _client() as c:
+                webhook_resp = await c.get(
+                    "/admin/lecture-status",
+                    headers=webhook_auth,
+                )
+                operator_resp = await c.get(
+                    "/admin/lecture-status",
+                    headers=operator_auth,
+                )
+
+        assert webhook_resp.status_code == 403
+        assert operator_resp.status_code == 200
 
     @patch("tools.app.admin_routes._server_internals")
     @patch("tools.app.admin_routes._get_pinecone_counts", return_value={})

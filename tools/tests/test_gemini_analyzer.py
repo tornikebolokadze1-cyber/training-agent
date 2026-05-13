@@ -238,6 +238,27 @@ class TestClaudeReasonTimeout:
 # ===========================================================================
 
 
+class TestClaudeReasonAllParsing:
+    """_claude_reason_all must parse Claude's section headers robustly."""
+
+    def test_parses_headers_with_spaces(self):
+        long_summary = "Summary details. " * 10
+        long_gap = "Gap details. " * 10
+        long_deep = "Deep details. " * 10
+        raw = (
+            f"=== SUMMARY ===\n{long_summary}\n\n"
+            f"=== GAP ANALYSIS ===\n{long_gap}\n\n"
+            f"=== DEEP ANALYSIS ===\n{long_deep}"
+        )
+
+        with patch.object(ga, "_claude_reason", return_value=raw):
+            result = ga._claude_reason_all("transcript")
+
+        assert result["summary"] == long_summary.strip()
+        assert result["gap_analysis"] == long_gap.strip()
+        assert result["deep_analysis"] == long_deep.strip()
+
+
 class TestAnalyzeLectureQualityGates:
     """When the combined Claude call or Gemini Georgian writing raises,
     analyze_lecture must call alert_operator and still return all keys."""
@@ -838,6 +859,21 @@ class TestTranscribeVideo:
         # Should contain chunk_number+1 = 2
         assert "2" in prompt
 
+    def test_pro_fallback_keeps_thinking_enabled(self):
+        file_ref = MagicMock()
+
+        with patch.object(ga, "_get_client", return_value=MagicMock()), \
+             patch.object(ga, "_generate_with_retry", return_value="transcript") as mock_gen:
+            ga.transcribe_video(
+                file_ref,
+                use_free=False,
+                chunk_number=0,
+                total_chunks=1,
+                model="gemini-2.5-pro",
+            )
+
+        assert mock_gen.call_args.kwargs["disable_thinking"] is False
+
 
 # ===========================================================================
 # 12. _claude_reason — rate limit retry
@@ -1121,6 +1157,37 @@ class TestTranscribeChunkedVideo:
 
         assert transcript == fake_transcript
         assert use_free is False
+
+    def test_degraded_chunk_retries_with_fallback_model(self, tmp_path):
+        """Prompt-echo from the primary model is retried with the fallback model."""
+        video = tmp_path / "short.mp4"
+        video.write_bytes(b"\x00" * 1000)
+
+        fake_file_ref = MagicMock()
+        fake_file_ref.name = "files/abc"
+        fake_client = MagicMock()
+
+        degraded = "x" * 60 + "\n" + ga._PROMPT_ECHO_PHRASES[0]
+        recovered = (
+            "The instructor introduced practical AI workflow planning for students. "
+            "Participants discussed prompts, document review, and careful verification. "
+            "The lecture then moved into applied examples with concrete feedback. "
+        )
+
+        with patch.object(ga, "split_video_chunks", return_value=[video]), \
+             patch.object(ga, "upload_video", return_value=(fake_file_ref, False)), \
+             patch.object(ga, "transcribe_video",
+                          side_effect=[degraded, recovered]) as mock_transcribe, \
+             patch.object(ga, "_get_client", return_value=fake_client):
+            transcript, use_free = ga.transcribe_chunked_video(video, use_free=False)
+
+        assert transcript == recovered
+        assert use_free is False
+        assert mock_transcribe.call_count == 2
+        assert (
+            mock_transcribe.call_args_list[1].kwargs["model"]
+            == ga.GEMINI_FALLBACK_TRANSCRIPTION_MODEL
+        )
 
     def test_multi_chunk_concatenation(self, tmp_path):
         """Two chunks should be concatenated with double newline."""

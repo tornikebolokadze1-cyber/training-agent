@@ -660,6 +660,29 @@ class TestProcessRecordingEndpoint:
             )
         assert resp.status_code == 409
 
+    async def test_completed_lecture_rejected_with_409(self, patched_secrets):
+        """Completed lectures must not be re-entered by /process-recording."""
+        from tools.core.pipeline_state import COMPLETE, PipelineState, save_state
+
+        save_state(
+            PipelineState(
+                group=_VALID_RECORDING_PAYLOAD["group_number"],
+                lecture=_VALID_RECORDING_PAYLOAD["lecture_number"],
+                state=COMPLETE,
+            )
+        )
+
+        with patch("tools.app.server.process_recording_task") as mock_task:
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/process-recording",
+                    json=_VALID_RECORDING_PAYLOAD,
+                    headers=_AUTH_HEADER,
+                )
+
+        assert resp.status_code == 409
+        mock_task.assert_not_called()
+
     async def test_task_registered_in_tracking_dict(self, patched_secrets):
         """After a successful request the task key is added to _processing_tasks."""
         with patch("tools.app.server.process_recording_task"):
@@ -833,6 +856,28 @@ class TestWhatsAppIncomingEndpoint:
             )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ignored"
+
+    async def test_duplicate_archive_payload_does_not_queue_assistant_reply(
+        self, patched_secrets
+    ):
+        """Green API replay duplicates must not trigger a second assistant reply."""
+        duplicate_result = {
+            "inserted": False,
+            "green_api_id": "dup-message-id",
+            "reason": "duplicate",
+        }
+        with patch(
+            "tools.services.message_archive.archive_webhook_payload",
+            return_value=duplicate_result,
+        ), patch.object(srv, "_handle_assistant_message") as mock_handler:
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/whatsapp-incoming", json=_WA_TEXT_BODY, headers=_WA_AUTH
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["reason"] == "duplicate webhook message"
+        mock_handler.assert_not_called()
 
 
 # ===========================================================================

@@ -424,12 +424,21 @@ def course_overview() -> dict:
 
     with _msg_conn() as conn:
         stats = dict(conn.execute(
-            "SELECT COUNT(*) total, "
-            "       SUM(CASE WHEN group_number=1 THEN 1 ELSE 0 END) g1, "
-            "       SUM(CASE WHEN group_number=2 THEN 1 ELSE 0 END) g2, "
-            "       COUNT(DISTINCT sender_hash) unique_senders "
+            "SELECT COUNT(*) total, COUNT(DISTINCT sender_hash) unique_senders "
             "FROM messages"
         ).fetchone())
+        group_rows = conn.execute(
+            """SELECT group_number, COUNT(*) AS n
+               FROM messages
+               WHERE group_number IS NOT NULL
+               GROUP BY group_number
+               ORDER BY group_number"""
+        ).fetchall()
+        by_group = {f"g{r['group_number']}": r["n"] for r in group_rows}
+        stats.update(by_group)
+        stats.setdefault("g1", 0)
+        stats.setdefault("g2", 0)
+        stats["by_group"] = by_group
         windows = [dict(r) for r in conn.execute(
             "SELECT * FROM lecture_windows ORDER BY group_number, lecture_number"
         )]

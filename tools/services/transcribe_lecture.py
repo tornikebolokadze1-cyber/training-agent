@@ -26,6 +26,8 @@ from tools.core.pipeline_state import (
     transition,
     mark_complete,
     mark_failed,
+    _replace_state,
+    save_state,
     _STATE_ORDER,
     TRANSCRIBING,
     UPLOADING_DOCS,
@@ -40,6 +42,7 @@ from tools.integrations.gdrive_manager import (
 )
 from tools.integrations.gemini_analyzer import analyze_lecture, cleanup_checkpoints
 from tools.integrations.knowledge_indexer import index_lecture_content
+from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
 from tools.integrations.whatsapp_sender import (
     alert_operator,
     send_group_upload_notification,
@@ -145,7 +148,7 @@ def _upload_private_report_to_drive(
         f"{deep_analysis}"
     )
 
-    title = f"ლექცია #{lecture_number}"
+    title = f"ლექცია #{lecture_number} — GAP + DEEP ანალიზი"
     doc_id = create_google_doc(title, report_content, analysis_folder_id)
     logger.info(
         "Private report uploaded to Drive: Group %d, ლექცია #%d (doc ID: %s)",
@@ -240,6 +243,56 @@ def _safe_alert(message: str) -> None:
     alert_operator(message)
 
 
+def _verify_pinecone_indexing_complete(
+    group_number: int,
+    lecture_number: int,
+    index_counts: dict[str, int],
+    contents: dict[str, str],
+) -> None:
+    """Fail if required lecture content is neither newly nor previously indexed."""
+    try:
+        from tools.integrations.knowledge_indexer import get_lecture_vector_count
+    except Exception as exc:
+        zero_count_types = [
+            ctype
+            for ctype, text in contents.items()
+            if text.strip() and index_counts.get(ctype, 0) <= 0
+        ]
+        if zero_count_types:
+            raise RuntimeError(
+                "Pinecone indexing verification unavailable after zero-vector "
+                f"results for: {', '.join(zero_count_types)}"
+            ) from exc
+        return
+
+    missing: list[str] = []
+    for content_type, text in contents.items():
+        if not text.strip() or index_counts.get(content_type, 0) > 0:
+            continue
+        try:
+            existing_count = get_lecture_vector_count(
+                group_number, lecture_number, content_type,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Pinecone indexing verification failed for "
+                f"G{group_number} L{lecture_number} [{content_type}]: {exc}"
+            ) from exc
+        if existing_count <= 0:
+            missing.append(content_type)
+        else:
+            logger.info(
+                "Verified existing Pinecone vectors for %s: %d",
+                content_type, existing_count,
+            )
+
+    if missing:
+        raise RuntimeError(
+            "Pinecone indexing incomplete for "
+            f"G{group_number} L{lecture_number}: {', '.join(missing)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -317,7 +370,6 @@ def transcribe_and_index(
                 )
                 logger.error(msg)
                 try:
-                    from tools.integrations.whatsapp_sender import alert_operator
                     alert_operator(msg)
                 except Exception:
                     pass
@@ -398,7 +450,7 @@ def transcribe_and_index(
 
         # Step 2: Upload summary to Google Drive
         if pipeline:
-            pipeline = transition(pipeline, UPLOADING_DOCS)
+            pipeline = transition(pipeline, UPLOADING_DOCS, analysis_done=True)
         summary = results.get("summary", "")
         summary_doc_id: str | None = (pipeline.summary_doc_id or None) if pipeline else None
         if summary and not summary_doc_id:
@@ -406,6 +458,12 @@ def transcribe_and_index(
             summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
         elif summary_doc_id:
             logger.info("Resume: reusing existing summary doc %s", summary_doc_id)
+        if pipeline and summary_doc_id:
+            pipeline = transition(
+                pipeline,
+                UPLOADING_DOCS,
+                summary_doc_id=summary_doc_id,
+            )
 
         # Step 3: Upload private report to Drive
         gap_analysis = results.get("gap_analysis", "")
@@ -418,6 +476,12 @@ def transcribe_and_index(
             )
         elif report_doc_id:
             logger.info("Resume: reusing existing report doc %s", report_doc_id)
+        if pipeline and report_doc_id:
+            pipeline = transition(
+                pipeline,
+                UPLOADING_DOCS,
+                report_doc_id=report_doc_id,
+            )
 
         # Steps 4-5: Notifications
         if pipeline:
@@ -458,8 +522,16 @@ def transcribe_and_index(
             logger.info("Resume: Pinecone already indexed, skipping")
         else:
             logger.info("Step 6: Indexing into Pinecone...")
-            for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
-                text = results.get(content_type, "")
+            indexable_contents = {
+                content_type: results.get(content_type, "")
+                for content_type in (
+                    "transcript",
+                    "summary",
+                    "gap_analysis",
+                    "deep_analysis",
+                )
+            }
+            for content_type, text in indexable_contents.items():
                 if not text:
                     logger.warning("No %s content to index", content_type)
                     continue
@@ -467,6 +539,12 @@ def transcribe_and_index(
                 index_counts[content_type] = count
                 if count:
                     logger.info("Indexed %d vectors for %s", count, content_type)
+            _verify_pinecone_indexing_complete(
+                group_number,
+                lecture_number,
+                index_counts,
+                indexable_contents,
+            )
             if pipeline:
                 pipeline = transition(pipeline, INDEXING, pinecone_indexed=True)
 
@@ -475,11 +553,17 @@ def transcribe_and_index(
         if deleted:
             logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
-        # Step 7: Sync Obsidian knowledge vault (non-fatal)
+        # Step 7: Sync Obsidian knowledge vault (Option B — non-fatal but tracked).
+        # We do NOT let Obsidian failure prevent COMPLETE: all other artifacts
+        # (Drive video, Drive docs, Pinecone) are intact. Instead we:
+        #   1. Record obsidian_synced=True/False in the pipeline state.
+        #   2. On failure, log at ERROR level and alert the operator so the
+        #      gap is visible and can be retried manually / by a future job.
+        obsidian_synced_flag = False
         try:
-            from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
             logger.info("Step 7: Syncing Obsidian vault...")
             sync_result = obsidian_sync(group_number, lecture_number)
+            obsidian_synced_flag = True
             logger.info(
                 "Obsidian sync: %d concepts, %d relationships, %d files updated",
                 sync_result.get("concepts", 0),
@@ -487,7 +571,24 @@ def transcribe_and_index(
                 sync_result.get("files_updated", 0),
             )
         except Exception as _obsidian_err:
-            logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+            logger.error(
+                "Obsidian sync FAILED for g%d/l%d — lecture note NOT created. "
+                "obsidian_synced=False. Error: %s",
+                group_number, lecture_number, _obsidian_err,
+            )
+            alert_operator(
+                f"⚠️ Obsidian sync failed for Group {group_number}, "
+                f"Lecture #{lecture_number}.\n"
+                f"All other artifacts are intact (Drive, Pinecone, WhatsApp). "
+                f"The Obsidian vault note is MISSING and requires manual re-sync.\n"
+                f"Error: {_obsidian_err}"
+            )
+
+        # Persist obsidian_synced flag before marking complete so the state
+        # file reflects reality regardless of which branch we took.
+        if pipeline:
+            pipeline = _replace_state(pipeline, obsidian_synced=obsidian_synced_flag)
+            save_state(pipeline)
 
         if pipeline:
             pipeline = mark_complete(pipeline)

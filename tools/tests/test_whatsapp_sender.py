@@ -267,6 +267,23 @@ class TestSendGroupUploadNotification:
         assert "ლექცია #3" in msg
         assert "https://drive/rec" in msg
         assert "https://drive/sum" in msg
+        assert ws.PRESENTATION_APP_URL in msg
+
+    def test_includes_custom_presentation_url(self):
+        with patch.object(ws, "send_message_to_chat", return_value={"ok": True}) as mock_send, \
+             patch.object(ws, "_GROUP_CHAT_IDS", {1: "grp@g.us"}), \
+             patch.object(ws, "GROUPS", {1: {"name": "ჯგუფი #1"}}):
+
+            ws.send_group_upload_notification(
+                1,
+                3,
+                "https://drive/rec",
+                "https://drive/sum",
+                presentation_url="https://presentation.example",
+            )
+
+        msg = mock_send.call_args[0][1]
+        assert "https://presentation.example" in msg
 
     def test_falls_back_to_tornike_when_no_group_id(self):
         with patch.object(ws, "send_message_to_chat", return_value={}) as mock_send, \

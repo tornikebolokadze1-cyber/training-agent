@@ -700,8 +700,11 @@ def download_recording(
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    separator = "&" if "?" in download_url else "?"
-    authenticated_url = f"{download_url}{separator}access_token={access_token}"
+    # Use Bearer header auth instead of query-param to prevent token leakage
+    # via server access logs and Referer headers on redirect targets.
+    # httpx strips the Authorization header on cross-origin redirects by default
+    # (EventHook behaviour in httpx ≥ 0.23), so no manual redirect guard needed.
+    auth_headers = {"Authorization": f"Bearer {access_token}"}
 
     logger.info("Downloading recording to %s …", dest)
 
@@ -710,7 +713,7 @@ def download_recording(
     for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
         # Determine resume offset
         resume_from = dest.stat().st_size if (resume and dest.exists()) else 0
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {**auth_headers}
         if resume_from > 0:
             headers["Range"] = f"bytes={resume_from}-"
 
@@ -720,7 +723,7 @@ def download_recording(
                 timeout=httpx.Timeout(DOWNLOAD_TIMEOUT_SECONDS, connect=30.0),
                 follow_redirects=True,
             ) as probe_client:
-                head_resp = probe_client.head(authenticated_url)
+                head_resp = probe_client.head(download_url, headers=auth_headers)
                 head_size = int(head_resp.headers.get("content-length", 0) or 0)
                 if head_size > 0:
                     check_disk_space(dest, head_size - resume_from)
@@ -734,7 +737,7 @@ def download_recording(
                 timeout=httpx.Timeout(DOWNLOAD_TIMEOUT_SECONDS, connect=30.0),
                 follow_redirects=True,
             ) as client:
-                with client.stream("GET", authenticated_url, headers=headers) as response:
+                with client.stream("GET", download_url, headers=headers) as response:
                     if response.status_code not in (200, 206):
                         raise ZoomDownloadError(
                             f"Download failed: HTTP {response.status_code} for {download_url}"

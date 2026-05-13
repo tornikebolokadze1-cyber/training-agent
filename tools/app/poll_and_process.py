@@ -159,7 +159,7 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
     ]
     logger.info("[download] Concatenating %d segments with ffmpeg...", len(segment_paths))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     concat_list.unlink(missing_ok=True)
 
     if result.returncode != 0:

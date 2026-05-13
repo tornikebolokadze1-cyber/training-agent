@@ -794,7 +794,7 @@ class TestPreMeetingJobEdgeCases:
 
 class TestPostMeetingJob:
     def test_dispatches_to_thread_executor(self):
-        """post_meeting_job runs _run_post_meeting_pipeline in executor."""
+        """post_meeting_job runs the canonical pipeline wrapper in executor."""
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(return_value=None)
 
@@ -804,7 +804,7 @@ class TestPostMeetingJob:
         mock_loop.run_in_executor.assert_called_once()
         call_args = mock_loop.run_in_executor.call_args[0]
         assert call_args[0] is None
-        assert call_args[1] is sched._run_post_meeting_pipeline
+        assert call_args[1] is sched._run_post_meeting_pipeline_canonical
         assert call_args[2:] == (1, 5, "mtg-123")
 
 
@@ -1149,3 +1149,46 @@ class TestStartSchedulerCourseCompleted:
             f"Lecture jobs missing while course is active: "
             f"{self._LECTURE_JOBS - job_ids}"
         )
+
+
+def test_post_pipeline_already_indexed_clears_retry_without_rescheduling(
+    tmp_path, monkeypatch
+):
+    """Already-indexed lectures are idempotent successes, not retry failures."""
+    from tools.core import pipeline_retry, pipeline_state
+    from tools.integrations import knowledge_indexer
+
+    monkeypatch.setattr(pipeline_state, "TMP_DIR", tmp_path)
+    monkeypatch.setattr(
+        "tools.core.pipeline_state.state_file_path",
+        lambda g, lec: tmp_path / f"pipeline_state_g{g}_l{lec}.json",
+    )
+    monkeypatch.setattr(
+        pipeline_retry,
+        "RETRY_TRACKER_PATH",
+        tmp_path / "retry_tracker.json",
+    )
+    monkeypatch.setattr(
+        knowledge_indexer,
+        "lecture_exists_in_index",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        pipeline_retry.RetryOrchestrator,
+        "_schedule_apscheduler_job",
+        lambda *_a, **_k: None,
+    )
+
+    pipeline_state.create_pipeline(1, 8, meeting_id="meeting-existing")
+    pipeline_retry.retry_orchestrator.schedule_retry(
+        1,
+        8,
+        "meeting-existing",
+        "previous transient failure",
+    )
+    assert pipeline_retry.retry_orchestrator.get_record(1, 8) is not None
+
+    sched._run_post_meeting_pipeline(1, 8, "meeting-existing")
+
+    assert pipeline_retry.retry_orchestrator.get_record(1, 8) is None
+    assert pipeline_state.load_state(1, 8) is None

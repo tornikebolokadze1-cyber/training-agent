@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import threading
+import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -46,6 +48,8 @@ from typing import Any, Generator
 from tools.core.config import TBILISI_TZ, TMP_DIR
 
 logger = logging.getLogger(__name__)
+
+_ATOMIC_REPLACE_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.025, 0.05, 0.1)
 
 # ---------------------------------------------------------------------------
 # State constants
@@ -123,6 +127,10 @@ class PipelineState:
         group_notified: Whether the group WhatsApp notification was sent.
         private_notified: Whether the private (operator) notification was sent.
         pinecone_indexed: Whether lecture content was indexed in Pinecone.
+        obsidian_synced: Whether the Obsidian vault note was created for this lecture.
+            May be False even when the pipeline reaches COMPLETE (Obsidian sync is
+            non-fatal per Option B design). When False, alert_operator() is called and
+            the operator must manually trigger Obsidian re-sync.
         error: Human-readable error message if the pipeline is in FAILED state.
         retry_count: Number of times the pipeline has been retried after failure.
         cost_estimate_usd: Running estimate of API costs incurred (USD).
@@ -145,6 +153,7 @@ class PipelineState:
     group_notified: bool = False
     private_notified: bool = False
     pinecone_indexed: bool = False
+    obsidian_synced: bool = False
     error: str = ""
     retry_count: int = 0
     cost_estimate_usd: float = 0.0
@@ -191,10 +200,19 @@ def atomic_write(path: Path, content: str) -> None:
         path: Destination file path.
         content: UTF-8 string to write.
     """
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(
+        f"{path.name}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
     try:
         tmp_path.write_text(content, encoding="utf-8")
-        os.replace(tmp_path, path)
+        for attempt, delay in enumerate((*_ATOMIC_REPLACE_RETRY_DELAYS, 0.0)):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
+                    raise
+                time.sleep(delay)
     except OSError:
         # Clean up orphaned temp file if rename failed.
         try:
@@ -264,6 +282,7 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
         group_notified=bool(data.get("group_notified", False)),
         private_notified=bool(data.get("private_notified", False)),
         pinecone_indexed=bool(data.get("pinecone_indexed", False)),
+        obsidian_synced=bool(data.get("obsidian_synced", False)),
         error=str(data.get("error", "")),
         retry_count=int(data.get("retry_count", 0)),
         cost_estimate_usd=float(data.get("cost_estimate_usd", 0.0)),
@@ -324,6 +343,9 @@ def load_state(group: int, lecture: int) -> PipelineState | None:
         raw = path.read_text(encoding="utf-8")
         data: dict[str, Any] = json.loads(raw)
         return _deserialize(data)
+    except FileNotFoundError:
+        logger.debug("Pipeline state file disappeared during load: %s", path)
+        return None
     except json.JSONDecodeError as exc:
         logger.warning(
             "Corrupt pipeline state file %s — skipping: %s", path, exc
@@ -442,28 +464,43 @@ def _replace_state(source: PipelineState, **updates: Any) -> PipelineState:
 
 
 # ---------------------------------------------------------------------------
+# Per-pipeline claim lock pool (used by create_pipeline + try_claim_pipeline)
+# One Lock per (group, lecture) pair so concurrent operations for the SAME
+# pipeline serialize, while concurrent operations for DIFFERENT pipelines
+# run in parallel.
+# ---------------------------------------------------------------------------
+_claim_locks: dict[tuple[int, int], threading.Lock] = {}
+_claim_locks_guard = threading.Lock()
+
+
+def _get_claim_lock(group: int, lecture: int) -> threading.Lock:
+    """Return (or lazily create) the per-pipeline claim lock."""
+    key = (group, lecture)
+    with _claim_locks_guard:
+        lock = _claim_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _claim_locks[key] = lock
+        return lock
+
+
+# ---------------------------------------------------------------------------
 # Convenience constructors
 # ---------------------------------------------------------------------------
 
 
-def create_pipeline(
+def _create_pipeline_locked(
     group: int,
     lecture: int,
-    meeting_id: str = "",
+    meeting_id: str,
 ) -> PipelineState:
-    """Create and persist a new pipeline in the PENDING state.
+    """Inner (lock-free) body shared by :func:`create_pipeline` and
+    :func:`try_claim_pipeline`.
 
-    Args:
-        group: Training group number (1 or 2).
-        lecture: Lecture number (1–15).
-        meeting_id: Zoom meeting UUID associated with this recording.
-
-    Returns:
-        The newly created PipelineState.
+    **Caller MUST hold** ``_get_claim_lock(group, lecture)`` before calling.
 
     Raises:
-        ValueError: If an active pipeline already exists for this
-            group/lecture combination (prevents accidental double-start).
+        ValueError: If an active pipeline already exists.
     """
     if is_pipeline_active(group, lecture):
         existing = load_state(group, lecture)
@@ -493,22 +530,32 @@ def create_pipeline(
     return state
 
 
-# In-process lock map for atomic claims. One Lock per (group, lecture)
-# pair so concurrent claims for the SAME pipeline serialize, while
-# concurrent claims for DIFFERENT pipelines run in parallel.
-_claim_locks: dict[tuple[int, int], threading.Lock] = {}
-_claim_locks_guard = threading.Lock()
+def create_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+) -> PipelineState:
+    """Create and persist a new pipeline in the PENDING state.
 
+    Acquires the per-pipeline claim lock so the is-active check and the
+    initial ``save_state`` are atomic with respect to concurrent callers
+    for the same (group, lecture) pair.  Concurrent callers for different
+    pairs run fully in parallel.
 
-def _get_claim_lock(group: int, lecture: int) -> threading.Lock:
-    """Return (or lazily create) the per-pipeline claim lock."""
-    key = (group, lecture)
-    with _claim_locks_guard:
-        lock = _claim_locks.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _claim_locks[key] = lock
-        return lock
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        meeting_id: Zoom meeting UUID associated with this recording.
+
+    Returns:
+        The newly created PipelineState.
+
+    Raises:
+        ValueError: If an active pipeline already exists for this
+            group/lecture combination (prevents accidental double-start).
+    """
+    with _get_claim_lock(group, lecture):
+        return _create_pipeline_locked(group, lecture, meeting_id)
 
 
 def try_claim_pipeline(
@@ -560,10 +607,11 @@ def try_claim_pipeline(
                     group, lecture, exc,
                 )
         try:
-            return create_pipeline(group, lecture, meeting_id=meeting_id)
+            # Call the lock-free inner body — we already hold the lock.
+            return _create_pipeline_locked(group, lecture, meeting_id)
         except ValueError:
             # Lost a race against another process (file appeared between
-            # our load_state and create_pipeline). Treat as dedup hit.
+            # our load_state and _create_pipeline_locked). Treat as dedup hit.
             return None
 
 
@@ -604,6 +652,7 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
 #: enforcing the invariant at the state boundary instead of at every
 #: caller, this gap cannot re-open no matter which pipeline path runs.
 _COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    ("drive_video_id", "video was never uploaded to Drive — refusing to mark COMPLETE"),
     ("analysis_done", "analysis artifacts written"),
     ("summary_doc_id", "summary Google Doc uploaded"),
     ("report_doc_id", "private report Google Doc uploaded"),
@@ -648,6 +697,41 @@ def mark_complete(state: PipelineState) -> PipelineState:
         state.lecture,
     )
     return transition(state, COMPLETE)
+
+
+def set_drive_video_id(group: int, lecture: int, video_id: str) -> PipelineState | None:
+    """Record the Google Drive file ID for the uploaded recording video.
+
+    Loads the current pipeline state, writes ``drive_video_id``, and
+    persists atomically.  Returns the updated state, or None if the
+    state file does not exist.
+
+    This must be called immediately after a successful ``upload_file()``
+    call so that ``mark_complete()`` can verify the video artifact exists
+    via the ``_COMPLETION_INVARIANTS`` gate.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        video_id: Google Drive file ID returned by ``gdrive_manager.upload_file()``.
+
+    Returns:
+        The updated PipelineState, or None if no state file is found.
+    """
+    state = load_state(group, lecture)
+    if state is None:
+        logger.warning(
+            "set_drive_video_id: no pipeline state found for g%d/l%d — cannot record video_id=%r",
+            group, lecture, video_id,
+        )
+        return None
+    updated = _replace_state(state, drive_video_id=video_id)
+    save_state(updated)
+    logger.info(
+        "Pipeline g%d/l%d: drive_video_id recorded (%s)",
+        group, lecture, video_id,
+    )
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +827,8 @@ def list_all_pipelines() -> list[PipelineState]:
             raw = path.read_text(encoding="utf-8")
             data: dict[str, Any] = json.loads(raw)
             results.append(_deserialize(data))
+        except FileNotFoundError:
+            logger.debug("Pipeline state file disappeared during scan: %s", path)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             logger.warning(
                 "Skipping unreadable pipeline state file %s: %s", path, exc

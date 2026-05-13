@@ -258,13 +258,13 @@ class TestPineconeIndexingFailure:
             patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
             patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
             patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
+            patch("tools.integrations.knowledge_indexer.get_lecture_vector_count", return_value=0),
         ):
-            counts = tl.transcribe_and_index(1, 2, video)
+            with pytest.raises(RuntimeError, match="Pinecone indexing incomplete"):
+                tl.transcribe_and_index(1, 2, video)
 
         # alert_operator must have been called at least once for an indexing failure
         assert mock_alert.call_count >= 1
-        # All index counts should be 0 after failure
-        assert all(v == 0 for v in counts.values())
 
     def test_alert_message_mentions_pinecone(self, tmp_path):
         video = tmp_path / "lecture.mp4"
@@ -284,12 +284,43 @@ class TestPineconeIndexingFailure:
             patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
             patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
             patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.integrations.knowledge_indexer.get_lecture_vector_count", return_value=0),
         ):
-            tl.transcribe_and_index(1, 3, video)
+            with pytest.raises(RuntimeError, match="Pinecone indexing incomplete"):
+                tl.transcribe_and_index(1, 3, video)
 
         # At least one message should mention Pinecone
         pinecone_alerts = [m for m in alert_messages if "Pinecone" in m or "pinecone" in m.lower()]
         assert len(pinecone_alerts) >= 1
+
+    def test_indexing_failure_marks_pipeline_failed(self, tmp_path, monkeypatch):
+        from tools.core import pipeline_state as ps
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        monkeypatch.setattr(ps, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(tl, "TMP_DIR", tmp_path)
+        ps.create_pipeline(1, 4, meeting_id="meeting-index-fail")
+
+        with (
+            patch(_PATCH_ANALYZE, return_value=self._make_results()),
+            patch(_PATCH_INDEX, side_effect=RuntimeError("Pinecone unavailable")),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
+            patch("tools.integrations.knowledge_indexer.get_lecture_vector_count", return_value=0),
+        ):
+            with pytest.raises(RuntimeError, match="Pinecone indexing incomplete"):
+                tl.transcribe_and_index(1, 4, video)
+
+        state = ps.load_state(1, 4)
+        assert state is not None
+        assert state.state == ps.FAILED
+        assert "Pinecone indexing incomplete" in state.error
 
 
 # ===========================================================================
@@ -380,7 +411,60 @@ class TestQualityGate:
 
 
 # ===========================================================================
-# 7. Transcript resume threshold is 2000 chars (not 500)
+# 7. Pipeline state completion metadata
+# ===========================================================================
+
+class TestPipelineStateCompletionMetadata:
+    """Successful delivery must populate the fields required by mark_complete."""
+
+    def test_success_updates_completion_artifacts(self, tmp_path, monkeypatch):
+        from tools.core import pipeline_state as ps
+
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+
+        monkeypatch.setattr(ps, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(tl, "TMP_DIR", tmp_path)
+
+        ps.create_pipeline(1, 1, meeting_id="meeting-xyz")
+        # In production, scheduler.py uploads the video and writes
+        # drive_video_id BEFORE handing off to transcribe_and_index. The
+        # mark_complete invariant (added 2026-05-13) requires this field.
+        ps.set_drive_video_id(1, 1, "drive-video-fixture-id")
+        results = {
+            "transcript": "t" * 3000,
+            "summary": "s" * 600,
+            "gap_analysis": "g" * 400,
+            "deep_analysis": "d" * 400,
+        }
+
+        with (
+            patch(_PATCH_ANALYZE, return_value=results),
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp"),
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value="rec-1"),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+            patch(
+                "tools.integrations.obsidian_sync.sync_lecture",
+                return_value={"concepts": 0, "relationships": 0, "files_updated": 0},
+            ),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        state = ps.load_state(1, 1)
+        assert state.state == ps.COMPLETE
+        assert state.analysis_done is True
+        assert state.summary_doc_id == "doc-1"
+        assert state.report_doc_id == "doc-2"
+        assert state.pinecone_indexed is True
+
+
+# ===========================================================================
+# 8. Transcript resume threshold is 2000 chars (not 500)
 # ===========================================================================
 
 class TestTranscriptResumeThreshold:

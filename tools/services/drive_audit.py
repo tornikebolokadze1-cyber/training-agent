@@ -193,36 +193,59 @@ def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
     return sorted(results, key=lambda a: a.lecture)
 
 
+def _drive_folder_id_for_group(group_num: int, cfg: dict) -> str:
+    """Return the Drive root folder ID for a configured group."""
+    return os.getenv(f"DRIVE_GROUP{group_num}_FOLDER_ID") or cfg.get(
+        "drive_folder_id", ""
+    )
+
+
 def run_full_audit() -> dict:
-    """Run audit for both groups and return a structured report."""
-    g1_root = os.getenv("DRIVE_GROUP1_FOLDER_ID")
-    g2_root = os.getenv("DRIVE_GROUP2_FOLDER_ID")
+    """Run audit for every configured group and return a structured report."""
+    group_results: dict[str, list[dict]] = {}
+    all_audits: list[LectureAudit] = []
+    config_issues: list[str] = []
 
-    if not g1_root or not g2_root:
-        raise RuntimeError("DRIVE_GROUP{1,2}_FOLDER_ID env vars are required")
+    for group_num, cfg in sorted(GROUPS.items()):
+        key = f"group_{group_num}"
+        root_folder_id = _drive_folder_id_for_group(group_num, cfg)
+        if not root_folder_id:
+            group_results[key] = []
+            config_issues.append(
+                f"Missing DRIVE_GROUP{group_num}_FOLDER_ID for "
+                f"{cfg.get('name', f'Group {group_num}')}"
+            )
+            continue
 
-    g1 = audit_group(1, g1_root)
-    g2 = audit_group(2, g2_root)
+        audits = audit_group(group_num, root_folder_id)
+        group_results[key] = [a.to_dict() for a in audits]
+        all_audits.extend(audits)
 
-    all_audits = g1 + g2
     issues = [a for a in all_audits if not a.is_clean]
 
     report = {
         "total_lectures_checked": len(all_audits),
         "issues_found": len(issues),
-        "all_clean": len(issues) == 0,
-        "group_1": [a.to_dict() for a in g1],
-        "group_2": [a.to_dict() for a in g2],
+        "config_issues_found": len(config_issues),
+        "all_clean": len(issues) == 0 and len(config_issues) == 0,
+        "groups": group_results,
+        "config_issues": config_issues,
         "issues": [a.to_dict() for a in issues],
     }
+    # Keep report["group_1"] / report["group_2"] compatibility while exposing
+    # all newer cohorts through the same top-level "group_N" shape.
+    report.update(group_results)
 
-    if issues:
+    if issues or config_issues:
+        config_block = "\n".join(f"  CONFIG: {issue}" for issue in config_issues)
+        lecture_block = "\n".join(
+            f"  G{a.group} L{a.lecture}: {', '.join(a.issues)}" for a in issues
+        )
         logger.error(
-            "[audit] %d lecture(s) have issues:\n%s",
+            "[audit] %d lecture(s) and %d config item(s) have issues:\n%s",
             len(issues),
-            "\n".join(
-                f"  G{a.group} L{a.lecture}: {', '.join(a.issues)}" for a in issues
-            ),
+            len(config_issues),
+            "\n".join(part for part in (config_block, lecture_block) if part),
         )
     else:
         logger.info(
@@ -241,13 +264,18 @@ def alert_on_issues(report: dict) -> None:
     try:
         from tools.integrations.whatsapp_sender import alert_operator
 
+        total_issues = report.get("issues_found", 0) + report.get(
+            "config_issues_found", 0
+        )
         lines = [
-            f"🔍 Drive↔Pinecone audit found {report['issues_found']} issue(s):",
+            f"🔍 Drive↔Pinecone audit found {total_issues} issue(s):",
             "",
         ]
         for issue in report.get("issues", []):
             label = f"G{issue['group']} L{issue['lecture']}"
             lines.append(f"  • {label}: {', '.join(issue['issues'])}")
+        for issue in report.get("config_issues", []):
+            lines.append(f"  • CONFIG: {issue}")
         lines.append("")
         lines.append("Run audit manually: python -m tools.services.drive_audit")
 
@@ -261,9 +289,10 @@ def daily_audit_job() -> None:
     logger.info("[audit] Starting daily Drive↔Pinecone audit...")
     report = run_full_audit()
     alert_on_issues(report)
-    logger.info("[audit] Audit complete: %d clean, %d issues",
+    logger.info("[audit] Audit complete: %d clean, %d issues, %d config issues",
                 report["total_lectures_checked"] - report["issues_found"],
-                report["issues_found"])
+                report["issues_found"],
+                report.get("config_issues_found", 0))
 
 
 if __name__ == "__main__":

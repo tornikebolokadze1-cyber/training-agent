@@ -42,7 +42,7 @@ class TestValidateCriticalConfig:
     def test_returns_list(self):
         """Return type is always list regardless of env state."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -55,7 +55,7 @@ class TestValidateCriticalConfig:
     def test_missing_gemini_key_produces_warning(self):
         """When both Gemini keys are absent a warning is appended."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", ""), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -68,7 +68,7 @@ class TestValidateCriticalConfig:
     def test_missing_anthropic_key_produces_warning(self):
         """Absent ANTHROPIC_API_KEY yields a warning."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", ""), \
@@ -81,7 +81,7 @@ class TestValidateCriticalConfig:
     def test_missing_green_api_produces_warning(self):
         """Absent GREEN_API_INSTANCE_ID or GREEN_API_TOKEN yields a warning."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -130,8 +130,9 @@ class TestValidateCriticalConfig:
             "WHATSAPP_GROUP2_ID": "g2",
         }
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
-             patch.object(cfg, "OPERATOR_WEBHOOK_SECRET", "op-secret"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "whsec_A7q9Lm4Pz8Rt2Vu6Wx0Yb3Nc5Hd1Ks"), \
+             patch.object(cfg, "OPERATOR_WEBHOOK_SECRET", "opsec_H4k8Nq2Rs6Tv0Wy9Za3Cd5Ef7Gh1Jm"), \
+             patch.object(cfg, "PAPERCLIP_WEBHOOK_SECRET", "pcsec_Q8r2Tu6Vw0Xy4Za9Bc3De5Fg7Hi1Kl"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -141,6 +142,32 @@ class TestValidateCriticalConfig:
              patch.dict("os.environ", extra_env):
             warnings = cfg.validate_critical_config()
         assert warnings == []
+
+    def test_partial_optional_group_produces_warning(self):
+        """A half-configured future cohort must not disappear silently."""
+        base_groups = {
+            1: {"name": "g1"},
+            2: {"name": "g2"},
+        }
+        partial_env = {
+            "DRIVE_GROUP3_FOLDER_ID": "drive-g3",
+            "GROUP3_START_DATE": "2026-05-13",
+            "GROUP3_MEETING_DAYS": "2,5",
+        }
+        with patch.object(cfg, "GROUPS", base_groups), \
+             patch.object(cfg, "IS_RAILWAY", False), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
+             patch.object(cfg, "GEMINI_API_KEY", "k"), \
+             patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
+             patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
+             patch.object(cfg, "GREEN_API_INSTANCE_ID", "i"), \
+             patch.object(cfg, "GREEN_API_TOKEN", "t"), \
+             patch.object(cfg, "WHATSAPP_TORNIKE_PHONE", "p"), \
+             patch.dict(os.environ, partial_env, clear=True):
+            warnings = cfg.validate_critical_config()
+
+        assert any("GROUP3 is partially configured" in w for w in warnings)
+        assert any("WHATSAPP_GROUP3_ID" in w for w in warnings)
 
 
 # ===========================================================================
