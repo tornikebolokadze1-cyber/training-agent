@@ -19,9 +19,20 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 # Pop stubs so we load real fastapi/slowapi/httpx/pydantic for ASGI testing.
-# IDEMPOTENT: skip the pop if a sibling test file already swapped in the real
-# modules — re-popping would create a second set of class objects and break
-# class-identity checks across files (e.g. ``isinstance(e, HTTPException)``).
+# IDEMPOTENT: skip the fastapi/pydantic pop if a sibling test file already
+# swapped in the real modules — re-popping creates a second set of class
+# objects and breaks class-identity checks (e.g. ``isinstance(e, HTTPException)``).
+#
+# CRITICAL: always pop tools.app.openclaw_bridge AND tools.app.server *together*.
+# Sibling files (test_healthz_endpoint.py, test_admin_routes.py) pop
+# tools.app.server WITHOUT popping openclaw_bridge. When the popped server
+# re-imports, server.py calls ``register_openclaw_routes(app, limiter)`` but
+# the openclaw_bridge module is still cached holding references to the
+# pre-pop ``fastapi.Header`` sentinel. The new FastAPI app sees ``Header()``
+# as an unknown default and reroutes ``authorization`` to a *query*
+# parameter — yielding 422 instead of the expected 401/202. Popping both
+# together forces openclaw_bridge to re-import against the currently live
+# fastapi when server.py is next loaded.
 _fastapi_real = getattr(sys.modules.get("fastapi"), "__file__", None) is not None
 if not _fastapi_real:
     for _mod in list(sys.modules):
@@ -30,6 +41,16 @@ if not _fastapi_real:
              "tools.app.openclaw_bridge")
         ):
             sys.modules.pop(_mod, None)
+else:
+    # fastapi already real (sibling test loaded it). Pop tools.app.server and
+    # tools.app.openclaw_bridge together so the next ``import tools.app.server``
+    # below pulls in a fresh openclaw_bridge whose module-level fastapi.Header
+    # references the live fastapi module — not the pre-pop one.
+    for _mod in (
+        "tools.app.server",
+        "tools.app.openclaw_bridge",
+    ):
+        sys.modules.pop(_mod, None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -42,7 +63,29 @@ from tools.app.openclaw_bridge import (  # noqa: E402
 )
 from tools.core import config as cfg  # noqa: E402
 
-app = srv.app
+
+def _current_app():
+    """Resolve the FastAPI app fresh on every call.
+
+    Sibling tests (test_healthz_endpoint.py and others) pop
+    ``tools.app.server`` from ``sys.modules`` between modules, which
+    invalidates any module-level ``app = srv.app`` cache: the cached
+    reference points at the old FastAPI instance, which still serves
+    pre-pop routes but is no longer the one the test harness reaches via
+    a fresh import. Reading ``srv.app`` lazily inside fixtures avoids
+    that staleness — we always touch whichever app is registered now.
+    """
+    import importlib
+    import sys as _sys
+
+    # If a sibling test popped tools.app.server, srv still points at the
+    # old module object. Re-resolve via the module cache so we get the
+    # post-pop instance.
+    current = _sys.modules.get("tools.app.server")
+    if current is None:
+        current = importlib.import_module("tools.app.server")
+    return current.app
+
 
 _TEST_SECRET = "openclaw-test-secret"
 _AUTH = {"Authorization": f"Bearer {_TEST_SECRET}"}
@@ -50,9 +93,11 @@ _AUTH = {"Authorization": f"Bearer {_TEST_SECRET}"}
 
 @pytest.fixture(autouse=True)
 def reset_rate_limiter():
-    srv.limiter.reset()
+    import sys as _sys
+    current = _sys.modules.get("tools.app.server", srv)
+    current.limiter.reset()
     yield
-    srv.limiter.reset()
+    current.limiter.reset()
 
 
 @pytest.fixture
@@ -78,20 +123,25 @@ def stub_outbound():
 
 
 async def _client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost")
+    return AsyncClient(
+        transport=ASGITransport(app=_current_app()), base_url="http://localhost",
+    )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def sync_client():
-    """Sync TestClient without lifespan context.
+    """Sync TestClient resolved against the *current* server app.
 
-    base_url pinned to http://localhost so TrustedHostMiddleware's allowlist
-    (localhost, 127.0.0.1) accepts the request. Not entered as a context
-    manager — that would trigger the full app startup (Zoom, Pinecone, Mem0)
-    which is slow and irrelevant to gateway unit tests. Starlette's TestClient
-    still runs BackgroundTasks synchronously before returning the response.
+    Function-scoped (not module-scoped) so it picks up the fresh app even
+    after a sibling test file popped ``tools.app.server`` from
+    ``sys.modules``. base_url pinned to http://localhost so
+    TrustedHostMiddleware's allowlist (localhost, 127.0.0.1) accepts the
+    request. Not entered as a context manager — that would trigger the
+    full app startup (Zoom, Pinecone, Mem0) which is slow and irrelevant
+    to gateway unit tests. Starlette's TestClient still runs
+    BackgroundTasks synchronously before returning the response.
     """
-    return TestClient(app, base_url="http://localhost")
+    return TestClient(_current_app(), base_url="http://localhost")
 
 
 # ---------------------------------------------------------------------------

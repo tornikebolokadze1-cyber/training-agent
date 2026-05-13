@@ -24,10 +24,19 @@ import pytest
 # ---------------------------------------------------------------------------
 # Pop fastapi/slowapi/pydantic stubs so orchestrator can import real ones.
 # orchestrator.py imports from tools.app.server which needs real FastAPI.
+#
+# CRITICAL: also pop tools.app.openclaw_bridge whenever we pop tools.app.server.
+# When server.py re-imports, it calls register_openclaw_routes(app, limiter)
+# against the freshly built FastAPI app. If openclaw_bridge is still cached
+# from an earlier import (when fastapi was stubbed or popped), its module-level
+# fastapi.Header reference is stale — the new app sees Header() as an unknown
+# default and reroutes 'authorization' to a query parameter, breaking
+# downstream test_openclaw_bridge tests with 422 instead of 401.
 # ---------------------------------------------------------------------------
 for _mod_name in list(sys.modules):
     if _mod_name.startswith(("fastapi", "slowapi", "httpx", "pydantic", "uvicorn",
-                             "tools.app.server", "tools.app.orchestrator")):
+                             "tools.app.server", "tools.app.orchestrator",
+                             "tools.app.openclaw_bridge")):
         sys.modules.pop(_mod_name, None)
 
 import tools.app.orchestrator as orch  # noqa: E402
@@ -160,11 +169,25 @@ class TestStatusEndpoint:
         import json
         return json.loads(response.body)
 
+    def _build_state_mock(self, **overrides):
+        """Build a mock app.state with all fields the status endpoint reads.
+
+        US-007/US-008 added drive_folder_status and google_token_probe to
+        ``app.state``; without explicit defaults, MagicMock would auto-create
+        sentinels that fail JSON serialization.
+        """
+        mock_state = MagicMock()
+        mock_state.started_at = overrides.get("started_at", None)
+        mock_state.last_execution_results = overrides.get("last_execution_results", [])
+        mock_state.drive_folder_status = overrides.get("drive_folder_status", {})
+        mock_state.google_token_probe = overrides.get(
+            "google_token_probe", {"status": "pending", "message": "not yet run"},
+        )
+        return mock_state
+
     def test_uptime_none_when_started_at_not_set(self):
         """When app.state.started_at is None, uptime should be None."""
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock()
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
@@ -183,9 +206,7 @@ class TestStatusEndpoint:
         from datetime import datetime, timedelta, timezone
 
         started = datetime.now(timezone.utc) - timedelta(seconds=120)
-        mock_state = MagicMock()
-        mock_state.started_at = started
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock(started_at=started)
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
@@ -202,9 +223,7 @@ class TestStatusEndpoint:
 
     def test_scheduler_unavailable_when_none(self):
         """When scheduler ref is None, state should be 'unavailable'."""
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock()
 
         with patch.object(orch, "verify_webhook_secret"), \
              patch.object(orch, "app") as mock_app, \
@@ -222,9 +241,7 @@ class TestStatusEndpoint:
         """When scheduler is running with jobs, they should be listed and sorted."""
         from datetime import datetime, timezone
 
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = ["result1"]
+        mock_state = self._build_state_mock(last_execution_results=["result1"])
 
         mock_job1 = MagicMock()
         mock_job1.id = "job1"
@@ -260,9 +277,7 @@ class TestStatusEndpoint:
 
     def test_scheduler_stopped(self):
         """When scheduler exists but not running, state should be 'stopped'."""
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock()
 
         mock_scheduler = MagicMock()
         mock_scheduler.running = False
@@ -281,9 +296,7 @@ class TestStatusEndpoint:
 
     def test_verify_webhook_secret_is_called(self):
         """verify_webhook_secret should be called with the authorization header."""
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock()
 
         with patch.object(orch, "verify_webhook_secret") as mock_verify, \
              patch.object(orch, "app") as mock_app, \
@@ -299,9 +312,7 @@ class TestStatusEndpoint:
         """Jobs with None next_run_time should sort after those with times."""
         from datetime import datetime, timezone
 
-        mock_state = MagicMock()
-        mock_state.started_at = None
-        mock_state.last_execution_results = []
+        mock_state = self._build_state_mock()
 
         mock_job_fired = MagicMock()
         mock_job_fired.id = "fired"
