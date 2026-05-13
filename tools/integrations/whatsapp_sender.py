@@ -36,6 +36,39 @@ from tools.core.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
+# Prometheus metric (US-026) — graceful-import so a missing prometheus_client
+# does not crash the module. WHATSAPP_SENT.labels(result=…).inc() is a no-op
+# when the dep is absent.
+try:
+    from prometheus_client import REGISTRY as _PROM_REGISTRY
+    from prometheus_client import Counter as _PromCounter
+
+    try:
+        _wa_sent_counter: Any = _PromCounter(
+            "whatsapp_messages_sent_total",
+            "WhatsApp send attempts by outcome (sent|suppressed|failed)",
+            ["result"],
+        )
+    except ValueError:
+        # Already registered (test re-import). Find the existing collector.
+        _wa_sent_counter = None
+        for _c in list(_PROM_REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+            if getattr(_c, "_name", None) == "whatsapp_messages_sent":
+                _wa_sent_counter = _c
+                break
+        if _wa_sent_counter is None:  # pragma: no cover
+            raise
+    WHATSAPP_SENT: Any = _wa_sent_counter
+except Exception:  # pragma: no cover — exercised only without the dep
+    class _NoOpCounter:
+        def labels(self, *a, **kw):
+            return self
+
+        def inc(self, *a, **kw) -> None:
+            return None
+
+    WHATSAPP_SENT = _NoOpCounter()
+
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
 MESSAGE_MAX_LENGTH = 4096  # WhatsApp message character limit
@@ -374,11 +407,13 @@ def _send_request(method: str, payload: dict[str, Any], purpose: str) -> dict[st
             chat_id = payload.get("chatId", "unknown")
             message = payload.get("message", "")
             notification_dlq.enqueue(chat_id, message, priority="notification")
+            WHATSAPP_SENT.labels(result="failed").inc()
             raise WhatsAppSendError(
                 f"{purpose}: API returned 200 but no idMessage after retry — "
                 f"message enqueued to DLQ. Response: {data}"
             )
 
+    WHATSAPP_SENT.labels(result="sent").inc()
     return data
 
 
@@ -559,6 +594,7 @@ def alert_operator(message: str) -> None:
                         elapsed,
                         count,
                     )
+                    WHATSAPP_SENT.labels(result="suppressed").inc()
                     return
 
                 # Either first time, or window expired → record & send.

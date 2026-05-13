@@ -21,6 +21,9 @@ httpx==0.28.1
 # Rate limiting
 slowapi==0.1.9
 
+# Observability (US-026: /metrics endpoint + RED counters)
+prometheus-client>=0.20.0,<1.0
+
 # Scheduler
 apscheduler==3.11.2
 

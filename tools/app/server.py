@@ -70,6 +70,90 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Prometheus metrics (US-026: /metrics endpoint + RED counters)
+# ---------------------------------------------------------------------------
+# Graceful-import pattern: if prometheus_client is missing, the module still
+# loads but metric ops become no-ops via the _NoOpCounter/_NoOpHistogram stubs.
+# This keeps tonight's May cohort pipeline safe even if the dep is somehow
+# absent at runtime.
+try:
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        REGISTRY,
+        Counter,
+        Histogram,
+        generate_latest,
+    )
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:  # pragma: no cover — exercised via missing-dep tests only
+    _PROMETHEUS_AVAILABLE = False
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
+
+    class _NoOpMetric:
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs) -> None:
+            return None
+
+        def observe(self, *args, **kwargs) -> None:
+            return None
+
+    def Counter(*args, **kwargs):  # type: ignore[no-redef]
+        return _NoOpMetric()
+
+    def Histogram(*args, **kwargs):  # type: ignore[no-redef]
+        return _NoOpMetric()
+
+    def generate_latest(*args, **kwargs) -> bytes:  # type: ignore[no-redef]
+        return b"# prometheus_client not installed\n"
+
+    REGISTRY = None  # type: ignore[assignment]
+
+def _strip_counter_suffix(name: str) -> str:
+    """Counter._name strips a trailing '_total' — match what prometheus stores."""
+    return name[:-len("_total")] if name.endswith("_total") else name
+
+
+def _safe_counter(name: str, doc: str, labels: list[str]):
+    """Counter factory that survives module re-import (test re-imports server)."""
+    try:
+        return Counter(name, doc, labels)
+    except ValueError:
+        # Already registered (e.g. test re-imported the module). Fetch existing.
+        if REGISTRY is None:  # graceful-degradation path
+            return Counter(name, doc, labels)
+        stripped = _strip_counter_suffix(name)
+        for collector in list(REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+            if getattr(collector, "_name", None) == stripped:
+                return collector
+        return Counter(name, doc, labels)
+
+
+def _safe_histogram(name: str, doc: str, labels: list[str]):
+    try:
+        return Histogram(name, doc, labels)
+    except ValueError:
+        if REGISTRY is None:
+            return Histogram(name, doc, labels)
+        for collector in list(REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+            if getattr(collector, "_name", None) == name:
+                return collector
+        return Histogram(name, doc, labels)
+
+
+HTTP_REQUESTS_TOTAL = _safe_counter(
+    "http_requests_total",
+    "Total HTTP requests by method, route, and status code",
+    ["method", "route", "status"],
+)
+HTTP_REQUEST_DURATION = _safe_histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds by method and route",
+    ["method", "route"],
+)
+
+# ---------------------------------------------------------------------------
 # In-flight task tracking (deduplication + observability)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
@@ -639,6 +723,47 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     return response
 
 
+# Metrics collection middleware (US-026) — registered LAST so it runs FIRST
+# (FastAPI middleware is LIFO). This guarantees /metrics counts even requests
+# that body-size-limit or security middleware would 4xx-reject.
+@app.middleware("http")
+async def collect_request_metrics(request: Request, call_next):
+    """Record http_requests_total + http_request_duration_seconds.
+
+    Uses the matched FastAPI route template (e.g. ``/process-recording``) as
+    the ``route`` label so we never explode cardinality on path parameters.
+    Falls back to ``"unknown"`` when no route matched (404).
+    """
+    start = time.perf_counter()
+    response = None
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        # Resolve route template from the matched APIRoute if available; this
+        # collapses /api/foo/abc-123 into the registered template and prevents
+        # high-cardinality blow-up from UUIDs/IDs in the URL path.
+        route_obj = request.scope.get("route")
+        route_label = getattr(route_obj, "path", None) or "unknown"
+        duration = time.perf_counter() - start
+        try:
+            HTTP_REQUESTS_TOTAL.labels(
+                method=request.method,
+                route=route_label,
+                status=str(status_code),
+            ).inc()
+            HTTP_REQUEST_DURATION.labels(
+                method=request.method, route=route_label,
+            ).observe(duration)
+        except Exception:  # pragma: no cover — metric failures must never break a request
+            logger.debug("metrics collection failed", exc_info=True)
+
+
 assistant: WhatsAppAssistant | None = None
 if _assistant_available:
     try:
@@ -1015,6 +1140,27 @@ async def healthz(request: Request):  # noqa: ARG001
         },
         status_code=200,
     )
+
+
+@limiter.limit("60/minute")
+@app.get("/metrics")
+async def metrics(request: Request):  # noqa: ARG001
+    """Prometheus scrape endpoint (US-026).
+
+    Exposes RED-method counters and histograms for tonight's first
+    production-load test of the May cohort path:
+      - http_requests_total{method,route,status}
+      - http_request_duration_seconds{method,route}
+      - whatsapp_messages_sent_total{result=sent|suppressed|failed}
+      - pipeline_runs_total{state=started|completed|failed}
+
+    Public (no auth) — Prometheus scrapers cannot attach bearer tokens
+    without extra config, and the body contains no secrets. Rate limited
+    at 60/minute per IP to prevent flooding.
+    """
+    from fastapi.responses import Response
+    payload = generate_latest(REGISTRY) if REGISTRY is not None else generate_latest()
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/ready")

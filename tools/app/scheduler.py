@@ -45,6 +45,25 @@ from tools.integrations.whatsapp_sender import alert_operator
 
 logger = logging.getLogger(__name__)
 
+# Prometheus metric (US-026) — graceful-import; no-op when dep missing.
+try:
+    from prometheus_client import Counter as _PromCounter
+
+    PIPELINE_RUNS = _PromCounter(
+        "pipeline_runs_total",
+        "Post-meeting pipeline runs by state (started|completed|failed)",
+        ["state"],
+    )
+except Exception:  # pragma: no cover — exercised only without the dep
+    class _NoOpCounter:
+        def labels(self, *a, **kw):
+            return self
+
+        def inc(self, *a, **kw) -> None:
+            return None
+
+    PIPELINE_RUNS = _NoOpCounter()
+
 
 def _group_label(group_number: int) -> str:
     """Return the user-facing cohort-prefixed name for a group.
@@ -475,6 +494,7 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
+    PIPELINE_RUNS.labels(state="started").inc()
     from tools.core.pipeline_retry import (
         classify_error,
         retry_orchestrator,
@@ -728,8 +748,10 @@ def _run_post_meeting_pipeline(
             lecture_number,
             sum(index_counts.values()),
         )
+        PIPELINE_RUNS.labels(state="completed").inc()
 
     except Exception as exc:
+        PIPELINE_RUNS.labels(state="failed").inc()
         logger.exception(
             "[post] Pipeline failed for Group %d, Lecture #%d: %s",
             group_number,
