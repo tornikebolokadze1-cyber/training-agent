@@ -223,6 +223,8 @@ def _get_video_duration_seconds(video_path: Path) -> float:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     if result.returncode != 0:
@@ -281,7 +283,7 @@ def _extract_audio(
         "-y",  # overwrite
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     if result.returncode != 0:
         logger.error("ffmpeg audio extraction failed: %s", result.stderr[-500:])
         raise RuntimeError(
@@ -399,7 +401,7 @@ def split_video_chunks(video_path: str | Path) -> list[Path]:
             "--",
             str(chunk_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg chunk {i} failed: {result.stderr[-500:]}")
 
@@ -924,6 +926,7 @@ def transcribe_video(
     chunk_number: int = 0,
     total_chunks: int = 1,
     prev_chunk_tail: str = "",
+    model: str | None = None,
 ) -> str:
     """Transcribe an audio/video chunk using Gemini Flash-lite.
 
@@ -936,6 +939,8 @@ def transcribe_video(
             Injected into the continuation prompt so the model has a concrete
             anchor — prevents prompt-echo and repetition spirals at chunk
             boundaries (the G3 L1 failure mode, 2026-05-12).
+
+        model: Optional transcription model override for fallback retries.
 
     Returns:
         Georgian transcript for this chunk with timestamps and speaker markers.
@@ -953,14 +958,17 @@ def transcribe_video(
             else "(წინა ნაწილი მიუწვდომელია)",
         )
 
+    transcription_model = model or GEMINI_MODEL_TRANSCRIPTION
+
     return _generate_with_retry(
         client,
-        model=GEMINI_MODEL_TRANSCRIPTION,
+        model=transcription_model,
         contents=[file_ref, prompt],
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
         max_output_tokens=16384,  # 8-min chunks produce ~3K-6K chars; 16K is generous ceiling
         use_free=use_free,
-        disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
+        # Pro fallback models reject thinking_budget=0; Flash/Lite can use it.
+        disable_thinking="pro" not in transcription_model.lower(),
     )
 
 
@@ -1207,12 +1215,57 @@ def transcribe_chunked_video(
             chunk_label = f"chunk {i + 1}/{total_chunks}"
             degradation_reason = _detect_transcript_degradation(transcript, chunk_label)
             if degradation_reason:
+                fallback_model = GEMINI_FALLBACK_TRANSCRIPTION_MODEL.strip()
+                if fallback_model and fallback_model != GEMINI_MODEL_TRANSCRIPTION:
+                    logger.warning(
+                        "Transcript degradation in %s with %s: %s. "
+                        "Retrying same uploaded chunk with fallback model %s...",
+                        chunk_label,
+                        GEMINI_MODEL_TRANSCRIPTION,
+                        degradation_reason,
+                        fallback_model,
+                    )
+                    try:
+                        fallback_transcript = transcribe_video(
+                            file_ref,
+                            use_free=use_free,
+                            chunk_number=i,
+                            total_chunks=total_chunks,
+                            prev_chunk_tail=prev_chunk_tail,
+                            model=fallback_model,
+                        )
+                        fallback_reason = _detect_transcript_degradation(
+                            fallback_transcript,
+                            chunk_label,
+                        )
+                        if fallback_reason:
+                            degradation_reason = (
+                                f"{degradation_reason}; fallback model "
+                                f"{fallback_model} also degraded: {fallback_reason}"
+                            )
+                        else:
+                            logger.info(
+                                "Fallback transcription recovered %s with %s (%d chars)",
+                                chunk_label,
+                                fallback_model,
+                                len(fallback_transcript),
+                            )
+                            transcript = fallback_transcript
+                            degradation_reason = None
+                    except Exception as fallback_exc:
+                        degradation_reason = (
+                            f"{degradation_reason}; fallback model "
+                            f"{fallback_model} failed: {fallback_exc}"
+                        )
+
+            if degradation_reason:
                 # Alert and fail fast — better to abort than to index garbage into Pinecone
                 err_msg = (
                     f"Transcript degradation detected in {chunk_label}: {degradation_reason}. "
-                    f"This is the flash-lite context-overflow failure mode. "
+                    f"This is the primary transcription model degradation failure mode. "
                     f"The chunk duration ({CHUNK_DURATION_MINUTES} min) may still be too long, "
-                    f"or the model hit a transient overload. Aborting pipeline."
+                    f"or both primary and fallback models hit a transient overload. "
+                    f"Aborting pipeline."
                 )
                 logger.error(err_msg)
                 try:
@@ -1656,7 +1709,7 @@ def _claude_reason_all(transcript: str) -> dict[str, str]:
         ("deep_analysis", "===DEEP_ANALYSIS==="),
     ]:
         # Match exact header or regex variants (===SUMMARY=== or === SUMMARY ===)
-        pattern = rf"={(3,)}\s*{key.upper().replace('_', '[_ ]')}\s*={(3,)}"
+        pattern = rf"={{3,}}\s*{key.upper().replace('_', '[_ ]')}\s*={{3,}}"
         match = re.search(pattern, raw)
         if match is None:
             # Fallback: try exact string match

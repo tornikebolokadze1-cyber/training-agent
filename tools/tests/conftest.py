@@ -198,6 +198,7 @@ class _BaseModel:
 
 
 _pydantic.BaseModel = _BaseModel
+_pydantic.ConfigDict = dict
 
 
 def _field_validator(*args, **kwargs):

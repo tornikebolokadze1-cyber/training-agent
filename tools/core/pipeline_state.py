@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import threading
+import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -46,6 +48,8 @@ from typing import Any, Generator
 from tools.core.config import TBILISI_TZ, TMP_DIR
 
 logger = logging.getLogger(__name__)
+
+_ATOMIC_REPLACE_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.025, 0.05, 0.1)
 
 # ---------------------------------------------------------------------------
 # State constants
@@ -191,10 +195,19 @@ def atomic_write(path: Path, content: str) -> None:
         path: Destination file path.
         content: UTF-8 string to write.
     """
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(
+        f"{path.name}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
     try:
         tmp_path.write_text(content, encoding="utf-8")
-        os.replace(tmp_path, path)
+        for attempt, delay in enumerate((*_ATOMIC_REPLACE_RETRY_DELAYS, 0.0)):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
+                    raise
+                time.sleep(delay)
     except OSError:
         # Clean up orphaned temp file if rename failed.
         try:
@@ -324,6 +337,9 @@ def load_state(group: int, lecture: int) -> PipelineState | None:
         raw = path.read_text(encoding="utf-8")
         data: dict[str, Any] = json.loads(raw)
         return _deserialize(data)
+    except FileNotFoundError:
+        logger.debug("Pipeline state file disappeared during load: %s", path)
+        return None
     except json.JSONDecodeError as exc:
         logger.warning(
             "Corrupt pipeline state file %s — skipping: %s", path, exc
@@ -743,6 +759,8 @@ def list_all_pipelines() -> list[PipelineState]:
             raw = path.read_text(encoding="utf-8")
             data: dict[str, Any] = json.loads(raw)
             results.append(_deserialize(data))
+        except FileNotFoundError:
+            logger.debug("Pipeline state file disappeared during scan: %s", path)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             logger.warning(
                 "Skipping unreadable pipeline state file %s: %s", path, exc

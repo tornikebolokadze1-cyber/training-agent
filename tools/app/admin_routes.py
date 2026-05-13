@@ -149,8 +149,8 @@ async def retry_lecture(
     with _processing_lock:
         _processing_tasks.pop(key, None)
 
-    # Start pipeline in background
-    from tools.app.scheduler import _run_post_meeting_pipeline
+    # Start pipeline in background through the canonical retry wrapper.
+    from tools.core.pipeline_retry import process_lecture_pipeline
 
     loop = asyncio.get_running_loop()
     with _processing_lock:
@@ -162,10 +162,11 @@ async def retry_lecture(
 
     loop.run_in_executor(
         None,
-        lambda: _run_post_meeting_pipeline(
+        lambda: process_lecture_pipeline(
             group,
             lecture,
             "",
+            entry_source="admin_manual",
             skip_initial_delay=True,
         ),
     )

@@ -551,6 +551,71 @@ class TestProcessLecturePipelineContract:
             2, 3, "meeting-xyz", skip_initial_delay=False,
         )
 
+    def test_complete_pipeline_is_not_reprocessed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A terminal COMPLETE state must not launch the heavy pipeline body."""
+        from tools.core import pipeline_state
+
+        monkeypatch.setattr(pipeline_state, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(
+            "tools.core.pipeline_state.state_file_path",
+            lambda g, lec: tmp_path / f"pipeline_state_g{g}_l{lec}.json",
+        )
+        pipeline_state.save_state(
+            pipeline_state.PipelineState(
+                group=2,
+                lecture=5,
+                state=pipeline_state.COMPLETE,
+            )
+        )
+
+        stub = MagicMock()
+        monkeypatch.setattr(
+            "tools.app.scheduler._run_post_meeting_pipeline", stub,
+        )
+
+        result = process_lecture_pipeline(
+            2,
+            5,
+            "meeting-done",
+            entry_source="webhook_meeting_ended",
+        )
+
+        assert result["status"] == "already_complete"
+        stub.assert_not_called()
+
+    def test_canonical_entry_preserves_failed_state_from_pipeline_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """If the scheduler swallows an internal failure, do not report success."""
+        from tools.core import pipeline_state
+
+        monkeypatch.setattr(pipeline_state, "TMP_DIR", tmp_path)
+        monkeypatch.setattr(
+            "tools.core.pipeline_state.state_file_path",
+            lambda g, lec: tmp_path / f"pipeline_state_g{g}_l{lec}.json",
+        )
+
+        def failed_body(group, lecture, meeting_id, skip_initial_delay=False):
+            state = pipeline_state.load_state(group, lecture)
+            pipeline_state.mark_failed(state, "body failed")
+
+        monkeypatch.setattr(
+            "tools.app.scheduler._run_post_meeting_pipeline",
+            failed_body,
+        )
+
+        with patch.object(RetryOrchestrator, "_schedule_apscheduler_job"):
+            result = process_lecture_pipeline(
+                2, 4, "meeting-failed",
+                entry_source="webhook_meeting_ended",
+            )
+
+        assert result["status"] == "retry_scheduled"
+        assert pipeline_state.load_state(2, 4).state == pipeline_state.FAILED
+        assert retry_orchestrator.get_record(2, 4) is not None
+
 
 class TestAllEntryPathsUseCanonicalFunction:
     """Grep-style check: every entry path file delegates to process_lecture_pipeline."""
@@ -573,6 +638,25 @@ class TestAllEntryPathsUseCanonicalFunction:
             "startup recovery scan must consult retry_orchestrator.has_pending_retry "
             "to avoid re-launching lectures already owned by the retry executor"
         )
+
+    def test_scheduler_fallback_uses_canonical_wrapper(self):
+        import inspect
+        import tools.app.scheduler as scheduler
+        src = inspect.getsource(scheduler.post_meeting_job)
+        assert "_run_post_meeting_pipeline_canonical" in src
+
+    def test_admin_retry_uses_canonical_wrapper(self):
+        from pathlib import Path
+        import tools.app.admin_routes as admin_routes
+        src = Path(admin_routes.__file__).read_text(encoding="utf-8")
+        src = src.split("async def retry_lecture", 1)[1]
+        src = src.split(
+            "# ---------------------------------------------------------------------------\n"
+            "# 2.",
+            1,
+        )[0]
+        assert "process_lecture_pipeline" in src
+        assert "_run_post_meeting_pipeline" not in src
 
 
 class TestStartupRecoveryRespectsRetryTracker:

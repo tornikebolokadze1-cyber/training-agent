@@ -302,7 +302,11 @@ async def _check_unprocessed_recordings() -> None:
 
         with _processing_lock:
             # Re-check under lock
-            if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+            if (
+                key in _processing_tasks
+                or is_pipeline_active(group_number, lecture_number)
+                or is_pipeline_done(group_number, lecture_number)
+            ):
                 continue
             _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
@@ -1068,7 +1072,10 @@ async def dashboard_data(
         return await asyncio.to_thread(get_dashboard_data)
     except Exception as exc:
         logger.error("Dashboard data failed: %s", exc)
-        return JSONResponse(content={"error": "Dashboard data unavailable"}, status_code=500)
+        return JSONResponse(
+            content={"error": str(exc) or "Dashboard data unavailable"},
+            status_code=500,
+        )
 
 
 @limiter.limit("30/minute")
@@ -1443,7 +1450,11 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
     _evict_stale_tasks()
     with _processing_lock:
         key = _task_key(group_number, lecture_number)
-        if key in _processing_tasks or is_pipeline_active(group_number, lecture_number):
+        if (
+            key in _processing_tasks
+            or is_pipeline_active(group_number, lecture_number)
+            or is_pipeline_done(group_number, lecture_number)
+        ):
             logger.info("[meeting.ended] %s already processing — skipping", key)
             return {"status": "duplicate", "message": f"{key} already processing"}
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
@@ -1589,7 +1600,11 @@ async def process_recording(
 
     key = _task_key(payload.group_number, payload.lecture_number)
     with _processing_lock:
-        if key in _processing_tasks or is_pipeline_active(payload.group_number, payload.lecture_number):
+        if (
+            key in _processing_tasks
+            or is_pipeline_active(payload.group_number, payload.lecture_number)
+            or is_pipeline_done(payload.group_number, payload.lecture_number)
+        ):
             started = _processing_tasks.get(key)
             started_str = started.isoformat() if started else "unknown"
             logger.warning(

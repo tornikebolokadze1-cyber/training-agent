@@ -92,6 +92,13 @@ def reset_rate_limiter():
     srv.limiter.reset()
 
 
+@pytest.fixture(autouse=True)
+def clear_dashboard_cache():
+    srv._dashboard_cache = None
+    yield
+    srv._dashboard_cache = None
+
+
 @pytest.fixture
 def patched_secrets():
     with (

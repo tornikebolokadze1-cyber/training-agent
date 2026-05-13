@@ -142,6 +142,32 @@ class TestValidateCriticalConfig:
             warnings = cfg.validate_critical_config()
         assert warnings == []
 
+    def test_partial_optional_group_produces_warning(self):
+        """A half-configured future cohort must not disappear silently."""
+        base_groups = {
+            1: {"name": "g1"},
+            2: {"name": "g2"},
+        }
+        partial_env = {
+            "DRIVE_GROUP3_FOLDER_ID": "drive-g3",
+            "GROUP3_START_DATE": "2026-05-13",
+            "GROUP3_MEETING_DAYS": "2,5",
+        }
+        with patch.object(cfg, "GROUPS", base_groups), \
+             patch.object(cfg, "IS_RAILWAY", False), \
+             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "GEMINI_API_KEY", "k"), \
+             patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
+             patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
+             patch.object(cfg, "GREEN_API_INSTANCE_ID", "i"), \
+             patch.object(cfg, "GREEN_API_TOKEN", "t"), \
+             patch.object(cfg, "WHATSAPP_TORNIKE_PHONE", "p"), \
+             patch.dict(os.environ, partial_env, clear=True):
+            warnings = cfg.validate_critical_config()
+
+        assert any("GROUP3 is partially configured" in w for w in warnings)
+        assert any("WHATSAPP_GROUP3_ID" in w for w in warnings)
+
 
 # ===========================================================================
 # 2. _materialize_credential_file caching

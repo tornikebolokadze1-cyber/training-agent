@@ -407,7 +407,7 @@ def _concatenate_segments(segment_paths: list[Path], output_path: Path) -> None:
     ]
     logger.info("[post] Concatenating %d segments with ffmpeg...", len(segment_paths))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     concat_list.unlink(missing_ok=True)
 
     if result.returncode != 0:
@@ -604,10 +604,10 @@ def _run_post_meeting_pipeline(
                 return
 
         # ---- Step 3: Concatenate if multiple segments ----------------------
-        # Keep segment files internal, but use the same human-readable naming
-        # convention students see in Drive. The internal group number still
-        # flows through pipeline state, Pinecone metadata, and logs.
-        local_filename = f"ლექცია #{lecture_number} — ვიდეო ჩანაწერი.mp4"
+        # Keep the temporary filename ASCII-only. Windows service/stdout
+        # environments can still run with a non-UTF console encoding, and some
+        # downstream libraries encode filenames while preparing uploads.
+        local_filename = f"group{group_number}_lecture{lecture_number}_{timestamp}.mp4"
         local_path = TMP_DIR / local_filename
 
         if len(segment_paths) == 1:
@@ -1050,12 +1050,28 @@ async def post_meeting_job(group_number: int, lecture_number: int, meeting_id: s
     await asyncio.wait_for(
         loop.run_in_executor(
             None,
-            _run_post_meeting_pipeline,
+            _run_post_meeting_pipeline_canonical,
             group_number,
             lecture_number,
             meeting_id,
         ),
         timeout=4 * 3600,  # 4-hour absolute cap — prevents indefinite hang
+    )
+
+
+def _run_post_meeting_pipeline_canonical(
+    group_number: int,
+    lecture_number: int,
+    meeting_id: str,
+) -> None:
+    """Run the scheduler fallback through the canonical retry wrapper."""
+    from tools.core.pipeline_retry import process_lecture_pipeline
+
+    process_lecture_pipeline(
+        group_number,
+        lecture_number,
+        meeting_id,
+        entry_source="scheduler_post_meeting",
     )
 
 

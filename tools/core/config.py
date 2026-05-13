@@ -39,6 +39,12 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
+PRESENTATION_APP_URL = _env(
+    "PRESENTATION_APP_URL",
+    "https://presentation-production-7e47.up.railway.app/",
+)
+
+
 def _decode_b64_env(key: str) -> str | None:
     """Decode a base64-encoded environment variable to a UTF-8 string.
 
@@ -501,6 +507,40 @@ def validate_critical_config() -> list[str]:
             f"WHATSAPP_GROUP{_n}_ID",
             f"{_group_name} WhatsApp notifications will fail",
         ))
+    optional_group_keys = (
+        "NAME",
+        "FOLDER_NAME",
+        "MEETING_DAYS",
+        "START_DATE",
+        "COURSE_COMPLETED",
+    )
+    for n in range(3, 10):
+        if n in GROUPS:
+            continue
+        configured_keys = [
+            f"DRIVE_GROUP{n}_FOLDER_ID",
+            f"DRIVE_GROUP{n}_ANALYSIS_FOLDER_ID",
+            f"WHATSAPP_GROUP{n}_ID",
+            f"ZOOM_GROUP{n}_MEETING_ID",
+            *(f"GROUP{n}_{suffix}" for suffix in optional_group_keys),
+        ]
+        present = [key for key in configured_keys if os.environ.get(key)]
+        if present:
+            missing_required = [
+                key
+                for key in (
+                    f"DRIVE_GROUP{n}_FOLDER_ID",
+                    f"WHATSAPP_GROUP{n}_ID",
+                    f"GROUP{n}_MEETING_DAYS",
+                    f"GROUP{n}_START_DATE",
+                )
+                if not os.environ.get(key)
+            ]
+            warnings.append(
+                f"GROUP{n} is partially configured but disabled; "
+                f"present={present}; missing_required={missing_required}"
+            )
+
     for var_name, consequence in _warn_vars:
         if not os.environ.get(var_name):
             logger.warning("Missing %s — %s", var_name, consequence)

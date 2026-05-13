@@ -610,6 +610,7 @@ def process_lecture_pipeline(
         PipelineClaimError: If the pipeline is already active.
     """
     from tools.core.pipeline_state import (
+        COMPLETE,
         FAILED,
         PipelineClaimError,
         create_pipeline,
@@ -640,6 +641,13 @@ def process_lecture_pipeline(
         if existing.state == FAILED:
             reset_failed(group, lecture)
             existing = None
+        elif existing.state == COMPLETE:
+            logger.info(
+                "[pipeline] G%d L%d already COMPLETE; skipping launch from %s",
+                group, lecture, entry_source,
+            )
+            retry_orchestrator.clear_retry(group, lecture)
+            return {"status": "already_complete"}
         elif existing.state == PENDING:
             # Pre-claimed PENDING — acceptable, we'll adopt it.
             logger.info(
@@ -714,6 +722,22 @@ def process_lecture_pipeline(
         if record is None:
             retry_orchestrator.schedule_retry(group, lecture, meeting_id, str(exc))
         return {"status": classification, "error": str(exc)}
+
+    # _run_post_meeting_pipeline catches and records some failures internally
+    # so callers that use this canonical wrapper must inspect durable state
+    # before declaring success.
+    current = load_state(group, lecture)
+    if current and current.state == FAILED:
+        err = current.error or f"Pipeline ended in FAILED state for G{group} L{lecture}"
+        classification = classify_error(err)
+        logger.error(
+            "[pipeline] G%d L%d ended FAILED after %s: %s",
+            group, lecture, entry_source, err,
+        )
+        if retry_orchestrator.get_record(group, lecture) is None:
+            retry_orchestrator.schedule_retry(group, lecture, meeting_id, err)
+        status = "retry_scheduled" if classification == "retryable" else classification
+        return {"status": status, "error": err}
 
     # --- Step 3: Success cleanup -------------------------------------------
     retry_orchestrator.clear_retry(group, lecture)
@@ -805,6 +829,22 @@ async def _execute_retry(group: int, lecture: int, meeting_id: str) -> None:
             timeout=4 * 3600,
         )
         # Success — clear the retry record
+        current = load_state(group, lecture)
+        if current and current.state == FAILED:
+            logger.error(
+                "[retry] G%d L%d retry ended FAILED; keeping retry record: %s",
+                group,
+                lecture,
+                current.error,
+            )
+            if retry_orchestrator.get_record(group, lecture) is None:
+                retry_orchestrator.schedule_retry(
+                    group,
+                    lecture,
+                    meeting_id,
+                    current.error or "Retry ended in FAILED state",
+                )
+            return
         retry_orchestrator.clear_retry(group, lecture)
         logger.info("[retry] G%d L%d retry succeeded — record cleared", group, lecture)
     except Exception as exc:

@@ -660,6 +660,29 @@ class TestProcessRecordingEndpoint:
             )
         assert resp.status_code == 409
 
+    async def test_completed_lecture_rejected_with_409(self, patched_secrets):
+        """Completed lectures must not be re-entered by /process-recording."""
+        from tools.core.pipeline_state import COMPLETE, PipelineState, save_state
+
+        save_state(
+            PipelineState(
+                group=_VALID_RECORDING_PAYLOAD["group_number"],
+                lecture=_VALID_RECORDING_PAYLOAD["lecture_number"],
+                state=COMPLETE,
+            )
+        )
+
+        with patch("tools.app.server.process_recording_task") as mock_task:
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/process-recording",
+                    json=_VALID_RECORDING_PAYLOAD,
+                    headers=_AUTH_HEADER,
+                )
+
+        assert resp.status_code == 409
+        mock_task.assert_not_called()
+
     async def test_task_registered_in_tracking_dict(self, patched_secrets):
         """After a successful request the task key is added to _processing_tasks."""
         with patch("tools.app.server.process_recording_task"):

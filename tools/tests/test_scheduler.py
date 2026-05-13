@@ -794,7 +794,7 @@ class TestPreMeetingJobEdgeCases:
 
 class TestPostMeetingJob:
     def test_dispatches_to_thread_executor(self):
-        """post_meeting_job runs _run_post_meeting_pipeline in executor."""
+        """post_meeting_job runs the canonical pipeline wrapper in executor."""
         mock_loop = MagicMock()
         mock_loop.run_in_executor = AsyncMock(return_value=None)
 
@@ -804,7 +804,7 @@ class TestPostMeetingJob:
         mock_loop.run_in_executor.assert_called_once()
         call_args = mock_loop.run_in_executor.call_args[0]
         assert call_args[0] is None
-        assert call_args[1] is sched._run_post_meeting_pipeline
+        assert call_args[1] is sched._run_post_meeting_pipeline_canonical
         assert call_args[2:] == (1, 5, "mtg-123")
 
 

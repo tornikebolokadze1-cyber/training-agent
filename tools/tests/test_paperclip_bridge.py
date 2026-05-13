@@ -69,18 +69,36 @@ def _reset_limiter():
 
 
 @pytest.fixture
-def secret_configured():
+def secret_configured(monkeypatch):
     # Patch by string path so the patch always hits the module currently in
     # sys.modules — sibling test files re-import tools.app.server and orphan
     # our module-level ``srv`` reference.
-    with patch("tools.app.server.PAPERCLIP_WEBHOOK_SECRET", _TEST_SECRET):
-        yield
+    _set_paperclip_secret(monkeypatch, _TEST_SECRET)
+    yield
 
 
 @pytest.fixture
-def secret_unset():
-    with patch("tools.app.server.PAPERCLIP_WEBHOOK_SECRET", ""):
-        yield
+def secret_unset(monkeypatch):
+    _set_paperclip_secret(monkeypatch, "")
+    yield
+
+
+def _set_paperclip_secret(monkeypatch, value: str) -> None:
+    # Sibling test files may re-import tools.app.server. Patch both the
+    # module object imported here and the active sys.modules entry, plus
+    # the route endpoint globals bound inside this app instance.
+    monkeypatch.setattr(srv, "PAPERCLIP_WEBHOOK_SECRET", value, raising=False)
+    current = sys.modules.get("tools.app.server")
+    if current is not None:
+        monkeypatch.setattr(
+            current, "PAPERCLIP_WEBHOOK_SECRET", value, raising=False
+        )
+    for route in app.routes:
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is not None and getattr(endpoint, "__name__", "") == "paperclip_task":
+            monkeypatch.setitem(
+                endpoint.__globals__, "PAPERCLIP_WEBHOOK_SECRET", value
+            )
 
 
 # ===========================================================================

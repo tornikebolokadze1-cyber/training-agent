@@ -182,7 +182,7 @@ class TestRetryLecture:
         save_state(ps)
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
@@ -210,7 +210,7 @@ class TestRetryLecture:
         save_state(ps)
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
@@ -255,7 +255,7 @@ class TestRetryLecture:
         )
 
         with patch("tools.app.admin_routes.create_pipeline"):
-            with patch("tools.app.scheduler._run_post_meeting_pipeline"):
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
                 async with await _client() as c:
                     resp = await c.post(
                         "/admin/retry-lecture",
