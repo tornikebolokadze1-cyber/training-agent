@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import signal
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +29,7 @@ from tools.core.config import (
     GOOGLE_CREDENTIALS_PATH,
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
+    IS_RAILWAY,
     N8N_CALLBACK_URL,
     PINECONE_API_KEY,
     PROJECT_ROOT,
@@ -305,6 +307,12 @@ async def status_endpoint(authorization: str | None = Header(None)) -> JSONRespo
         "version": app.version,
     }
 
+    # --- startup probes (US-007 + US-008) ---
+    state["drive_folder_status"] = getattr(app.state, "drive_folder_status", {})
+    state["google_token_probe"] = getattr(
+        app.state, "google_token_probe", {"status": "pending", "message": "not yet run"},
+    )
+
     return JSONResponse(content=state)
 
 
@@ -320,12 +328,19 @@ async def _on_startup() -> None:
     """Record startup time and clean up stale temp files from prior runs."""
     app.state.started_at = datetime.now(timezone.utc)
     app.state.last_execution_results = []
+    app.state.drive_folder_status = {}
+    app.state.google_token_probe = {"status": "pending", "message": "not yet run"}
 
     # Detect whether .tmp/ survived the deploy (Railway persistent volume check)
     _check_tmp_persistence()
 
     # Clean up stale .tmp/ files from crashed/restarted pipelines
     _cleanup_stale_tmp_files()
+
+    # US-007 + US-008: validate Drive folders + live-probe Google OAuth in a
+    # background task so a slow/dead Drive does not block the server's startup
+    # (Railway healthchecks need /live to come up quickly).
+    asyncio.create_task(_run_startup_probes())
 
     # One-time fix: rename G1 L10 → L9 on Drive + re-index Pinecone
     asyncio.create_task(_fix_g1_l10_to_l9())
@@ -339,6 +354,34 @@ async def _on_startup() -> None:
     logger.info("[backfill] Task scheduled, will run after 30s delay")
 
     logger.info("FastAPI application started.")
+
+
+async def _run_startup_probes() -> None:
+    """Run Drive folder validation + Google token live-probe in a worker thread.
+
+    Both helpers do blocking network I/O, so we offload them via
+    ``asyncio.to_thread``. Results are stored on ``app.state`` so /status can
+    surface them. Failures inside the probes are already handled inside the
+    helpers (alert_operator + logging); this wrapper only guards against the
+    probes themselves crashing the startup task.
+    """
+    try:
+        folder_results = await asyncio.to_thread(_validate_drive_folders)
+        app.state.drive_folder_status = folder_results
+    except Exception as exc:
+        logger.error("[startup-probe] Drive folder validation crashed: %s", exc, exc_info=True)
+        app.state.drive_folder_status = {}
+
+    try:
+        token_result = await asyncio.to_thread(_probe_google_token)
+        app.state.google_token_probe = token_result
+    except Exception as exc:
+        logger.error("[startup-probe] Google token probe crashed: %s", exc, exc_info=True)
+        app.state.google_token_probe = {
+            "status": "error",
+            "message": f"probe crashed: {type(exc).__name__}",
+            "gated": False,
+        }
 
 
 async def _upload_g1_l9_part1() -> None:
@@ -710,8 +753,6 @@ def _cleanup_stale_tmp_files() -> None:
 
     Prevents disk accumulation when Railway restarts mid-pipeline.
     """
-    import time
-
     from tools.core.config import TMP_DIR
 
     stale_hours = 6
@@ -730,6 +771,189 @@ def _cleanup_stale_tmp_files() -> None:
 
     if cleaned:
         logger.info("Startup cleanup: removed %d stale temp file(s)", cleaned)
+
+
+# ---------------------------------------------------------------------------
+# Startup probes (US-007 + US-008)
+# ---------------------------------------------------------------------------
+#
+# Both probes are non-fatal: they record their findings on app.state for the
+# /status endpoint and they call alert_operator() on failure. They never raise
+# — the server must still come up so that other endpoints (the WhatsApp
+# advisor, the Zoom webhook, the health probes) keep working even when Drive
+# or Google OAuth are misconfigured.
+
+def _validate_drive_folders() -> dict[int, dict[str, str]]:
+    """Validate that every active group's Drive folders are reachable.
+
+    For each non-completed entry in ``GROUPS``, calls
+    ``service.files().get(fileId=...)`` on the main lecture folder and on the
+    private analysis folder. Status codes per folder:
+
+      - ``"ok"``             — folder exists and is readable by the service.
+      - ``"missing"``        — Drive returned 404 (folder ID is wrong / deleted).
+      - ``"forbidden"``      — Drive returned 403 (no permission, wrong account).
+      - ``"not_configured"`` — no ID in GROUPS[*][folder_key] (env var unset).
+      - ``"error:<status>"`` — any other HTTP error from Drive.
+      - ``"unavailable"``    — local exception before the HTTP call (no creds, etc.).
+
+    Logs warnings and alerts the operator (WhatsApp) on first 404/403/error.
+    Polite 1s sleep between calls so a Drive misconfig with many groups does
+    not look like a runaway client to Google.
+
+    Returns:
+        Mapping of group_number → {folder_label: status}. Empty dict if no
+        active groups or if Drive service could not be initialised at all.
+    """
+    results: dict[int, dict[str, str]] = {}
+
+    try:
+        from tools.integrations.gdrive_manager import get_drive_service
+        service = get_drive_service()
+    except Exception as exc:
+        logger.warning(
+            "[startup-probe] Drive service unavailable — skipping folder validation: %s",
+            exc,
+        )
+        return results
+
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:  # pragma: no cover — Drive deps always present in prod
+        return results
+
+    from tools.core.config import GROUPS
+
+    for group_num in sorted(GROUPS.keys()):
+        cfg = GROUPS[group_num]
+        if cfg.get("course_completed"):
+            continue
+
+        group_results: dict[str, str] = {}
+        results[group_num] = group_results
+
+        for label, key in (("main", "drive_folder_id"), ("analysis", "analysis_folder_id")):
+            folder_id = cfg.get(key)
+            if not folder_id:
+                group_results[label] = "not_configured"
+                logger.warning(
+                    "[startup-probe] Drive folder for group %s (%s) NOT CONFIGURED — %s is empty",
+                    group_num, label, key,
+                )
+                continue
+
+            try:
+                meta = service.files().get(fileId=folder_id, fields="id,name").execute()
+                group_results[label] = "ok"
+                logger.info(
+                    "[startup-probe] Drive folder for group %s (%s): %r reachable",
+                    group_num, label, meta.get("name"),
+                )
+            except HttpError as exc:
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                try:
+                    status_int = int(status)
+                except (TypeError, ValueError):
+                    status_int = -1
+                if status_int == 404:
+                    group_results[label] = "missing"
+                elif status_int == 403:
+                    group_results[label] = "forbidden"
+                else:
+                    group_results[label] = f"error:{status_int if status_int > 0 else 'unknown'}"
+                logger.error(
+                    "[startup-probe] Drive folder for group %s (%s) UNREACHABLE: "
+                    "status=%s folder_id=%s",
+                    group_num, label, status, folder_id,
+                )
+                # Short-prefix the folder ID in the operator alert so the
+                # full secret-ish identifier does not leak to WhatsApp.
+                short_id = (
+                    f"{folder_id[:6]}...{folder_id[-4:]}"
+                    if len(folder_id) > 12 else folder_id
+                )
+                try:
+                    from tools.integrations.whatsapp_sender import alert_operator
+                    alert_operator(
+                        f"⚠️ Drive folder unreachable: group={group_num} "
+                        f"{label}={short_id} status={status}"
+                    )
+                except Exception as alert_exc:
+                    logger.warning(
+                        "[startup-probe] alert_operator failed: %s", alert_exc,
+                    )
+            except Exception as exc:
+                group_results[label] = "unavailable"
+                logger.error(
+                    "[startup-probe] Drive folder for group %s (%s) probe failed: %s",
+                    group_num, label, exc,
+                )
+
+            # Polite delay between Drive calls. Two folders × ~5 active groups
+            # = ~10 seconds total in the worst case — cheap insurance for a
+            # one-shot startup probe, and avoids burst-limit triggers.
+            time.sleep(1)
+
+    return results
+
+
+def _probe_google_token() -> dict[str, Any]:
+    """Live-probe the Google OAuth refresh token by calling files().list.
+
+    Unlike ``check_google_token`` (which inspects on-disk expiry) this issues a
+    real authenticated call so an actually-revoked or expired refresh token is
+    caught before lecture night. Gated on ``IS_RAILWAY`` so local dev with an
+    intentionally-stale token does not false-alarm the operator.
+
+    Returns a dict with:
+        status: "ok" | "invalid_grant" | "error" | "skipped"
+        message: human-readable summary
+        gated:  True if skipped because not on Railway
+
+    Side effect: on invalid_grant / RefreshError calls ``alert_operator`` with
+    a Georgian message explaining how to fix it.
+    """
+    if not IS_RAILWAY:
+        logger.info(
+            "[startup-probe] Google token live-probe skipped (not on Railway)."
+        )
+        return {"status": "skipped", "message": "not on Railway", "gated": True}
+
+    try:
+        from tools.integrations.gdrive_manager import get_drive_service
+        service = get_drive_service()
+        service.files().list(pageSize=1, fields="files(id)").execute()
+        logger.info("[startup-probe] Google OAuth token live-probe OK.")
+        return {"status": "ok", "message": "files.list succeeded", "gated": False}
+    except Exception as exc:
+        # Look for the classic invalid_grant / RefreshError signatures without
+        # importing the google.auth module (so tests with stubbed google deps
+        # still execute this code path).
+        exc_repr = f"{type(exc).__name__}: {exc}"
+        invalid_grant = (
+            "invalid_grant" in exc_repr.lower()
+            or "refresherror" in type(exc).__name__.lower()
+            or "refresh" in exc_repr.lower() and "token" in exc_repr.lower()
+        )
+        status = "invalid_grant" if invalid_grant else "error"
+        logger.error(
+            "[startup-probe] Google OAuth token live-probe FAILED (%s): %s",
+            status, exc_repr,
+        )
+        if invalid_grant:
+            try:
+                from tools.integrations.whatsapp_sender import alert_operator
+                alert_operator(
+                    "🚨 Google OAuth token არ მუშაობს Railway-ზე. "
+                    "გადადი https://console.cloud.google.com და განაახლე "
+                    "authorization. დღევანდელი ლექციის Drive/Docs ჩაიჭრება "
+                    "სანამ ეს არ მოგვარდება."
+                )
+            except Exception as alert_exc:
+                logger.warning(
+                    "[startup-probe] alert_operator failed: %s", alert_exc,
+                )
+        return {"status": status, "message": exc_repr, "gated": False}
 
 
 # ---------------------------------------------------------------------------

@@ -936,6 +936,40 @@ async def liveness(request: Request):  # noqa: ARG001
     )
 
 
+@limiter.limit("60/minute")
+@app.get("/healthz")
+async def healthz(request: Request):  # noqa: ARG001
+    """Public, unauthenticated minimal health probe.
+
+    Designed for CI deploy gates (``.github/workflows/deploy.yml``), Kubernetes
+    liveness/readiness probes, and uptime monitors. Returns 200 with a small
+    JSON payload containing only the fields a probe needs:
+
+      - ``ok``         — always True when the process can serve a request
+      - ``version``    — APP_VERSION env or "unknown" (no secrets, no commit)
+      - ``timestamp``  — UTC ISO-8601 (helps debug clock drift)
+      - ``is_railway`` — bool, lets ops tell which environment answered
+
+    Does NOT include: GROUPS config, env state, internal IPs, stack traces,
+    pipeline state, dependency status, or any secret. Use ``/health`` (auth'd)
+    for that.
+
+    Rate limited at 60/minute per IP — generous enough for kube-probe
+    workloads, tight enough that a public attacker cannot trivially flood
+    the endpoint.
+    """
+    import os as _os
+    return JSONResponse(
+        content={
+            "ok": True,
+            "version": _os.environ.get("APP_VERSION", "unknown"),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "is_railway": bool(IS_RAILWAY),
+        },
+        status_code=200,
+    )
+
+
 @app.get("/ready")
 async def readiness(request: Request):  # noqa: ARG001
     """Readiness probe — has the app completed startup initialisation?
