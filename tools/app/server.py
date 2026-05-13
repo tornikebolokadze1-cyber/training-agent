@@ -114,6 +114,17 @@ def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
 
 
+def _g_label(group: int) -> str:
+    """Return the operator-visible cohort label for a group number.
+
+    Uses GROUPS[n]['name'] (e.g. 'მაისის ჯგუფი #1') when configured, otherwise
+    falls back to ``Group N``. Use this in every HTTP response detail, error
+    message, and any other string an operator will read. Plain ``Group N``
+    strings remain only in numeric log lines where they parse cleanly.
+    """
+    return GROUPS.get(group, {}).get("name") or f"Group {group}"
+
+
 def _rebuild_task_cache() -> None:
     """Rebuild in-memory task cache from persistent pipeline state files."""
     active = list_active_pipelines()
@@ -517,7 +528,23 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["POST", "GET"])
 
 # Rate limiting
-limiter = Limiter(key_func=get_remote_address)
+def _client_ip_key(request: Request) -> str:
+    """Rate-limit key: prefer first hop in X-Forwarded-For, fall back to client.host.
+
+    Railway places its proxy in front, so request.client.host is always the
+    Railway IP — useless for per-client rate limiting. The first IP in
+    X-Forwarded-For is the actual client per RFC 7239 reverse-proxy convention.
+    Empty / malformed headers fall through to the standard remote-address key.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_ip_key)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -597,6 +624,17 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
         "img-src 'self' data:; "
         "connect-src 'self'; "
         "frame-ancestors 'none'"
+    )
+    # HSTS only in production (Railway). Local dev shouldn't preload HSTS or it
+    # poisons browsers against http://localhost on the same port.
+    if IS_RAILWAY:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains; preload"
+        )
+    # Disable powerful browser features we never use — defense-in-depth against
+    # third-party scripts loaded via CSP exceptions.
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=()"
     )
     return response
 
@@ -811,10 +849,9 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
         # Last-resort alert — ensures Tornike knows even if n8n callback fails
         try:
-            _g_label = GROUPS.get(group, {}).get("name") or f"Group {group}"
             await asyncio.to_thread(
                 alert_operator,
-                f"Pipeline FAILED for {_g_label}, Lecture #{lecture}.\n"
+                f"Pipeline FAILED for {_g_label(group)}, Lecture #{lecture}.\n"
                 f"Error: {e}",
             )
         except Exception as alert_err:
@@ -1647,7 +1684,8 @@ async def process_recording(
             )
             raise HTTPException(
                 status_code=409,
-                detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                detail=f"Recording for {_g_label(payload.group_number)}, "
+                       f"Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
@@ -1674,7 +1712,7 @@ async def process_recording(
                 _processing_tasks.pop(key, None)
             raise HTTPException(
                 status_code=422,
-                detail=f"No zoom_meeting_id configured for Group {payload.group_number} "
+                detail=f"No zoom_meeting_id configured for {_g_label(payload.group_number)} "
                        f"— cannot auto-discover recording",
             )
 
@@ -1710,7 +1748,7 @@ async def process_recording(
         return {
             "status": "accepted",
             "mode": "auto-discovery",
-            "message": f"Auto-discovery pipeline started for Group {payload.group_number}, "
+            "message": f"Auto-discovery pipeline started for {_g_label(payload.group_number)}, "
                        f"Lecture #{payload.lecture_number} (polling meeting {meeting_id})",
         }
 
@@ -1718,7 +1756,8 @@ async def process_recording(
 
     return {
         "status": "accepted",
-        "message": f"Processing started for Group {payload.group_number}, Lecture #{payload.lecture_number}",
+        "message": f"Processing started for {_g_label(payload.group_number)}, "
+                   f"Lecture #{payload.lecture_number}",
     }
 
 
@@ -1935,10 +1974,9 @@ async def _manual_pipeline_task(
     except Exception as e:
         error_msg = f"Manual pipeline failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
-        _g_label = GROUPS.get(group_number, {}).get("name") or f"Group {group_number}"
         await asyncio.to_thread(
             alert_operator,
-            f"Manual pipeline FAILED for {_g_label}, Lecture #{lecture_number}.\n"
+            f"Manual pipeline FAILED for {_g_label(group_number)}, Lecture #{lecture_number}.\n"
             f"Error: {e}",
         )
     finally:
@@ -1982,7 +2020,8 @@ async def manual_trigger(
             started_str = started.isoformat() if started else "unknown"
             raise HTTPException(
                 status_code=409,
-                detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                detail=f"{_g_label(payload.group_number)}, "
+                       f"Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
@@ -2005,7 +2044,7 @@ async def manual_trigger(
 
     return {
         "status": "accepted",
-        "message": f"Manual pipeline started for Group {payload.group_number}, "
+        "message": f"Manual pipeline started for {_g_label(payload.group_number)}, "
                    f"Lecture #{payload.lecture_number} (Drive file: {payload.drive_file_id})",
     }
 
