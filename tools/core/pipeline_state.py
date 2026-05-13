@@ -127,6 +127,10 @@ class PipelineState:
         group_notified: Whether the group WhatsApp notification was sent.
         private_notified: Whether the private (operator) notification was sent.
         pinecone_indexed: Whether lecture content was indexed in Pinecone.
+        obsidian_synced: Whether the Obsidian vault note was created for this lecture.
+            May be False even when the pipeline reaches COMPLETE (Obsidian sync is
+            non-fatal per Option B design). When False, alert_operator() is called and
+            the operator must manually trigger Obsidian re-sync.
         error: Human-readable error message if the pipeline is in FAILED state.
         retry_count: Number of times the pipeline has been retried after failure.
         cost_estimate_usd: Running estimate of API costs incurred (USD).
@@ -149,6 +153,7 @@ class PipelineState:
     group_notified: bool = False
     private_notified: bool = False
     pinecone_indexed: bool = False
+    obsidian_synced: bool = False
     error: str = ""
     retry_count: int = 0
     cost_estimate_usd: float = 0.0
@@ -277,6 +282,7 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
         group_notified=bool(data.get("group_notified", False)),
         private_notified=bool(data.get("private_notified", False)),
         pinecone_indexed=bool(data.get("pinecone_indexed", False)),
+        obsidian_synced=bool(data.get("obsidian_synced", False)),
         error=str(data.get("error", "")),
         retry_count=int(data.get("retry_count", 0)),
         cost_estimate_usd=float(data.get("cost_estimate_usd", 0.0)),
@@ -620,6 +626,7 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
 #: enforcing the invariant at the state boundary instead of at every
 #: caller, this gap cannot re-open no matter which pipeline path runs.
 _COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    ("drive_video_id", "video was never uploaded to Drive — refusing to mark COMPLETE"),
     ("analysis_done", "analysis artifacts written"),
     ("summary_doc_id", "summary Google Doc uploaded"),
     ("report_doc_id", "private report Google Doc uploaded"),
@@ -664,6 +671,41 @@ def mark_complete(state: PipelineState) -> PipelineState:
         state.lecture,
     )
     return transition(state, COMPLETE)
+
+
+def set_drive_video_id(group: int, lecture: int, video_id: str) -> PipelineState | None:
+    """Record the Google Drive file ID for the uploaded recording video.
+
+    Loads the current pipeline state, writes ``drive_video_id``, and
+    persists atomically.  Returns the updated state, or None if the
+    state file does not exist.
+
+    This must be called immediately after a successful ``upload_file()``
+    call so that ``mark_complete()`` can verify the video artifact exists
+    via the ``_COMPLETION_INVARIANTS`` gate.
+
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        video_id: Google Drive file ID returned by ``gdrive_manager.upload_file()``.
+
+    Returns:
+        The updated PipelineState, or None if no state file is found.
+    """
+    state = load_state(group, lecture)
+    if state is None:
+        logger.warning(
+            "set_drive_video_id: no pipeline state found for g%d/l%d — cannot record video_id=%r",
+            group, lecture, video_id,
+        )
+        return None
+    updated = _replace_state(state, drive_video_id=video_id)
+    save_state(updated)
+    logger.info(
+        "Pipeline g%d/l%d: drive_video_id recorded (%s)",
+        group, lecture, video_id,
+    )
+    return updated
 
 
 # ---------------------------------------------------------------------------

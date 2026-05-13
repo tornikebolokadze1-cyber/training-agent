@@ -16,6 +16,7 @@ Run with:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -393,6 +394,24 @@ class TestEdgeCases:
 
         status = orchestrator.get_retry_status()
         assert status["total_pending"] == 3
+
+    @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
+    def test_concurrent_retries_same_lecture_keep_tracker_valid(
+        self, mock_sched, orchestrator: RetryOrchestrator
+    ):
+        """Concurrent failures for one lecture must not corrupt retry_tracker.json."""
+
+        def schedule(i: int) -> dict:
+            return orchestrator.schedule_retry(1, 9, "meeting-9", f"err-{i}")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(schedule, range(4)))
+
+        record = orchestrator.get_record(1, 9)
+        assert record is not None
+        assert record.attempt == 4
+        assert len(record.errors) == 4
+        assert results[-1]["status"] == "scheduled"
 
     @patch.object(RetryOrchestrator, "_schedule_apscheduler_job")
     def test_backoff_index_capped(self, mock_sched, orchestrator: RetryOrchestrator):

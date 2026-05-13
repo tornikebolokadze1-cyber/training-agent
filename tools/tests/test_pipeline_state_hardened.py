@@ -245,6 +245,7 @@ class TestPipelineGuard:
             assert s.meeting_id == "test-123"
             transition(
                 s, DOWNLOADING,
+                drive_video_id="vid-test",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",
@@ -302,6 +303,14 @@ class TestPipelineGuard:
         create_pipeline(_G, _L, meeting_id="existing")
         with pipeline_guard(_G, _L, create_new=False) as s:
             assert s.meeting_id == "existing"
+            s = transition(
+                s, INDEXING,
+                drive_video_id="vid-test",
+                analysis_done=True,
+                summary_doc_id="doc-s",
+                report_doc_id="doc-r",
+                pinecone_indexed=True,
+            )
             mark_complete(s)
 
     def test_guard_load_nonexistent_raises_claim_error(self):
@@ -313,6 +322,14 @@ class TestPipelineGuard:
         key = (_G, _L)
         with pipeline_guard(_G, _L) as s:
             assert key in _heartbeat_threads
+            s = transition(
+                s, INDEXING,
+                drive_video_id="vid-test",
+                analysis_done=True,
+                summary_doc_id="doc-s",
+                report_doc_id="doc-r",
+                pinecone_indexed=True,
+            )
             mark_complete(s)
 
         assert key not in _heartbeat_threads
@@ -519,6 +536,7 @@ class TestIntegration:
             s = transition(s, NOTIFYING)
             s = transition(
                 s, INDEXING,
+                drive_video_id="vid-test",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",

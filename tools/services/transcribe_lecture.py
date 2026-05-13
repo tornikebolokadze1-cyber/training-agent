@@ -26,6 +26,8 @@ from tools.core.pipeline_state import (
     transition,
     mark_complete,
     mark_failed,
+    _replace_state,
+    save_state,
     _STATE_ORDER,
     TRANSCRIBING,
     UPLOADING_DOCS,
@@ -40,6 +42,7 @@ from tools.integrations.gdrive_manager import (
 )
 from tools.integrations.gemini_analyzer import analyze_lecture, cleanup_checkpoints
 from tools.integrations.knowledge_indexer import index_lecture_content
+from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
 from tools.integrations.whatsapp_sender import (
     alert_operator,
     send_group_upload_notification,
@@ -367,7 +370,6 @@ def transcribe_and_index(
                 )
                 logger.error(msg)
                 try:
-                    from tools.integrations.whatsapp_sender import alert_operator
                     alert_operator(msg)
                 except Exception:
                     pass
@@ -551,11 +553,17 @@ def transcribe_and_index(
         if deleted:
             logger.info("Cleaned up %d checkpoint files after successful pipeline", deleted)
 
-        # Step 7: Sync Obsidian knowledge vault (non-fatal)
+        # Step 7: Sync Obsidian knowledge vault (Option B — non-fatal but tracked).
+        # We do NOT let Obsidian failure prevent COMPLETE: all other artifacts
+        # (Drive video, Drive docs, Pinecone) are intact. Instead we:
+        #   1. Record obsidian_synced=True/False in the pipeline state.
+        #   2. On failure, log at ERROR level and alert the operator so the
+        #      gap is visible and can be retried manually / by a future job.
+        obsidian_synced_flag = False
         try:
-            from tools.integrations.obsidian_sync import sync_lecture as obsidian_sync
             logger.info("Step 7: Syncing Obsidian vault...")
             sync_result = obsidian_sync(group_number, lecture_number)
+            obsidian_synced_flag = True
             logger.info(
                 "Obsidian sync: %d concepts, %d relationships, %d files updated",
                 sync_result.get("concepts", 0),
@@ -563,7 +571,24 @@ def transcribe_and_index(
                 sync_result.get("files_updated", 0),
             )
         except Exception as _obsidian_err:
-            logger.error("Obsidian sync failed (non-fatal): %s", _obsidian_err)
+            logger.error(
+                "Obsidian sync FAILED for g%d/l%d — lecture note NOT created. "
+                "obsidian_synced=False. Error: %s",
+                group_number, lecture_number, _obsidian_err,
+            )
+            alert_operator(
+                f"⚠️ Obsidian sync failed for Group {group_number}, "
+                f"Lecture #{lecture_number}.\n"
+                f"All other artifacts are intact (Drive, Pinecone, WhatsApp). "
+                f"The Obsidian vault note is MISSING and requires manual re-sync.\n"
+                f"Error: {_obsidian_err}"
+            )
+
+        # Persist obsidian_synced flag before marking complete so the state
+        # file reflects reality regardless of which branch we took.
+        if pipeline:
+            pipeline = _replace_state(pipeline, obsidian_synced=obsidian_synced_flag)
+            save_state(pipeline)
 
         if pipeline:
             pipeline = mark_complete(pipeline)

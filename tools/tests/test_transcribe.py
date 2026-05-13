@@ -427,6 +427,10 @@ class TestPipelineStateCompletionMetadata:
         monkeypatch.setattr(tl, "TMP_DIR", tmp_path)
 
         ps.create_pipeline(1, 1, meeting_id="meeting-xyz")
+        # In production, scheduler.py uploads the video and writes
+        # drive_video_id BEFORE handing off to transcribe_and_index. The
+        # mark_complete invariant (added 2026-05-13) requires this field.
+        ps.set_drive_video_id(1, 1, "drive-video-fixture-id")
         results = {
             "transcript": "t" * 3000,
             "summary": "s" * 600,

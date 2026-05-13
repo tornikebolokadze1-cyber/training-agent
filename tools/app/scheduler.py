@@ -39,6 +39,7 @@ from tools.core.config import (
 from tools.core.pipeline_state import (
     is_pipeline_active,
     is_pipeline_done,
+    set_drive_video_id,
 )
 from tools.integrations.whatsapp_sender import alert_operator
 
@@ -495,13 +496,28 @@ def _run_post_meeting_pipeline(
     # (prevents retry storms for already-backfilled lectures)
     try:
         from tools.integrations.knowledge_indexer import lecture_exists_in_index
+        from tools.core.pipeline_state import COMPLETE, FAILED, load_state, state_file_path
         required = ("transcript", "summary", "gap_analysis", "deep_analysis")
         if all(lecture_exists_in_index(group_number, lecture_number, t) for t in required):
             logger.info(
                 "[post] Skipping — G%d L%d already fully indexed in Pinecone",
                 group_number, lecture_number,
             )
-            _durable_abort(f"already_indexed: G{group_number} L{lecture_number}")
+            retry_orchestrator.clear_retry(group_number, lecture_number)
+            current = load_state(group_number, lecture_number)
+            if current and current.state not in (COMPLETE, FAILED):
+                try:
+                    state_file_path(group_number, lecture_number).unlink(missing_ok=True)
+                    logger.info(
+                        "[post] Removed transient state for already-indexed G%d L%d",
+                        group_number,
+                        lecture_number,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "[post] Could not remove already-indexed state file: %s",
+                        exc,
+                    )
             _cleanup_dedup()
             return
     except Exception as exc:
@@ -647,6 +663,7 @@ def _run_post_meeting_pipeline(
 
         # Check if video already uploaded (crash recovery — avoid duplicates)
         video_already_uploaded = False
+        recovered_drive_video_id: str = ""
         try:
             existing_files = list_files_in_folder(lecture_folder_id)
             legacy_prefix = f"group{group_number}_lecture{lecture_number}_"
@@ -668,6 +685,7 @@ def _run_post_meeting_pipeline(
             )
             if existing_video is not None:
                 video_already_uploaded = True
+                recovered_drive_video_id = existing_video.get("id", "")
                 logger.info(
                     "[post] Video already in Drive (crash recovery): %s — skipping upload",
                     existing_video["name"],
@@ -680,10 +698,28 @@ def _run_post_meeting_pipeline(
 
         if video_already_uploaded:
             logger.info("[post] Skipped duplicate upload to Drive")
+            if recovered_drive_video_id:
+                set_drive_video_id(group_number, lecture_number, recovered_drive_video_id)
+                logger.info(
+                    "[post] Recorded recovered drive_video_id=%s in pipeline state",
+                    recovered_drive_video_id,
+                )
         else:
             trash_old_recordings(lecture_folder_id, group_number, lecture_number)
-            upload_file(local_path, lecture_folder_id)
+            uploaded_video_id = upload_file(local_path, lecture_folder_id)
             logger.info("[post] Recording uploaded to Drive")
+            if uploaded_video_id:
+                set_drive_video_id(group_number, lecture_number, uploaded_video_id)
+                logger.info(
+                    "[post] Recorded drive_video_id=%s in pipeline state",
+                    uploaded_video_id,
+                )
+            else:
+                logger.error(
+                    "[post] upload_file returned empty ID for g%d/l%d — "
+                    "drive_video_id not recorded; mark_complete will reject this pipeline",
+                    group_number, lecture_number,
+                )
 
         # ---- Step 5: Full analysis pipeline --------------------------------
         # Delegates all analysis, Drive uploads, WhatsApp notifications,

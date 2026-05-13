@@ -438,16 +438,47 @@ WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 OPERATOR_WEBHOOK_SECRET = _env("OPERATOR_WEBHOOK_SECRET")
 N8N_CALLBACK_URL = _env("N8N_CALLBACK_URL")
 
+# ---------------------------------------------------------------------------
+# Webhook secret security model
+# ---------------------------------------------------------------------------
+# Three INDEPENDENT secrets with separate threat models.  They are NEVER
+# substitutable for one another — compromising one must not grant access to
+# a protected surface controlled by another.
+#
+#  WEBHOOK_SECRET        — n8n / Zoom ingestion endpoint trust boundary.
+#                          Required in all environments. Min 32 chars.
+#
+#  OPERATOR_WEBHOOK_SECRET — operator-only endpoints (health dashboard,
+#                          manual-trigger, retry-latest, admin routes).
+#                          Required in production (IS_RAILWAY=True).
+#                          In local dev, absent OPERATOR_WEBHOOK_SECRET logs a
+#                          WARNING and callers that do `OPERATOR_WEBHOOK_SECRET
+#                          or WEBHOOK_SECRET` fall back gracefully; this
+#                          preserves dev ergonomics without a security gap.
+#
+#  PAPERCLIP_WEBHOOK_SECRET — Paperclip orchestration platform task dispatch.
+#                          Required when PAPERCLIP_API_BASE is set (integration
+#                          is active). If absent, the /paperclip/task endpoint
+#                          rejects ALL requests (fail-closed by design).
+#
+# Intentional asymmetry between dev and prod
+# -------------------------------------------
+# In production (IS_RAILWAY=True): all three must be set, all must be distinct,
+#   all must be at least 32 chars, weak dictionary values are rejected.
+# In dev (IS_RAILWAY=False): validation degrades to WARNINGs so the developer
+#   can run the stack with a single minimal secret for local testing.
+#
+# !! DO NOT add `or WEBHOOK_SECRET` fallbacks to these assignments. !!
+# ---------------------------------------------------------------------------
+
 # --- Paperclip bridge ---
-# Separate secret for Paperclip task dispatch so we can rotate it independently
-# of WEBHOOK_SECRET (n8n). Falls back to WEBHOOK_SECRET for single-operator
-# setups where rotating both at once is fine.
-PAPERCLIP_WEBHOOK_SECRET = _env("PAPERCLIP_WEBHOOK_SECRET") or WEBHOOK_SECRET
+# Pure values — no fallback to WEBHOOK_SECRET.
+# If unset the bridge endpoints will reject all requests (correct fail-closed).
+PAPERCLIP_WEBHOOK_SECRET = _env("PAPERCLIP_WEBHOOK_SECRET")
 # PAPERCLIP_OPENCLAW_SECRET: Bearer token Paperclip sends on dispatch to the
 # OpenClaw / CRO gateway (`POST /query`). Rotated independently of the Training
-# Ops Lead bridge secret. Falls back to PAPERCLIP_WEBHOOK_SECRET so single-
-# operator setups keep working; production has its own key in .env.
-PAPERCLIP_OPENCLAW_SECRET = _env("PAPERCLIP_OPENCLAW_SECRET", PAPERCLIP_WEBHOOK_SECRET)
+# Ops Lead bridge secret.  No fallback — unset means the gateway rejects calls.
+PAPERCLIP_OPENCLAW_SECRET = _env("PAPERCLIP_OPENCLAW_SECRET")
 PAPERCLIP_API_BASE = _env("PAPERCLIP_API_BASE", "http://127.0.0.1:3100").rstrip("/")
 
 SERVER_HOST = _env("SERVER_HOST", "0.0.0.0" if IS_RAILWAY else "127.0.0.1")
@@ -462,20 +493,153 @@ SERVER_PUBLIC_URL = _env("SERVER_PUBLIC_URL")  # e.g. "https://abc123.ngrok.io"
 # ---------------------------------------------------------------------------
 
 
-def validate_critical_config() -> list[str]:
-    """Check that critical environment variables are set.
+_WEAK_SECRET_VALUES: frozenset[str] = frozenset({
+    "test", "password", "secret", "changeme", "your-secret-here",
+    "your_webhook_secret_here", "webhook_secret", "change_me",
+    "example", "placeholder", "dummy", "fake", "none",
+})
 
-    Returns a list of warning messages for missing non-critical vars.
-    Raises RuntimeError if any critical var is missing.
+_MIN_SECRET_LENGTH = 32
+
+
+def _check_secret_strength(
+    value: str,
+    name: str,
+    errors: list[str],
+    warnings: list[str],
+    *,
+    production: bool,
+) -> None:
+    """Validate a single secret's length and entropy.
+
+    Appends to *errors* in production mode and to *warnings* in dev mode.
+    """
+    if not value:
+        return  # Absence is handled by callers separately
+
+    messages = errors if production else warnings
+
+    if len(value) < _MIN_SECRET_LENGTH:
+        messages.append(
+            f"{name} is too short ({len(value)} chars); "
+            f"minimum is {_MIN_SECRET_LENGTH} for cryptographic strength"
+        )
+
+    value_lower = value.lower()
+    if value_lower in _WEAK_SECRET_VALUES or any(
+        value_lower.startswith(weak) for weak in _WEAK_SECRET_VALUES
+    ):
+        messages.append(
+            f"{name} matches a known weak/example value — "
+            "set a randomly generated secret"
+        )
+
+
+def validate_critical_config() -> list[str]:
+    """Check that critical environment variables are set and secrets are strong.
+
+    Security model enforced here (see module docstring block above):
+    - WEBHOOK_SECRET: always required, min 32 chars, no weak values.
+    - OPERATOR_WEBHOOK_SECRET: required in production; warn in dev.
+    - PAPERCLIP_WEBHOOK_SECRET: required when Paperclip integration is active.
+    - All three secrets must be distinct in production.
+
+    Returns a list of warning messages for non-fatal issues.
+    Raises RuntimeError if any critical check fails in production (IS_RAILWAY=True).
+    In local dev (IS_RAILWAY=False), critical checks degrade to warnings so
+    the developer can run the stack with minimal config.
+
+    NOTE for production rollout: Tornike must set OPERATOR_WEBHOOK_SECRET and
+    PAPERCLIP_WEBHOOK_SECRET distinct from WEBHOOK_SECRET BEFORE deploying this
+    code to Railway.  See docs/security/secret-separation-rollout.md.
     """
     warnings: list[str] = []
+    errors: list[str] = []
 
-    # Critical for production — server won't work without these
-    critical_missing = []
+    production = IS_RAILWAY
+
+    # ------------------------------------------------------------------
+    # 1. WEBHOOK_SECRET — always critical
+    # ------------------------------------------------------------------
     if not WEBHOOK_SECRET:
-        critical_missing.append("WEBHOOK_SECRET")
+        errors.append("WEBHOOK_SECRET is not set")
+    else:
+        _check_secret_strength(WEBHOOK_SECRET, "WEBHOOK_SECRET", errors, warnings, production=production)
 
-    # Important but not fatal — specific features won't work
+    # ------------------------------------------------------------------
+    # 2. OPERATOR_WEBHOOK_SECRET — required in production
+    # ------------------------------------------------------------------
+    if not OPERATOR_WEBHOOK_SECRET:
+        if production:
+            errors.append(
+                "OPERATOR_WEBHOOK_SECRET is not set in production; "
+                "operator/admin endpoints will reject all requests"
+            )
+        else:
+            warnings.append(
+                "OPERATOR_WEBHOOK_SECRET not set; in dev, operator endpoints "
+                "fall back to WEBHOOK_SECRET (NOT safe in production)"
+            )
+    else:
+        _check_secret_strength(
+            OPERATOR_WEBHOOK_SECRET, "OPERATOR_WEBHOOK_SECRET",
+            errors, warnings, production=production,
+        )
+
+    # ------------------------------------------------------------------
+    # 3. PAPERCLIP_WEBHOOK_SECRET — required when integration is active
+    # ------------------------------------------------------------------
+    paperclip_active = bool(_env("PAPERCLIP_API_BASE") or PAPERCLIP_API_BASE != "http://127.0.0.1:3100")
+    if not PAPERCLIP_WEBHOOK_SECRET:
+        if paperclip_active:
+            msg = (
+                "PAPERCLIP_WEBHOOK_SECRET not set while Paperclip integration "
+                "is active — /paperclip/task will reject all requests (fail-closed)"
+            )
+            if production:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+        else:
+            warnings.append(
+                "PAPERCLIP_WEBHOOK_SECRET not set; Paperclip endpoints will "
+                "reject all requests until set"
+            )
+    else:
+        _check_secret_strength(
+            PAPERCLIP_WEBHOOK_SECRET, "PAPERCLIP_WEBHOOK_SECRET",
+            errors, warnings, production=production,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Secrets must be distinct from each other
+    # ------------------------------------------------------------------
+    set_secrets: dict[str, str] = {}
+    if WEBHOOK_SECRET:
+        set_secrets["WEBHOOK_SECRET"] = WEBHOOK_SECRET
+    if OPERATOR_WEBHOOK_SECRET:
+        set_secrets["OPERATOR_WEBHOOK_SECRET"] = OPERATOR_WEBHOOK_SECRET
+    if PAPERCLIP_WEBHOOK_SECRET:
+        set_secrets["PAPERCLIP_WEBHOOK_SECRET"] = PAPERCLIP_WEBHOOK_SECRET
+
+    seen: dict[str, str] = {}  # value → first name that used it
+    for name, value in set_secrets.items():
+        if value in seen:
+            collision_msg = (
+                f"{name} is identical to {seen[value]} — "
+                "each secret must be unique so that rotating one does not "
+                "compromise the others"
+            )
+            if production:
+                errors.append(collision_msg)
+            else:
+                warnings.append(collision_msg)
+        else:
+            seen[value] = name
+
+    # ------------------------------------------------------------------
+    # 5. Important but not fatal — specific features won't work
+    # ------------------------------------------------------------------
     if not GEMINI_API_KEY and not GEMINI_API_KEY_PAID:
         warnings.append("No Gemini API key configured (GEMINI_API_KEY or GEMINI_API_KEY_PAID)")
     if not ANTHROPIC_API_KEY:
@@ -484,12 +648,10 @@ def validate_critical_config() -> list[str]:
         warnings.append("Green API not configured — WhatsApp notifications disabled")
     if not WHATSAPP_TORNIKE_PHONE:
         warnings.append("WHATSAPP_TORNIKE_PHONE not set — operator alerts disabled")
-    if not OPERATOR_WEBHOOK_SECRET:
-        warnings.append(
-            "OPERATOR_WEBHOOK_SECRET not set; operator/admin endpoints fall back to WEBHOOK_SECRET"
-        )
 
-    # These are HIGH-risk if missing — warn at startup
+    # ------------------------------------------------------------------
+    # 6. HIGH-risk missing vars — warn at startup
+    # ------------------------------------------------------------------
     _warn_vars: list[tuple[str, str]] = [
         ("ZOOM_WEBHOOK_SECRET_TOKEN", "Zoom webhooks will return 503"),
     ]
@@ -546,18 +708,24 @@ def validate_critical_config() -> list[str]:
             logger.warning("Missing %s — %s", var_name, consequence)
             warnings.append(f"Missing {var_name} — {consequence}")
 
-    # Log warnings
+    # ------------------------------------------------------------------
+    # Log everything and fail fast if production has errors
+    # ------------------------------------------------------------------
     for w in warnings:
         logger.warning("Config: %s", w)
+    for e in errors:
+        logger.error("Config security error: %s", e)
 
-    # Critical failures only in Railway (production)
-    if IS_RAILWAY and critical_missing:
+    if production and errors:
         raise RuntimeError(
-            f"Critical env vars missing in production: {', '.join(critical_missing)}"
+            f"Critical config errors in production ({len(errors)}): "
+            + "; ".join(errors)
         )
-    elif critical_missing:
-        for var in critical_missing:
-            logger.warning("Config: %s not set (OK for local dev)", var)
+    elif errors:
+        # Dev mode: errors are demoted to warnings in the return value
+        for e in errors:
+            logger.warning("Config: %s (OK for local dev)", e)
+        warnings.extend(errors)
 
     return warnings
 

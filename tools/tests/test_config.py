@@ -42,7 +42,7 @@ class TestValidateCriticalConfig:
     def test_returns_list(self):
         """Return type is always list regardless of env state."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -55,7 +55,7 @@ class TestValidateCriticalConfig:
     def test_missing_gemini_key_produces_warning(self):
         """When both Gemini keys are absent a warning is appended."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", ""), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -68,7 +68,7 @@ class TestValidateCriticalConfig:
     def test_missing_anthropic_key_produces_warning(self):
         """Absent ANTHROPIC_API_KEY yields a warning."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", ""), \
@@ -81,7 +81,7 @@ class TestValidateCriticalConfig:
     def test_missing_green_api_produces_warning(self):
         """Absent GREEN_API_INSTANCE_ID or GREEN_API_TOKEN yields a warning."""
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -130,8 +130,9 @@ class TestValidateCriticalConfig:
             "WHATSAPP_GROUP2_ID": "g2",
         }
         with patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
-             patch.object(cfg, "OPERATOR_WEBHOOK_SECRET", "op-secret"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "whsec_A7q9Lm4Pz8Rt2Vu6Wx0Yb3Nc5Hd1Ks"), \
+             patch.object(cfg, "OPERATOR_WEBHOOK_SECRET", "opsec_H4k8Nq2Rs6Tv0Wy9Za3Cd5Ef7Gh1Jm"), \
+             patch.object(cfg, "PAPERCLIP_WEBHOOK_SECRET", "pcsec_Q8r2Tu6Vw0Xy4Za9Bc3De5Fg7Hi1Kl"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \
@@ -155,7 +156,7 @@ class TestValidateCriticalConfig:
         }
         with patch.object(cfg, "GROUPS", base_groups), \
              patch.object(cfg, "IS_RAILWAY", False), \
-             patch.object(cfg, "WEBHOOK_SECRET", "s3cr3t"), \
+             patch.object(cfg, "WEBHOOK_SECRET", "test-secret-32-char-pass-validation-XX"), \
              patch.object(cfg, "GEMINI_API_KEY", "k"), \
              patch.object(cfg, "GEMINI_API_KEY_PAID", ""), \
              patch.object(cfg, "ANTHROPIC_API_KEY", "k"), \

@@ -857,6 +857,28 @@ class TestWhatsAppIncomingEndpoint:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ignored"
 
+    async def test_duplicate_archive_payload_does_not_queue_assistant_reply(
+        self, patched_secrets
+    ):
+        """Green API replay duplicates must not trigger a second assistant reply."""
+        duplicate_result = {
+            "inserted": False,
+            "green_api_id": "dup-message-id",
+            "reason": "duplicate",
+        }
+        with patch(
+            "tools.services.message_archive.archive_webhook_payload",
+            return_value=duplicate_result,
+        ), patch.object(srv, "_handle_assistant_message") as mock_handler:
+            async with await _async_client() as client:
+                resp = await client.post(
+                    "/whatsapp-incoming", json=_WA_TEXT_BODY, headers=_WA_AUTH
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["reason"] == "duplicate webhook message"
+        mock_handler.assert_not_called()
+
 
 # ===========================================================================
 # 9. _evict_stale_tasks

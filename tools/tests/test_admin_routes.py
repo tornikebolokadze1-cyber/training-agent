@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -59,6 +60,7 @@ from tools.core.pipeline_state import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _TEST_WEBHOOK_SECRET = "test-secret-abc"
+_TEST_OPERATOR_SECRET = "operator-secret-xyz"
 _AUTH_HEADER = {"Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}"}
 
 
@@ -104,9 +106,15 @@ def patched_secrets():
     points to) rather than whatever is currently in sys.modules.
     """
     live_srv = sys.modules.get("tools.app.server", srv)
-    with patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+    with (
+        patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET),
+        patch.object(srv, "OPERATOR_WEBHOOK_SECRET", ""),
+    ):
         if live_srv is not srv:
-            with patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET):
+            with (
+                patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET),
+                patch.object(live_srv, "OPERATOR_WEBHOOK_SECRET", ""),
+            ):
                 yield
         else:
             yield
@@ -236,6 +244,43 @@ class TestRetryLecture:
         assert data["group"] == 1
         assert data["lecture"] == 6
         assert data["previous_state"] == "FAILED"
+
+    @patch("tools.app.admin_routes._server_internals")
+    async def test_retry_preserves_existing_meeting_id(
+        self, mock_internals, patched_secrets
+    ):
+        mock_internals.return_value = (
+            srv.verify_webhook_secret,
+            _processing_lock,
+            _processing_tasks,
+            _task_key,
+        )
+
+        save_state(
+            PipelineState(
+                group=1,
+                lecture=6,
+                state=FAILED,
+                meeting_id="uuid-from-original-webhook",
+                error="transient",
+            )
+        )
+
+        with patch("tools.app.admin_routes.create_pipeline") as mock_create:
+            with patch("tools.core.pipeline_retry.process_lecture_pipeline"):
+                async with await _client() as c:
+                    resp = await c.post(
+                        "/admin/retry-lecture",
+                        json={"group_number": 1, "lecture_number": 6},
+                        headers=_AUTH_HEADER,
+                    )
+
+        assert resp.status_code == 200
+        mock_create.assert_called_once_with(
+            1,
+            6,
+            meeting_id="uuid-from-original-webhook",
+        )
 
     @patch("tools.app.admin_routes._server_internals")
     async def test_retry_complete_lecture(self, mock_internals, patched_secrets):
@@ -412,6 +457,43 @@ class TestLectureStatus:
         async with await _client() as c:
             resp = await c.get("/admin/lecture-status")
         assert resp.status_code == 401
+
+    async def test_admin_endpoint_prefers_operator_secret(self):
+        operator_auth = {"Authorization": f"Bearer {_TEST_OPERATOR_SECRET}"}
+        webhook_auth = {"Authorization": f"Bearer {_TEST_WEBHOOK_SECRET}"}
+        live_srv = sys.modules.get("tools.app.server", srv)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET))
+            stack.enter_context(
+                patch.object(srv, "OPERATOR_WEBHOOK_SECRET", _TEST_OPERATOR_SECRET)
+            )
+            if live_srv is not srv:
+                stack.enter_context(
+                    patch.object(live_srv, "WEBHOOK_SECRET", _TEST_WEBHOOK_SECRET)
+                )
+                stack.enter_context(
+                    patch.object(
+                        live_srv,
+                        "OPERATOR_WEBHOOK_SECRET",
+                        _TEST_OPERATOR_SECRET,
+                    )
+                )
+            stack.enter_context(
+                patch("tools.app.admin_routes._get_pinecone_counts", return_value={})
+            )
+            async with await _client() as c:
+                webhook_resp = await c.get(
+                    "/admin/lecture-status",
+                    headers=webhook_auth,
+                )
+                operator_resp = await c.get(
+                    "/admin/lecture-status",
+                    headers=operator_auth,
+                )
+
+        assert webhook_resp.status_code == 403
+        assert operator_resp.status_code == 200
 
     @patch("tools.app.admin_routes._server_internals")
     @patch("tools.app.admin_routes._get_pinecone_counts", return_value={})

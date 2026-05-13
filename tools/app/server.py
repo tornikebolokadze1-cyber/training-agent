@@ -50,6 +50,7 @@ from tools.integrations.gdrive_manager import (
     upload_file,
 )
 from tools.integrations.whatsapp_sender import alert_operator
+from tools.core.error_handling import safe_exception_detail
 from tools.core.pipeline_state import (
     is_pipeline_active,
     is_pipeline_done,
@@ -625,6 +626,7 @@ class ProcessRecordingRequest(BaseModel):
     group_number: int
     lecture_number: int
     drive_folder_id: str = ""
+    meeting_id: str = ""
 
     def __init__(self, **data):  # type: ignore[override]
         super().__init__(**data)
@@ -790,7 +792,10 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
         # backoff consistent with every other entry path.
         try:
             from tools.core.pipeline_retry import retry_orchestrator as _retry_orch
-            _retry_orch.schedule_retry(group, lecture, "", str(e))
+            retry_meeting_id = payload.meeting_id or GROUPS.get(group, {}).get(
+                "zoom_meeting_id", ""
+            )
+            _retry_orch.schedule_retry(group, lecture, retry_meeting_id, str(e))
         except Exception as retry_err:
             logger.warning("Failed to schedule retry for G%d L%d: %s", group, lecture, retry_err)
 
@@ -1117,6 +1122,12 @@ async def whatsapp_incoming(
                 "Archived webhook message %s",
                 str(archive_result.get("green_api_id", ""))[:24],
             )
+        elif archive_result.get("reason") == "duplicate":
+            return {
+                "status": "ignored",
+                "reason": "duplicate webhook message",
+                "green_api_id": archive_result.get("green_api_id", ""),
+            }
     except Exception as archive_exc:
         logger.warning("Archive write failed (non-blocking): %s", archive_exc)
 
@@ -1310,6 +1321,7 @@ def _extract_recording_context(body: dict) -> dict | None:
         "download_url": video.get("download_url", ""),
         "access_token": body.get("download_token", ""),
         "drive_folder_id": GROUPS[group_number].get("drive_folder_id", ""),
+        "meeting_id": str(obj.get("uuid", "")) or str(obj.get("id", "")),
         "topic": topic,
     }
 
@@ -1556,7 +1568,11 @@ async def zoom_webhook(
                 return {"status": "duplicate", "message": f"{key} already processing"}
             _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
             try:
-                create_pipeline(ctx["group_number"], ctx["lecture_number"], meeting_id="")
+                create_pipeline(
+                    ctx["group_number"],
+                    ctx["lecture_number"],
+                    meeting_id=ctx.get("meeting_id", ""),
+                )
             except ValueError:
                 pass  # Pipeline state already exists — that's fine
 
@@ -1566,6 +1582,7 @@ async def zoom_webhook(
             group_number=ctx["group_number"],
             lecture_number=ctx["lecture_number"],
             drive_folder_id=ctx["drive_folder_id"],
+            meeting_id=ctx.get("meeting_id", ""),
         )
         background_tasks.add_task(process_recording_task, proc_payload)
 
@@ -1618,7 +1635,11 @@ async def process_recording(
             )
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
         try:
-            create_pipeline(payload.group_number, payload.lecture_number, meeting_id="")
+            create_pipeline(
+                payload.group_number,
+                payload.lecture_number,
+                meeting_id=payload.meeting_id,
+            )
         except ValueError:
             pass  # Pipeline state already exists — that's fine
 
@@ -1748,7 +1769,10 @@ async def retry_latest(
             zm.list_user_recordings, from_date, to_date,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Zoom API error: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=safe_exception_detail(exc, "Zoom API"),
+        )
 
     if not meetings:
         return {"status": "no_recordings", "message": "No recordings found in the last 3 days"}

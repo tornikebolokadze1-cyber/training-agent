@@ -998,7 +998,10 @@ class WhatsAppAssistant:
         if self._memory:
             try:
                 user_id = message.sender_name or message.sender_id[:10]
-                memories = self._memory.search(message.text, user_id=user_id, limit=3)
+                search_kwargs = {"user_id": user_id, "limit": 3}
+                if group_number is not None:
+                    search_kwargs["filters"] = {"group": {"eq": group_number}}
+                memories = self._memory.search(message.text, **search_kwargs)
                 if memories and memories.get("results"):
                     mem_items = [m["memory"] for m in memories["results"] if m.get("memory")]
                     if mem_items:
@@ -1072,7 +1075,8 @@ class WhatsAppAssistant:
                     {"role": "user", "content": message.text},
                     {"role": "assistant", "content": response_text},
                 ]
-                self._memory.add(conversation, user_id=user_id)
+                metadata = {"group": group_number} if group_number is not None else {}
+                self._memory.add(conversation, user_id=user_id, metadata=metadata)
                 logger.debug("Saved interaction to memory for %s", user_id)
             except Exception as exc:
                 logger.debug("Memory save failed (non-critical): %s", exc)

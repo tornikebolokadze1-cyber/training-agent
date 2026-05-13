@@ -810,6 +810,79 @@ class TestHandleMessage:
         assert "ეს კარგი კითხვაა" in result
         mock_send.assert_called_once()
 
+    def test_live_message_memory_search_is_group_scoped(self):
+        import asyncio
+        import os
+
+        from tools.services import whatsapp_assistant as wa_mod
+
+        assistant = _make_assistant()
+        assistant._group_map = {"group2@g.us": 2}
+        assistant._memory = MagicMock()
+        assistant._memory.search.return_value = {"results": []}
+
+        mock_claude_resp = MagicMock()
+        mock_claude_resp.content = [MagicMock(text="- Answer point")]
+        assistant._claude.messages.create = MagicMock(return_value=mock_claude_resp)
+
+        mock_gemini_resp = MagicMock()
+        mock_gemini_resp.text = "response"
+        assistant._genai_client.models.generate_content.return_value = mock_gemini_resp
+
+        msg = _make_message(
+            text="advisor, help",
+            chat_id="group2@g.us",
+            sender_name="SameStudent",
+        )
+
+        with patch.dict(os.environ, {"USE_CLAUDE_FOR_GEORGIAN_WRITING": "0"}), patch.dict("sys.modules", {
+            "tools.integrations.knowledge_indexer": MagicMock(
+                query_knowledge=MagicMock(return_value=[])
+            )
+        }), patch.object(wa_mod, "send_message_to_chat"):
+            result = asyncio.run(assistant.handle_message(msg))
+
+        assert result is not None
+        assistant._memory.search.assert_called()
+        search_kwargs = assistant._memory.search.call_args.kwargs
+        assert search_kwargs["filters"] == {"group": {"eq": 2}}
+
+    def test_live_message_memory_save_includes_group_metadata(self):
+        import asyncio
+        import os
+
+        from tools.services import whatsapp_assistant as wa_mod
+
+        assistant = _make_assistant()
+        assistant._group_map = {"group3@g.us": 3}
+        assistant._memory = MagicMock()
+        assistant._memory.search.return_value = {"results": []}
+
+        mock_claude_resp = MagicMock()
+        mock_claude_resp.content = [MagicMock(text="- Answer point")]
+        assistant._claude.messages.create = MagicMock(return_value=mock_claude_resp)
+
+        mock_gemini_resp = MagicMock()
+        mock_gemini_resp.text = "response"
+        assistant._genai_client.models.generate_content.return_value = mock_gemini_resp
+
+        msg = _make_message(
+            text="advisor, help",
+            chat_id="group3@g.us",
+            sender_name="SameStudent",
+        )
+
+        with patch.dict(os.environ, {"USE_CLAUDE_FOR_GEORGIAN_WRITING": "0"}), patch.dict("sys.modules", {
+            "tools.integrations.knowledge_indexer": MagicMock(
+                query_knowledge=MagicMock(return_value=[])
+            )
+        }), patch.object(wa_mod, "send_message_to_chat"):
+            result = asyncio.run(assistant.handle_message(msg))
+
+        assert result is not None
+        assistant._memory.add.assert_called()
+        assert assistant._memory.add.call_args.kwargs["metadata"] == {"group": 3}
+
     def test_passive_cooldown_skips_response(self):
         import asyncio
         assistant = _make_assistant()
