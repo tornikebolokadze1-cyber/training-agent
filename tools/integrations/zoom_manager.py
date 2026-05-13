@@ -51,6 +51,11 @@ PROGRESS_LOG_INTERVAL_BYTES = 100 * 1024 * 1024  # 100 MB
 MAX_DOWNLOAD_RETRIES = 5
 DISK_SPACE_SAFETY_MARGIN = 1.2  # require 1.2x file size free
 
+# Token age guard for long downloads: S2S OAuth tokens live ~1 hour, and a
+# 2-hour lecture on Railway egress can outlive the token mid-stream. Refresh
+# proactively after 50 minutes so we never hit the cliff.
+TOKEN_REFRESH_AGE_SECONDS = 3000  # 50 minutes
+
 # In-memory token cache: {"access_token": str, "expires_at": float}
 _token_cache: dict[str, Any] = {}
 _token_lock = threading.Lock()
@@ -678,6 +683,22 @@ def check_disk_space(dest_path: Path | str, required_bytes: int) -> None:
         )
 
 
+def _build_authenticated_url(download_url: str, access_token: str) -> str:
+    """Rebuild the Zoom CDN download URL with the given access token.
+
+    Zoom's CDN endpoint requires the token as a ``?access_token=`` query
+    parameter — it does NOT accept the ``Authorization: Bearer`` header.
+    So every retry that refreshes the token must rebuild the URL.
+    """
+    separator = "&" if "?" in download_url else "?"
+    return f"{download_url}{separator}access_token={access_token}"
+
+
+def _token_prefix(token: str) -> str:
+    """Return the first 8 chars of a token for log breadcrumbs (never the full secret)."""
+    return f"{token[:8]}..." if token else "<empty>"
+
+
 def download_recording(
     download_url: str,
     access_token: str,
@@ -692,6 +713,20 @@ def download_recording(
       - Retry up to ``MAX_DOWNLOAD_RETRIES`` on network errors.
       - Content-Length completeness validation.
       - SHA-256 checksum sidecar written on success.
+      - In-flight token refresh: 2-hour lectures on Railway egress can
+        outlive the 1-hour S2S OAuth token. Each retry fetches a fresh
+        token if the current one is older than 50 minutes, and 401 from
+        the CDN immediately forces a refresh + retry with the new
+        ``?access_token=`` URL param.
+
+    Args:
+        download_url: Zoom CDN URL (with or without an existing query string).
+        access_token: Initial OAuth token. Treated as the starting credential;
+            the retry loop refreshes it via ``get_access_token()`` when it
+            ages past ``TOKEN_REFRESH_AGE_SECONDS`` or when the CDN returns
+            HTTP 401.
+        dest_path: Local file destination.
+        resume: Whether to honor partial files via HTTP Range.
 
     Raises:
         ZoomDownloadError: On HTTP error, incomplete download, exhausted
@@ -700,14 +735,36 @@ def download_recording(
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    separator = "&" if "?" in download_url else "?"
-    authenticated_url = f"{download_url}{separator}access_token={access_token}"
+    # Current token + when it was acquired. The caller's token is the seed;
+    # we treat it as "freshly issued at function entry" and only refresh on
+    # age or 401 to avoid hammering get_access_token() needlessly.
+    current_token = access_token
+    token_issued_at = time.monotonic()
 
-    logger.info("Downloading recording to %s …", dest)
+    logger.info(
+        "Downloading recording to %s … (token=%s)",
+        dest, _token_prefix(current_token),
+    )
 
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
+        # --- Age-based refresh: if the current token is older than 50 min,
+        # proactively get a fresh one before issuing any request this iteration.
+        token_age = time.monotonic() - token_issued_at
+        if token_age > TOKEN_REFRESH_AGE_SECONDS:
+            old_prefix = _token_prefix(current_token)
+            current_token = get_access_token()
+            token_issued_at = time.monotonic()
+            logger.info(
+                "Refreshed Zoom token (age guard: %.0fs > %ds). old=%s new=%s",
+                token_age, TOKEN_REFRESH_AGE_SECONDS,
+                old_prefix, _token_prefix(current_token),
+            )
+
+        # Rebuild the URL with whatever token we have at the start of this attempt.
+        authenticated_url = _build_authenticated_url(download_url, current_token)
+
         # Determine resume offset
         resume_from = dest.stat().st_size if (resume and dest.exists()) else 0
         headers: dict[str, str] = {}
@@ -735,6 +792,35 @@ def download_recording(
                 follow_redirects=True,
             ) as client:
                 with client.stream("GET", authenticated_url, headers=headers) as response:
+                    # --- 401 path: token expired/invalid. Refresh and retry
+                    # without consuming the network-error retry budget if we
+                    # have attempts left.
+                    if response.status_code == 401:
+                        logger.info(
+                            "Zoom CDN returned 401 (attempt %d/%d) with token=%s — "
+                            "refreshing and retrying.",
+                            attempt, MAX_DOWNLOAD_RETRIES,
+                            _token_prefix(current_token),
+                        )
+                        # Force a fresh token: clear the cache so the next
+                        # get_access_token() definitely hits the OAuth endpoint
+                        # rather than returning the stale cached value.
+                        with _token_lock:
+                            _token_cache.clear()
+                        current_token = get_access_token()
+                        token_issued_at = time.monotonic()
+                        logger.info(
+                            "Refreshed Zoom token after 401: new=%s",
+                            _token_prefix(current_token),
+                        )
+                        if attempt < MAX_DOWNLOAD_RETRIES:
+                            time.sleep(RETRY_BACKOFF_BASE * attempt)
+                            continue
+                        raise ZoomDownloadError(
+                            f"Download failed: HTTP 401 for {download_url} "
+                            f"after {MAX_DOWNLOAD_RETRIES} attempts (token refresh exhausted)"
+                        )
+
                     if response.status_code not in (200, 206):
                         raise ZoomDownloadError(
                             f"Download failed: HTTP {response.status_code} for {download_url}"
