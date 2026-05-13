@@ -142,16 +142,22 @@ def _ensure_tz_aware(dt: datetime) -> datetime:
 def _evict_stale_tasks() -> list[str]:
     """Remove tasks that have been running longer than STALE_TASK_HOURS.
 
+    Holds ``_processing_lock`` for the full snapshot-and-pop sequence so
+    that concurrent webhook handlers cannot observe a key being evicted
+    between their "already in dict?" check and their subsequent insert
+    (audit finding H-5).
+
     Returns list of evicted task keys (for logging).
     """
     now = datetime.now(tz=TBILISI_TZ)
-    stale = [
-        key for key, started in _processing_tasks.items()
-        if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
-    ]
-    for key in stale:
-        _processing_tasks.pop(key, None)
-        logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
+    with _processing_lock:
+        stale = [
+            key for key, started in _processing_tasks.items()
+            if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
+        ]
+        for key in stale:
+            _processing_tasks.pop(key, None)
+            logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
     if stale:
         try:
             alert_operator(

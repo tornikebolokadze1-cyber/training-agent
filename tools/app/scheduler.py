@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -118,27 +119,33 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 # ---------------------------------------------------------------------------
 _PENDING_JOBS_FILE = Path(TMP_DIR) / "pending_post_meeting_jobs.json"
 
+# Protects all reads and writes to _PENDING_JOBS_FILE so two pre_meeting_job
+# callbacks firing simultaneously (one per group) cannot interleave their
+# load → mutate → write cycles and silently lose an entry (audit finding H-2).
+_pending_jobs_lock = threading.Lock()
+
 
 def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
                       fire_time_iso: str) -> None:
     """Persist a pending post-meeting job to disk so it survives restarts."""
-    jobs: list[dict] = []
-    if _PENDING_JOBS_FILE.exists():
-        try:
-            jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Replace existing entry for same group+lecture
-    jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-    jobs.append({
-        "group": group_number,
-        "lecture": lecture_number,
-        "meeting_id": meeting_id,
-        "fire_time": fire_time_iso,
-    })
-    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
-    tmp_path.replace(_PENDING_JOBS_FILE)
+    with _pending_jobs_lock:
+        jobs: list[dict] = []
+        if _PENDING_JOBS_FILE.exists():
+            try:
+                jobs = json.loads(_PENDING_JOBS_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        # Replace existing entry for same group+lecture
+        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+        jobs.append({
+            "group": group_number,
+            "lecture": lecture_number,
+            "meeting_id": meeting_id,
+            "fire_time": fire_time_iso,
+        })
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+        tmp_path.replace(_PENDING_JOBS_FILE)
     logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
                 group_number, lecture_number, fire_time_iso)
 
@@ -147,12 +154,16 @@ def _remove_pending_job(group_number: int, lecture_number: int) -> None:
     """Remove a completed/consumed post-meeting job from the persistent store."""
     if not _PENDING_JOBS_FILE.exists():
         return
-    try:
-        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-        _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("[persist] Failed to remove pending job: %s", exc)
+    with _pending_jobs_lock:
+        try:
+            jobs = json.loads(_PENDING_JOBS_FILE.read_text(encoding="utf-8"))
+            jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+            # Atomic replace — safe against mid-write SIGKILL (audit finding C-4).
+            tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            tmp_path.replace(_PENDING_JOBS_FILE)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("[persist] Failed to remove pending job: %s", exc)
 
 
 def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
@@ -483,9 +494,10 @@ def _run_post_meeting_pipeline(
     # Helper to clean up dedup key on ALL exit paths (including early returns)
     def _cleanup_dedup() -> None:
         try:
-            from tools.app.server import _processing_tasks, _task_key
+            from tools.app.server import _processing_lock, _processing_tasks, _task_key
             key = _task_key(group_number, lecture_number)
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
             logger.info("[post] Dedup key %s removed from _processing_tasks", key)
         except (ImportError, ValueError, RuntimeError) as exc:
             # ValueError: WhatsAppAssistant init may fail during import

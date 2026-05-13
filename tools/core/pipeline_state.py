@@ -464,28 +464,43 @@ def _replace_state(source: PipelineState, **updates: Any) -> PipelineState:
 
 
 # ---------------------------------------------------------------------------
+# Per-pipeline claim lock pool (used by create_pipeline + try_claim_pipeline)
+# One Lock per (group, lecture) pair so concurrent operations for the SAME
+# pipeline serialize, while concurrent operations for DIFFERENT pipelines
+# run in parallel.
+# ---------------------------------------------------------------------------
+_claim_locks: dict[tuple[int, int], threading.Lock] = {}
+_claim_locks_guard = threading.Lock()
+
+
+def _get_claim_lock(group: int, lecture: int) -> threading.Lock:
+    """Return (or lazily create) the per-pipeline claim lock."""
+    key = (group, lecture)
+    with _claim_locks_guard:
+        lock = _claim_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _claim_locks[key] = lock
+        return lock
+
+
+# ---------------------------------------------------------------------------
 # Convenience constructors
 # ---------------------------------------------------------------------------
 
 
-def create_pipeline(
+def _create_pipeline_locked(
     group: int,
     lecture: int,
-    meeting_id: str = "",
+    meeting_id: str,
 ) -> PipelineState:
-    """Create and persist a new pipeline in the PENDING state.
+    """Inner (lock-free) body shared by :func:`create_pipeline` and
+    :func:`try_claim_pipeline`.
 
-    Args:
-        group: Training group number (1 or 2).
-        lecture: Lecture number (1–15).
-        meeting_id: Zoom meeting UUID associated with this recording.
-
-    Returns:
-        The newly created PipelineState.
+    **Caller MUST hold** ``_get_claim_lock(group, lecture)`` before calling.
 
     Raises:
-        ValueError: If an active pipeline already exists for this
-            group/lecture combination (prevents accidental double-start).
+        ValueError: If an active pipeline already exists.
     """
     if is_pipeline_active(group, lecture):
         existing = load_state(group, lecture)
@@ -515,22 +530,32 @@ def create_pipeline(
     return state
 
 
-# In-process lock map for atomic claims. One Lock per (group, lecture)
-# pair so concurrent claims for the SAME pipeline serialize, while
-# concurrent claims for DIFFERENT pipelines run in parallel.
-_claim_locks: dict[tuple[int, int], threading.Lock] = {}
-_claim_locks_guard = threading.Lock()
+def create_pipeline(
+    group: int,
+    lecture: int,
+    meeting_id: str = "",
+) -> PipelineState:
+    """Create and persist a new pipeline in the PENDING state.
 
+    Acquires the per-pipeline claim lock so the is-active check and the
+    initial ``save_state`` are atomic with respect to concurrent callers
+    for the same (group, lecture) pair.  Concurrent callers for different
+    pairs run fully in parallel.
 
-def _get_claim_lock(group: int, lecture: int) -> threading.Lock:
-    """Return (or lazily create) the per-pipeline claim lock."""
-    key = (group, lecture)
-    with _claim_locks_guard:
-        lock = _claim_locks.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _claim_locks[key] = lock
-        return lock
+    Args:
+        group: Training group number (1 or 2).
+        lecture: Lecture number (1–15).
+        meeting_id: Zoom meeting UUID associated with this recording.
+
+    Returns:
+        The newly created PipelineState.
+
+    Raises:
+        ValueError: If an active pipeline already exists for this
+            group/lecture combination (prevents accidental double-start).
+    """
+    with _get_claim_lock(group, lecture):
+        return _create_pipeline_locked(group, lecture, meeting_id)
 
 
 def try_claim_pipeline(
@@ -582,10 +607,11 @@ def try_claim_pipeline(
                     group, lecture, exc,
                 )
         try:
-            return create_pipeline(group, lecture, meeting_id=meeting_id)
+            # Call the lock-free inner body — we already hold the lock.
+            return _create_pipeline_locked(group, lecture, meeting_id)
         except ValueError:
             # Lost a race against another process (file appeared between
-            # our load_state and create_pipeline). Treat as dedup hit.
+            # our load_state and _create_pipeline_locked). Treat as dedup hit.
             return None
 
 
