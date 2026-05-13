@@ -561,3 +561,24 @@ class TestPaperclipEndpoint:
         assert body["intent"] == "smoke_test"
         fetch.assert_awaited_once_with("iss-42")
         dispatch.assert_called_once()
+
+
+# ===========================================================================
+# GET /paperclip/health — no identity disclosure (Issue #48)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestPaperclipHealth:
+    """The unauthenticated liveness probe must not leak agent identity."""
+
+    async def test_returns_ok_without_agent_field(self):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://localhost") as ac:
+            resp = await ac.get("/paperclip/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"ok": True}, (
+            "Health response must not include agent identity — "
+            "authenticated callers should use /paperclip/status instead."
+        )
