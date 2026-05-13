@@ -36,6 +36,63 @@ if str(PROJECT_ROOT) not in sys.path:
 _STUBS: dict[str, types.ModuleType] = {}
 
 
+# ---------------------------------------------------------------------------
+# Prometheus idempotency patch (US-025 — test pollution fix, 2026-05-14)
+#
+# Multiple test files pop `tools.app.server` from sys.modules and re-import
+# it to get a fresh app instance with real FastAPI. Each re-import calls
+# `prometheus_client.Counter("http_requests_total", ...)` which tries to
+# register in the GLOBAL `prometheus_client.REGISTRY`. The second
+# registration raises `ValueError: Duplicated timeseries`.
+#
+# The production `_safe_counter` helper in server.py catches the first
+# ValueError but its fallback path re-calls `Counter(name, ...)` which
+# re-raises (the lookup-by-name in REGISTRY misses because Counter stores
+# `_name` differently from what `_collector_to_names` returns).
+#
+# Patching production code is out of scope for the US-025 audit. Instead,
+# we wrap `prometheus_client.Counter` and `Histogram` at TEST conftest level
+# to transparently return the EXISTING collector on duplicate-registration.
+# ---------------------------------------------------------------------------
+try:
+    import prometheus_client as _prom
+
+    _real_Counter = _prom.Counter
+    _real_Histogram = _prom.Histogram
+
+    def _find_existing(name: str):
+        registry = _prom.REGISTRY
+        for collector in list(registry._collector_to_names.keys()):  # type: ignore[attr-defined]
+            collector_names = registry._collector_to_names.get(collector, set())  # type: ignore[attr-defined]
+            if name in collector_names or f"{name}_total" in collector_names:
+                return collector
+        return None
+
+    def _make_idempotent(real_cls):
+        def _factory(name, documentation, labelnames=(), *args, **kwargs):
+            try:
+                return real_cls(name, documentation, labelnames, *args, **kwargs)
+            except ValueError:
+                existing = _find_existing(name)
+                if existing is not None:
+                    return existing
+                # Last resort — unregister duplicates and retry once.
+                for collector in list(_prom.REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+                    try:
+                        names = _prom.REGISTRY._collector_to_names.get(collector, set())  # type: ignore[attr-defined]
+                        if name in names or any(n.startswith(name) for n in names):
+                            _prom.REGISTRY.unregister(collector)
+                    except Exception:
+                        pass
+                return real_cls(name, documentation, labelnames, *args, **kwargs)
+        return _factory
+
+    _prom.Counter = _make_idempotent(_real_Counter)  # type: ignore[assignment]
+    _prom.Histogram = _make_idempotent(_real_Histogram)  # type: ignore[assignment]
+except ImportError:
+    pass
+
+
 def _stub_module(name: str) -> types.ModuleType:
     """Create or retrieve a stub module, ensuring it is in sys.modules."""
     if name in _STUBS:
