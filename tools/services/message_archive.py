@@ -658,3 +658,83 @@ def search_content(
     sql += " ORDER BY ts_message DESC LIMIT ?"
     params.append(limit)
     return list(conn.execute(sql, params))
+
+
+# ---------------------------------------------------------------------------
+# Backup / retention
+# ---------------------------------------------------------------------------
+
+def _prune_old_backups(dst_dir: Path, keep: int = 7) -> None:
+    """Delete all but the ``keep`` most recent backups in ``dst_dir``.
+
+    Sort is by mtime descending so the freshest files survive. Errors
+    (e.g. file already removed by another process) are logged but never
+    raised — pruning is best-effort and must not break the parent backup.
+    """
+    backups = sorted(
+        dst_dir.glob("messages_*.db"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old in backups[keep:]:
+        try:
+            old.unlink()
+            logger.info("Pruned old backup: %s", old.name)
+        except OSError as exc:
+            logger.warning("Failed to prune %s: %s", old, exc)
+
+
+def backup_messages_db(
+    destination_dir: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> Path:
+    """Create a timestamped SQLite backup of messages.db.
+
+    Uses ``sqlite3.Connection.backup()`` (the online backup API) rather
+    than a file copy so concurrent writes (e.g. a live webhook insert)
+    are handled correctly without "database is locked" errors.
+
+    Args:
+        destination_dir: Override for the backup directory. Defaults to
+            ``<db parent>/backups/messages/``. Created if missing.
+        db_path: Override for the source DB path. Defaults to the module's
+            ``DEFAULT_DB_PATH`` (respects ``MESSAGE_ARCHIVE_DB_PATH``).
+
+    Returns:
+        Path to the created backup file, or the source path if the source
+        DB does not exist (in which case nothing is created).
+
+    Retention: keeps the 7 most recent backups in ``destination_dir``;
+    older files matching ``messages_*.db`` are deleted.
+    """
+    import time
+
+    src_path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+    if not src_path.exists():
+        logger.info(
+            "messages.db not found at %s — nothing to back up", src_path
+        )
+        return src_path
+
+    if destination_dir is None:
+        destination_dir = src_path.parent / "backups" / "messages"
+    dst_dir = Path(destination_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    dst_path = dst_dir / f"messages_{timestamp}.db"
+
+    # Use SQLite's online backup API to handle concurrent writes correctly.
+    src_conn = sqlite3.connect(str(src_path))
+    dst_conn = sqlite3.connect(str(dst_path))
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+
+    size_mb = dst_path.stat().st_size / 1024 / 1024
+    logger.info("messages.db backed up to %s (%.1f MB)", dst_path, size_mb)
+
+    _prune_old_backups(dst_dir, keep=7)
+    return dst_path
