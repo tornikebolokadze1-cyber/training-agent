@@ -431,6 +431,7 @@ class TestMarkFailedComplete:
         # transitions to COMPLETE rather than coercing to FAILED.
         s = transition(
             s, INDEXING,
+            drive_video_id="drive-vid-id",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -449,6 +450,7 @@ class TestMarkFailedComplete:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="drive-vid-id",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -502,6 +504,7 @@ class TestQueryHelpers:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="drive-vid-id",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -593,6 +596,7 @@ class TestCleanupCompleted:
         s = create_pipeline(_G, _L)
         s = transition(
             s, INDEXING,
+            drive_video_id="drive-vid-id",
             analysis_done=True,
             summary_doc_id="doc-summary",
             report_doc_id="doc-report",
@@ -737,6 +741,7 @@ class TestTryClaimPipeline:
         s = transition(
             s,
             INDEXING,
+            drive_video_id="drive-vid-id",
             analysis_done=True,
             summary_doc_id="doc-summary-test",
             report_doc_id="doc-report-test",

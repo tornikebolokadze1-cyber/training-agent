@@ -604,6 +604,7 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
 #: enforcing the invariant at the state boundary instead of at every
 #: caller, this gap cannot re-open no matter which pipeline path runs.
 _COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    ("drive_video_id", "Drive video upload incomplete — drive_video_id is empty"),
     ("analysis_done", "analysis artifacts written"),
     ("summary_doc_id", "summary Google Doc uploaded"),
     ("report_doc_id", "private report Google Doc uploaded"),

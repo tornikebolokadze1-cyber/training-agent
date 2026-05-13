@@ -245,6 +245,7 @@ class TestPipelineGuard:
             assert s.meeting_id == "test-123"
             transition(
                 s, DOWNLOADING,
+                drive_video_id="drive-vid-id",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",
@@ -519,6 +520,7 @@ class TestIntegration:
             s = transition(s, NOTIFYING)
             s = transition(
                 s, INDEXING,
+                drive_video_id="drive-vid-id",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",
