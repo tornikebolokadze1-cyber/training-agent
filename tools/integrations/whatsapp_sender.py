@@ -13,10 +13,12 @@ Setup:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,6 +110,25 @@ class _RateLimiter:
 
 
 _rate_limiter = _RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# Operator alert deduplication (US-016)
+# ---------------------------------------------------------------------------
+# alert_operator had no dedup — a 50-error pipeline_retry storm = 50 WhatsApp
+# messages. We hash the message body and suppress duplicates within a 300s
+# window via a bounded OrderedDict (max 100 entries). The bound prevents
+# unbounded growth if a runaway loop produces thousands of unique hashes.
+# Suppressed alerts logged at WARNING with hash prefix + elapsed seconds.
+
+_ALERT_DEDUP_WINDOW_SECONDS = 300  # 5 minutes
+_ALERT_DEDUP_MAX_ENTRIES = 100
+_alert_dedup_state: "OrderedDict[str, float]" = OrderedDict()
+# Counts of how many times each hash was suppressed since its last send. On the
+# next non-suppressed occurrence (after the window expires) we surface the
+# count in the alert so the operator knows how many were swallowed.
+_alert_suppression_counts: dict[str, int] = {}
+_alert_dedup_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -498,11 +519,69 @@ def alert_operator(message: str) -> None:
     This function NEVER raises — it is the safety net, not another failure
     point. The entire body is wrapped in try/except to guarantee this.
 
+    Deduplication (US-016):
+        Identical messages are suppressed within a 300s window. The same
+        message sent 50 times in 60s reaches the operator ONCE. When a
+        suppression-window-aged hash reappears, the alert is annotated with
+        the number of suppressed copies so the operator can see how many
+        were swallowed.
+
     Args:
         message: Plain-text alert (keep it short and actionable).
     """
     try:
+        # --- Dedup gate -------------------------------------------------
+        try:
+            msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        except BaseException as hash_exc:
+            # If hashing somehow fails (very unlikely for str input), skip
+            # dedup and proceed — the alert is more important than dedup.
+            logger.warning("alert dedup hash failed, sending without dedup: %s", hash_exc)
+            msg_hash = None
+
+        suppressed_count = 0
+        if msg_hash is not None:
+            now = time.time()
+            with _alert_dedup_lock:
+                last_sent = _alert_dedup_state.get(msg_hash)
+                if last_sent is not None and (now - last_sent) < _ALERT_DEDUP_WINDOW_SECONDS:
+                    # Within window → suppress, bump counter, return.
+                    _alert_suppression_counts[msg_hash] = (
+                        _alert_suppression_counts.get(msg_hash, 0) + 1
+                    )
+                    elapsed = now - last_sent
+                    count = _alert_suppression_counts[msg_hash]
+                    logger.warning(
+                        "alert suppressed (duplicate within %ds window): "
+                        "hash=%s elapsed=%.1fs suppressed_total=%d",
+                        _ALERT_DEDUP_WINDOW_SECONDS,
+                        msg_hash[:8],
+                        elapsed,
+                        count,
+                    )
+                    return
+
+                # Either first time, or window expired → record & send.
+                # If window expired, capture how many were suppressed so we
+                # can surface that in the message below.
+                suppressed_count = _alert_suppression_counts.pop(msg_hash, 0)
+                # Re-insert (or insert) to mark as most-recent in OrderedDict.
+                if msg_hash in _alert_dedup_state:
+                    del _alert_dedup_state[msg_hash]
+                _alert_dedup_state[msg_hash] = now
+                # Enforce upper bound by evicting oldest entries.
+                while len(_alert_dedup_state) > _ALERT_DEDUP_MAX_ENTRIES:
+                    evicted_hash, _ = _alert_dedup_state.popitem(last=False)
+                    _alert_suppression_counts.pop(evicted_hash, None)
+
         prefix = "⚠️ Training Agent ALERT\n\n"
+        if suppressed_count > 0:
+            # Window expired with N suppressed duplicates in between → tell
+            # the operator how many identical alerts were swallowed.
+            prefix = (
+                f"⚠️ Training Agent ALERT (+{suppressed_count} duplicates "
+                f"suppressed in last {_ALERT_DEDUP_WINDOW_SECONDS}s)\n\n"
+            )
         full_message = prefix + message
 
         # Attempt WhatsApp delivery
