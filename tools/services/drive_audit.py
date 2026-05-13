@@ -13,7 +13,6 @@ APScheduler job (recommended: 09:00 Tbilisi, 11h before lectures).
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 
@@ -200,34 +199,62 @@ def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
 
 
 def run_full_audit() -> dict:
-    """Run audit for both groups and return a structured report."""
-    g1_root = os.getenv("DRIVE_GROUP1_FOLDER_ID")
-    g2_root = os.getenv("DRIVE_GROUP2_FOLDER_ID")
+    """Run audit for every active (non-completed) cohort.
 
-    if not g1_root or not g2_root:
-        raise RuntimeError("DRIVE_GROUP{1,2}_FOLDER_ID env vars are required")
+    Iterates ``GROUPS`` dynamically so new cohorts (G3, G4, ...) are covered
+    by the daily 09:00 Drive vs Pinecone reconciliation without code edits.
+    Completed cohorts are skipped — their content is frozen so a daily audit
+    on stable archives is wasted Drive/Pinecone API quota.
+    """
+    per_group_audits: dict[int, list[LectureAudit]] = {}
+    all_audits: list[LectureAudit] = []
 
-    g1 = audit_group(1, g1_root)
-    g2 = audit_group(2, g2_root)
+    for group_num, cfg in sorted(GROUPS.items()):
+        if cfg.get("course_completed"):
+            logger.info(
+                "[audit] Skipping %s — course_completed=True",
+                cfg.get("name", f"Group {group_num}"),
+            )
+            continue
+        root = cfg.get("drive_folder_id")
+        if not root:
+            logger.warning(
+                "drive_audit: GROUPS[%d] missing drive_folder_id, skipping",
+                group_num,
+            )
+            continue
+        audits = audit_group(group_num, root)
+        per_group_audits[group_num] = audits
+        all_audits.extend(audits)
 
-    all_audits = g1 + g2
     issues = [a for a in all_audits if not a.is_clean]
 
-    report = {
+    report: dict = {
         "total_lectures_checked": len(all_audits),
         "issues_found": len(issues),
         "all_clean": len(issues) == 0,
-        "group_1": [a.to_dict() for a in g1],
-        "group_2": [a.to_dict() for a in g2],
+        "groups": {
+            str(group_num): [a.to_dict() for a in audits]
+            for group_num, audits in per_group_audits.items()
+        },
         "issues": [a.to_dict() for a in issues],
     }
+
+    # Back-compat keys for any callers still expecting "group_1" / "group_2".
+    # Only populated when those groups were audited this run.
+    for legacy_num in (1, 2):
+        if legacy_num in per_group_audits:
+            report[f"group_{legacy_num}"] = [
+                a.to_dict() for a in per_group_audits[legacy_num]
+            ]
 
     if issues:
         logger.error(
             "[audit] %d lecture(s) have issues:\n%s",
             len(issues),
             "\n".join(
-                f"  G{a.group} L{a.lecture}: {', '.join(a.issues)}" for a in issues
+                f"  {_label(a.group)} L{a.lecture}: {', '.join(a.issues)}"
+                for a in issues
             ),
         )
     else:
