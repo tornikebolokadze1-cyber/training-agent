@@ -242,7 +242,7 @@ GROUPS: dict[int, GroupConfig] = {
 # scheduler doesn't try to register cron jobs for an unconfigured group.
 #
 # To onboard a new course, set on Railway:
-#   GROUP{N}_NAME            — display name, e.g. "მაისის ჯგუფი #3"
+#   GROUP{N}_NAME            — display name, e.g. "ივნისის ჯგუფი #1" (cohort labels restart at #1 per cohort)
 #   GROUP{N}_FOLDER_NAME     — Drive folder display name
 #   DRIVE_GROUP{N}_FOLDER_ID — Drive folder ID (required)
 #   DRIVE_GROUP{N}_ANALYSIS_FOLDER_ID — private Drive folder for reports
