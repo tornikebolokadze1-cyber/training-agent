@@ -125,21 +125,52 @@ jobs:
             --deselect=tools/tests/test_server.py::TestEvictStaleTasks::test_mixed_fresh_and_stale \
             --deselect=tools/tests/test_server.py::TestEvictStaleTasks::test_no_stale_tasks_does_not_call_alert_operator
 
-      - name: Run full test suite minus test_server.py (blocking)
+      - name: Run real-modules test files in isolation (avoid stub pollution)
         run: |
-          # Phase 5 enforcement. Single known exclusion is test_gdrive.py
-          # credential refresh test (expects old 1-retry behavior; current
-          # code retries 5x — tracked as tech debt).
+          # Issue #52 — these test files pop fastapi/slowapi/httpx/pydantic
+          # stubs at module-load time and import the real packages for
+          # ASGITransport.  Running them inside the full-suite leaves the
+          # real modules in sys.modules and breaks every later test that
+          # expected stubs.  Each gets its own process — pollution cannot
+          # cross a process boundary.
+          for f in \
+              tools/tests/test_admin_routes.py \
+              tools/tests/test_admin_routes_hardening.py \
+              tools/tests/test_healthz_endpoint.py \
+              tools/tests/test_metrics_endpoint.py \
+              tools/tests/test_openclaw_bridge.py \
+              tools/tests/test_paperclip_bridge.py \
+              tools/tests/test_server_hardening.py \
+              tools/tests/test_server_new.py; do
+            echo "──── $f ────"
+            python -m pytest "$f" -v --tb=short --no-cov \
+              --deselect=tools/tests/test_server_new.py::TestRetryLatestEndpoint::test_wrong_secret_returns_401_or_403 \
+              --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_returns_500 \
+              --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_html_contains_error_info \
+              --deselect=tools/tests/test_server_new.py::TestDashboardDataEndpoint::test_error_json_contains_message
+          done
+
+      - name: Run remaining test files in shared process (blocking)
+        run: |
+          # Everything outside the "needs-real-modules" set runs together
+          # in one process under the stubbed environment.  test_server.py +
+          # test_admin_routes.py + their hardening variants ran in the
+          # previous isolated steps, so they are ignored here.
+          # Single known flake: test_gdrive.py credential refresh test
+          # (expects old 1-retry behavior; current code retries 5x).
           python -m pytest tools/tests/ -v --tb=short \
             --ignore=tools/tests/test_server.py \
             --ignore=tools/tests/test_admin_routes.py \
+            --ignore=tools/tests/test_admin_routes_hardening.py \
+            --ignore=tools/tests/test_healthz_endpoint.py \
+            --ignore=tools/tests/test_metrics_endpoint.py \
+            --ignore=tools/tests/test_openclaw_bridge.py \
+            --ignore=tools/tests/test_paperclip_bridge.py \
+            --ignore=tools/tests/test_server_hardening.py \
+            --ignore=tools/tests/test_server_new.py \
             --cov=tools \
             --cov-report=term-missing \
-            --deselect=tools/tests/test_gdrive.py::TestUploadFileAuthErrors::test_401_triggers_credential_refresh_and_retry \
-            --deselect=tools/tests/test_server_new.py::TestRetryLatestEndpoint::test_wrong_secret_returns_401_or_403 \
-            --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_returns_500 \
-            --deselect=tools/tests/test_server_new.py::TestDashboardEndpoint::test_dashboard_error_html_contains_error_info \
-            --deselect=tools/tests/test_server_new.py::TestDashboardDataEndpoint::test_error_json_contains_message
+            --deselect=tools/tests/test_gdrive.py::TestUploadFileAuthErrors::test_401_triggers_credential_refresh_and_retry
 
   security:
     name: Security Audit
