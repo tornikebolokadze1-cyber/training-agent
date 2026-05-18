@@ -323,13 +323,20 @@ async def _eviction_loop() -> None:
 from contextlib import asynccontextmanager  # noqa: E402
 
 
-async def _check_unprocessed_recordings() -> None:
-    """Startup recovery: check Zoom for any unprocessed recordings from today.
+async def _check_unprocessed_recordings(window_days: int = 7) -> None:
+    """Startup + periodic recovery: scan Zoom for any unprocessed recordings.
 
-    Uses GET /v2/users/me/recordings to list today's recordings, then checks
+    Uses GET /v2/users/me/recordings to list recent recordings, then checks
     if each one has already been processed (by looking for vectors in Pinecone
     with matching group + lecture number). If unprocessed recordings are found,
     starts the pipeline automatically.
+
+    The window was 2 days originally — too narrow.  After three consecutive
+    lectures missed their post-meeting pipeline (G3 L2 2026-05-14, G4 L2
+    2026-05-15, G3 L3 2026-05-18; see issue tracking the new "trigger
+    failure" report) we widened to 7 days so a Friday lecture that was
+    missed because the container was cycling can still be picked up on
+    the following Monday's startup or periodic rescan.
     """
 
     try:
@@ -339,8 +346,7 @@ async def _check_unprocessed_recordings() -> None:
         return
 
     today = datetime.now(TBILISI_TZ).date()
-    # Check last 3 days for missed recordings (not just today)
-    from_date = (today - timedelta(days=2)).isoformat()
+    from_date = (today - timedelta(days=window_days)).isoformat()
     today_str = today.isoformat()
 
     try:
@@ -497,9 +503,13 @@ async def _deferred_lifespan_init() -> None:
     global _startup_complete
 
     try:
-        await asyncio.wait_for(_check_unprocessed_recordings(), timeout=60)
+        # 5-minute budget — listing 7 days of Zoom recordings then checking
+        # each against Pinecone can legitimately take 60-180s. The old
+        # 60-second cap silently aborted the scan halfway through, which
+        # contributed to missed lectures after a deploy.
+        await asyncio.wait_for(_check_unprocessed_recordings(window_days=7), timeout=300)
     except asyncio.TimeoutError:
-        logger.warning("[startup-recovery] timed out after 60s — continuing")
+        logger.warning("[startup-recovery] timed out after 300s — continuing")
     except Exception as exc:
         logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
 

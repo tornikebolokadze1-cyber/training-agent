@@ -1493,6 +1493,40 @@ def start_scheduler() -> AsyncIOScheduler:
     #  the source. Retention keeps the 7 most recent backups. Fires at     #
     #  03:00 — off-peak and after the 02:00 nightly catch-all.             #
     # ------------------------------------------------------------------ #
+    # Periodic Zoom recovery sweep — runs every 30 minutes around the clock.
+    # The startup-recovery scan in server.py already catches lectures that
+    # were missed while the container was down, but it only fires once per
+    # container lifetime.  A persistent cron mirror ensures that a webhook
+    # rejected because of a deploy-cycle (Zoom's 300-second timestamp gate)
+    # or a recording that finished processing AFTER the container last
+    # restarted will still be picked up, without waiting for the next
+    # container restart or the 02:00 nightly catch-all.
+    #
+    # Calls the same coroutine that lifespan calls, so the recovery path is
+    # the single source of truth.
+    async def _periodic_zoom_recovery() -> None:
+        from tools.app.server import _check_unprocessed_recordings
+        try:
+            await asyncio.wait_for(
+                _check_unprocessed_recordings(window_days=7),
+                timeout=240,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[periodic-zoom-recovery] timed out after 240s — continuing")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[periodic-zoom-recovery] error: %s", exc, exc_info=True)
+
+    scheduler.add_job(
+        _periodic_zoom_recovery,
+        trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
+        id="periodic_zoom_recovery",
+        name="Zoom recordings sweep (every 30 min)",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+        replace_existing=True,
+    )
+
     from tools.services.message_archive import backup_messages_db, purge_old_messages_job
 
     scheduler.add_job(

@@ -901,7 +901,9 @@ class TestStartScheduler:
     def test_registers_six_jobs(self, monkeypatch):
         """4 pre-meeting cron jobs + nightly_catch_all + pinecone_score_backup
         + google_token_health + drive_pinecone_audit + proactive_token_check
-        + nightly_reconciliation + whatsapp_archive_catchup = 11 jobs total.
+        + nightly_reconciliation + whatsapp_archive_catchup
+        + periodic_zoom_recovery + messages_db_backup + messages_db_retention_purge
+        = 14 jobs total after 2026-05-19 trigger-failure fix.
 
         Run with both Course #1 groups synthetically reactivated so the
         full pre-lecture cron set is registered — mirrors the original
@@ -936,7 +938,7 @@ class TestStartScheduler:
         with patch("tools.app.scheduler.AsyncIOScheduler", return_value=mock_scheduler_instance):
             sched.start_scheduler()
 
-        assert mock_scheduler_instance.add_job.call_count == 11
+        assert mock_scheduler_instance.add_job.call_count == 14
 
     def test_sets_module_level_scheduler_ref(self):
         mock_scheduler_instance = MagicMock()
@@ -993,6 +995,9 @@ class TestStartScheduler:
             "google_token_health", "drive_pinecone_audit",
             "proactive_token_check", "nightly_reconciliation",
             "whatsapp_archive_catchup",
+            "periodic_zoom_recovery",
+            "messages_db_backup",
+            "messages_db_retention_purge",
         }
         assert set(job_ids) == expected
 
