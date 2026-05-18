@@ -400,27 +400,14 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
         _httpx_now.TimeoutException = type("TimeoutException", (Exception,), {})
         _httpx_now.RequestError = type("RequestError", (Exception,), {})
 
-    # Issue #52 mitigation — restore module STUBS that test_admin_routes.py,
-    # test_admin_routes_hardening.py, test_healthz_endpoint.py and
-    # test_metrics_endpoint.py pop at module-load time so they can import
-    # REAL fastapi/slowapi/pydantic for TestClient.  After each test we
-    # rebind the stub object from _STUBS back into sys.modules so later
-    # test files that depend on the stubs do not silently see the real
-    # implementation.  Full architectural fix (refactoring those four
-    # files to stop popping at module scope) is tracked separately;
-    # this hook is a containment band-aid that closes 35+ of the 37
-    # known full-suite pollution failures.
-    for _name, _stub in list(_STUBS.items()):
-        _live = sys.modules.get(_name)
-        if _live is None:
-            # Module was popped and never re-imported — put the stub back.
-            sys.modules[_name] = _stub
-            continue
-        if _live is _stub:
-            continue
-        # Different module object is live (e.g. real fastapi).  Restore the
-        # stub so subsequent stubbed tests see what they expect.
-        sys.modules[_name] = _stub
+    # Issue #52 — in-process stub-restore was attempted here but produced
+    # cross-file pollution worse than the original symptom (real fastapi
+    # leaked into later stubbed tests as expected; restoring stubs broke
+    # the next test in any file that still needed real modules in-flight).
+    # The canonical fix is the per-file runner at scripts/run_tests_isolated.sh
+    # which sidesteps the problem with process boundaries.  Full
+    # in-process fix (refactoring the four stub-popping test files to
+    # restore at module-teardown instead of module-load) is deferred.
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -738,3 +738,189 @@ def backup_messages_db(
 
     _prune_old_backups(dst_dir, keep=7)
     return dst_path
+
+
+# ---------------------------------------------------------------------------
+# Issue #44 — GDPR retention + right-to-erasure
+# ---------------------------------------------------------------------------
+#
+# The audit flagged messages.db as accumulating PII (sender_hash plus the
+# senders table's phone_encrypted column) with no retention bound and no
+# erasure path.  Two helpers below address each half:
+#
+#   * ``purge_old_messages`` enforces a rolling time-based retention so
+#     conversational history older than ``MESSAGE_RETENTION_DAYS`` (default
+#     90 days) is hard-deleted.  Senders whose last message is now gone
+#     are tagged ``gdpr_deleted=1`` and their ``phone_encrypted`` blob is
+#     zeroed; the sender_hash row itself is kept so historical analytics
+#     keep their join keys but the PII is gone.
+#
+#   * ``gdpr_delete_sender`` honours an explicit right-to-erasure request
+#     for a single phone number: every message row tied to that hash is
+#     removed, the sender row is marked ``gdpr_deleted=1`` and its
+#     phone_encrypted blob is replaced with the empty sentinel.
+#
+# Both helpers operate on an open ``sqlite3.Connection`` so the caller
+# owns transaction boundaries (commit / rollback).  The scheduler wires
+# ``purge_old_messages`` as a daily job at 03:15 — fifteen minutes after
+# the 03:00 backup so the most recent backup always contains the
+# pre-purge state.  Note: the schema's ``phone_encrypted`` column is
+# currently stored as ``b""`` everywhere (see comment block above
+# ``upsert_sender``); when an actual AES-256-GCM encryption helper lands,
+# the zero-on-purge sentinel here is already consistent with that
+# convention.
+
+DEFAULT_RETENTION_DAYS = 90
+
+
+def _resolve_retention_days(days: Optional[int]) -> int:
+    """Return the retention window in days, falling back to env / default."""
+    if days is not None:
+        if days < 1:
+            raise ValueError(f"retention days must be >= 1 (got {days})")
+        return days
+    env_val = os.environ.get("MESSAGE_RETENTION_DAYS", "").strip()
+    if env_val:
+        try:
+            parsed = int(env_val)
+            if parsed < 1:
+                logger.warning(
+                    "MESSAGE_RETENTION_DAYS=%s is < 1; using default %d",
+                    env_val, DEFAULT_RETENTION_DAYS,
+                )
+                return DEFAULT_RETENTION_DAYS
+            return parsed
+        except ValueError:
+            logger.warning(
+                "MESSAGE_RETENTION_DAYS=%r is not an integer; using default %d",
+                env_val, DEFAULT_RETENTION_DAYS,
+            )
+    return DEFAULT_RETENTION_DAYS
+
+
+def purge_old_messages(
+    conn: sqlite3.Connection,
+    days_to_keep: Optional[int] = None,
+) -> dict[str, int]:
+    """Hard-delete messages older than the retention window.
+
+    Args:
+        conn: Open SQLite connection to messages.db.  The caller commits.
+        days_to_keep: Override for the retention window in days.  When
+            ``None`` falls back to ``MESSAGE_RETENTION_DAYS`` env, then to
+            ``DEFAULT_RETENTION_DAYS`` (90).
+
+    Returns:
+        Counters dict ``{"messages_deleted": N, "senders_redacted": N,
+        "cutoff": ISO-8601 string, "retention_days": int}``.
+    """
+    retention_days = _resolve_retention_days(days_to_keep)
+    cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=retention_days)
+    cutoff = cutoff_dt.isoformat()
+
+    cur = conn.cursor()
+
+    # Snapshot the set of sender hashes that ONLY have rows older than
+    # the cutoff — those senders lose all their messages and qualify for
+    # PII redaction. Senders with at least one recent message keep their
+    # full row.
+    cur.execute(
+        """
+        SELECT DISTINCT sender_hash FROM messages
+         WHERE sender_hash NOT IN (
+             SELECT DISTINCT sender_hash FROM messages
+              WHERE ts_message >= ?
+         )
+        """,
+        (cutoff,),
+    )
+    orphan_sender_hashes = [row[0] for row in cur.fetchall() if row[0]]
+
+    # Delete old messages first so the senders query above used the
+    # pre-delete state for accurate orphan detection.
+    cur.execute("DELETE FROM messages WHERE ts_message < ?", (cutoff,))
+    messages_deleted = cur.rowcount
+
+    senders_redacted = 0
+    for sender_hash_val in orphan_sender_hashes:
+        cur.execute(
+            """UPDATE senders
+                  SET phone_encrypted = ?,
+                      gdpr_deleted = 1
+                WHERE sender_hash = ?
+                  AND COALESCE(gdpr_deleted, 0) = 0""",
+            (b"", sender_hash_val),
+        )
+        senders_redacted += cur.rowcount
+
+    conn.commit()
+
+    logger.info(
+        "purge_old_messages: deleted %d messages older than %s (retention=%d days), "
+        "redacted %d orphaned senders",
+        messages_deleted, cutoff, retention_days, senders_redacted,
+    )
+    return {
+        "messages_deleted": messages_deleted,
+        "senders_redacted": senders_redacted,
+        "cutoff": cutoff,
+        "retention_days": retention_days,
+    }
+
+
+def gdpr_delete_sender(
+    conn: sqlite3.Connection,
+    phone: str,
+) -> dict[str, int]:
+    """Honour a GDPR right-to-erasure request for a single phone number.
+
+    Deletes every message tied to ``sender_hash(phone)`` and zeroes the
+    PII on the corresponding senders row (kept around so historical
+    analytic joins do not orphan).
+
+    Args:
+        conn: Open SQLite connection.  Caller commits.
+        phone: The raw phone number to erase.  Hashed internally; the
+            raw value is never written to disk by this function.
+
+    Returns:
+        Counters dict ``{"messages_deleted": N, "sender_redacted": 0|1,
+        "sender_hash": "..."}``.
+    """
+    target_hash = sender_hash(phone)
+    if not target_hash:
+        return {"messages_deleted": 0, "sender_redacted": 0, "sender_hash": ""}
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM messages WHERE sender_hash = ?", (target_hash,))
+    messages_deleted = cur.rowcount
+
+    cur.execute(
+        """UPDATE senders
+              SET phone_encrypted = ?,
+                  gdpr_deleted = 1
+            WHERE sender_hash = ?""",
+        (b"", target_hash),
+    )
+    sender_redacted = cur.rowcount
+
+    conn.commit()
+    logger.info(
+        "gdpr_delete_sender: erased %d messages and redacted %d sender rows for hash %s",
+        messages_deleted, sender_redacted, target_hash[:8] + "...",
+    )
+    return {
+        "messages_deleted": messages_deleted,
+        "sender_redacted": sender_redacted,
+        "sender_hash": target_hash,
+    }
+
+
+def purge_old_messages_job() -> None:
+    """APScheduler entry point — wraps connect() + purge_old_messages()."""
+    try:
+        with connect() as conn:
+            stats = purge_old_messages(conn)
+        logger.info("Retention purge job complete: %s", stats)
+    except Exception:  # noqa: BLE001
+        logger.exception("Retention purge job failed")

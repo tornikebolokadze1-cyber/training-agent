@@ -1493,13 +1493,28 @@ def start_scheduler() -> AsyncIOScheduler:
     #  the source. Retention keeps the 7 most recent backups. Fires at     #
     #  03:00 — off-peak and after the 02:00 nightly catch-all.             #
     # ------------------------------------------------------------------ #
-    from tools.services.message_archive import backup_messages_db
+    from tools.services.message_archive import backup_messages_db, purge_old_messages_job
 
     scheduler.add_job(
         backup_messages_db,
         trigger=CronTrigger(hour=3, minute=0, timezone=TBILISI_TZ),
         id="messages_db_backup",
         name="messages.db daily backup",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
+    # Issue #44 — daily PII retention sweep.  Runs at 03:15 Tbilisi, 15
+    # minutes after the messages.db backup at 03:00 so the freshest
+    # backup always contains the pre-purge state and an operator can
+    # restore from it if the retention window was too aggressive.
+    scheduler.add_job(
+        purge_old_messages_job,
+        trigger=CronTrigger(hour=3, minute=15, timezone=TBILISI_TZ),
+        id="messages_db_retention_purge",
+        name="messages.db retention purge (PII)",
         coalesce=True,
         max_instances=1,
         misfire_grace_time=3600,
