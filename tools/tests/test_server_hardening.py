@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
+
+from tools.core.config import TBILISI_TZ
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -85,7 +87,9 @@ async def test_cohort_label_in_409_response(patched_secret):
         "drive_folder_id": "drive_folder_abc",
     }
     key = _task_key(payload["group_number"], payload["lecture_number"])
-    _processing_tasks[key] = datetime.now()
+    # Use TBILISI-aware "now" so _evict_stale_tasks (which interprets naive
+    # times as TBILISI_TZ) does not see this as 4-h-stale on UTC CI runners.
+    _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
 
     try:
         async with await _client() as client:
