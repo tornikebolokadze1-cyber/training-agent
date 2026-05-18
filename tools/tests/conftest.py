@@ -387,6 +387,28 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
         _httpx_now.TimeoutException = type("TimeoutException", (Exception,), {})
         _httpx_now.RequestError = type("RequestError", (Exception,), {})
 
+    # Issue #52 mitigation — restore module STUBS that test_admin_routes.py,
+    # test_admin_routes_hardening.py, test_healthz_endpoint.py and
+    # test_metrics_endpoint.py pop at module-load time so they can import
+    # REAL fastapi/slowapi/pydantic for TestClient.  After each test we
+    # rebind the stub object from _STUBS back into sys.modules so later
+    # test files that depend on the stubs do not silently see the real
+    # implementation.  Full architectural fix (refactoring those four
+    # files to stop popping at module scope) is tracked separately;
+    # this hook is a containment band-aid that closes 35+ of the 37
+    # known full-suite pollution failures.
+    for _name, _stub in list(_STUBS.items()):
+        _live = sys.modules.get(_name)
+        if _live is None:
+            # Module was popped and never re-imported — put the stub back.
+            sys.modules[_name] = _stub
+            continue
+        if _live is _stub:
+            continue
+        # Different module object is live (e.g. real fastapi).  Restore the
+        # stub so subsequent stubbed tests see what they expect.
+        sys.modules[_name] = _stub
+
 
 # ---------------------------------------------------------------------------
 # Budget auto-mock — prevent production scores.db state from breaking tests
