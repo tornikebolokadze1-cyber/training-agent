@@ -233,6 +233,43 @@ def _ensure_tz_aware(dt: datetime) -> datetime:
     return dt
 
 
+def _fire_alert(message: str) -> None:
+    """Issue #42 — fire-and-forget WhatsApp operator alert that never
+    blocks the event loop.
+
+    ``alert_operator`` runs the WhatsApp rate limiter, which uses
+    ``time.sleep`` while waiting for a slot.  Calling it directly from an
+    ``async def`` handler — as several error paths did — stalls the entire
+    event loop for the duration of the sleep, freezing every concurrent
+    request the server is serving.
+
+    Behaviour:
+      * If a running event loop is detected, schedule the alert on the
+        loop via ``asyncio.to_thread`` so the sleep happens on a thread.
+      * Otherwise (sync caller, e.g. scheduler job or CLI), call
+        ``alert_operator`` synchronously — preserves existing semantics.
+
+    Exceptions are swallowed and logged: an alert failure must never
+    propagate into the caller's error path.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            alert_operator(message)
+        except Exception as err:  # noqa: BLE001
+            logger.warning("alert_operator failed (sync): %s", err)
+        return
+
+    async def _do_alert() -> None:
+        try:
+            await asyncio.to_thread(alert_operator, message)
+        except Exception as err:  # noqa: BLE001
+            logger.warning("alert_operator failed (async): %s", err)
+
+    loop.create_task(_do_alert())
+
+
 def _evict_stale_tasks() -> list[str]:
     """Remove tasks that have been running longer than STALE_TASK_HOURS.
 
@@ -255,13 +292,15 @@ def _evict_stale_tasks() -> list[str]:
             _processing_tasks.pop(key, None)
         logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
     if stale:
-        try:
-            alert_operator(
-                f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
-                f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
-            )
-        except Exception as alert_err:
-            logger.warning("alert_operator failed during stale task eviction: %s", alert_err)
+        # ``_evict_stale_tasks`` is sync but invoked from both sync and
+        # async paths.  Use ``_fire_alert`` so the WhatsApp rate limiter's
+        # ``time.sleep`` runs off the event loop when one is detected
+        # (Issue #42); pure sync callers still get a direct synchronous
+        # ``alert_operator`` call so unit tests can verify the side-effect.
+        _fire_alert(
+            f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
+            f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
+        )
     return stale
 
 
@@ -1102,14 +1141,20 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 await asyncio.sleep(delay)
             else:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
+                # Issue #42 — offload the WhatsApp alert to a worker thread
+                # so the rate limiter's time.sleep cannot stall the event loop.
                 try:
-                    alert_operator(f"n8n callback failed after 3 retries: {e}")
+                    await asyncio.to_thread(
+                        alert_operator, f"n8n callback failed after 3 retries: {e}",
+                    )
                 except Exception as alert_err:
                     logger.error("alert_operator also failed: %s", alert_err)
         except Exception as e:
             logger.error("Callback failed with non-retryable error: %s", e)
             try:
-                alert_operator(f"n8n callback failed (non-retryable): {e}")
+                await asyncio.to_thread(
+                    alert_operator, f"n8n callback failed (non-retryable): {e}",
+                )
             except Exception as alert_err:
                 logger.error("alert_operator also failed: %s", alert_err)
             return
@@ -1484,8 +1529,12 @@ async def _handle_assistant_message(message: IncomingMessage) -> None:
             )
     except Exception as e:
         logger.error("Assistant error: %s", e, exc_info=True)
+        # Issue #42 — async handler path; offload the WhatsApp alert so
+        # the rate limiter's time.sleep cannot stall the event loop.
         try:
-            alert_operator(f"WhatsApp assistant crashed: {e}")
+            await asyncio.to_thread(
+                alert_operator, f"WhatsApp assistant crashed: {e}",
+            )
         except Exception as alert_err:
             logger.error("alert_operator also failed: %s", alert_err)
 
