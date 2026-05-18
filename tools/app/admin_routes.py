@@ -264,6 +264,64 @@ async def reset_pipeline(
     if previous_state not in (FAILED, COMPLETE):
         mark_failed(existing, f"Admin force-reset from state={previous_state}")
 
+    # ----------------------------------------------------------------
+    # Issue #45 — cleanup orphans BEFORE the state file is deleted.
+    # The previous implementation deleted the state file and left every
+    # downstream artifact dangling: the lecture's Drive summary doc,
+    # the private analysis report, the Pinecone vectors, and (in some
+    # historical cases) the uploaded video file.  Subsequent reruns
+    # then double-indexed the lecture and the analytics dashboard
+    # showed the same content twice.
+    #
+    # Cleanup is best-effort: failures are logged but never abort the
+    # reset itself — an admin invoking reset wants the lecture re-runnable,
+    # not blocked on a Drive API hiccup.  Drive files are moved to trash
+    # (recoverable within 30 days) rather than hard-deleted, so an
+    # operator who reset by mistake can still restore the documents.
+    # ----------------------------------------------------------------
+    orphan_cleanup: dict[str, Any] = {
+        "drive_trashed": [],
+        "pinecone_deleted": 0,
+        "errors": [],
+    }
+
+    drive_ids_to_trash = [
+        doc_id for doc_id in (
+            existing.summary_doc_id,
+            existing.report_doc_id,
+            existing.drive_video_id,
+        ) if doc_id
+    ]
+    if drive_ids_to_trash:
+        try:
+            from tools.integrations.gdrive_manager import get_drive_service
+
+            svc = get_drive_service()
+            for file_id in drive_ids_to_trash:
+                try:
+                    svc.files().update(
+                        fileId=file_id, body={"trashed": True},
+                    ).execute()
+                    orphan_cleanup["drive_trashed"].append(file_id)
+                except Exception as exc:
+                    msg = f"drive trash failed for {file_id}: {exc}"
+                    logger.warning(msg)
+                    orphan_cleanup["errors"].append(msg)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"drive service unavailable for orphan cleanup: {exc}"
+            logger.warning(msg)
+            orphan_cleanup["errors"].append(msg)
+
+    try:
+        from tools.integrations.knowledge_indexer import delete_lecture_vectors
+
+        deleted = delete_lecture_vectors(group, lecture)
+        orphan_cleanup["pinecone_deleted"] = deleted
+    except Exception as exc:  # noqa: BLE001
+        msg = f"pinecone cleanup failed: {exc}"
+        logger.warning(msg)
+        orphan_cleanup["errors"].append(msg)
+
     # Remove the state file
     path = state_file_path(group, lecture)
     try:
@@ -277,10 +335,12 @@ async def reset_pipeline(
         _processing_tasks.pop(key, None)
 
     logger.info(
-        "Admin reset: G%d L%d (previous_state=%s)",
+        "Admin reset: G%d L%d (previous_state=%s, drive_trashed=%d, vectors_deleted=%d)",
         group,
         lecture,
         previous_state,
+        len(orphan_cleanup["drive_trashed"]),
+        orphan_cleanup["pinecone_deleted"],
     )
 
     return JSONResponse(
@@ -289,6 +349,7 @@ async def reset_pipeline(
             "group": group,
             "lecture": lecture,
             "previous_state": previous_state,
+            "orphan_cleanup": orphan_cleanup,
         }
     )
 
