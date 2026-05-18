@@ -70,6 +70,90 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Prometheus metrics (US-026: /metrics endpoint + RED counters)
+# ---------------------------------------------------------------------------
+# Graceful-import pattern: if prometheus_client is missing, the module still
+# loads but metric ops become no-ops via the _NoOpCounter/_NoOpHistogram stubs.
+# This keeps tonight's May cohort pipeline safe even if the dep is somehow
+# absent at runtime.
+try:
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        REGISTRY,
+        Counter,
+        Histogram,
+        generate_latest,
+    )
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:  # pragma: no cover — exercised via missing-dep tests only
+    _PROMETHEUS_AVAILABLE = False
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
+
+    class _NoOpMetric:
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs) -> None:
+            return None
+
+        def observe(self, *args, **kwargs) -> None:
+            return None
+
+    def Counter(*args, **kwargs):  # type: ignore[no-redef]
+        return _NoOpMetric()
+
+    def Histogram(*args, **kwargs):  # type: ignore[no-redef]
+        return _NoOpMetric()
+
+    def generate_latest(*args, **kwargs) -> bytes:  # type: ignore[no-redef]
+        return b"# prometheus_client not installed\n"
+
+    REGISTRY = None  # type: ignore[assignment]
+
+def _strip_counter_suffix(name: str) -> str:
+    """Counter._name strips a trailing '_total' — match what prometheus stores."""
+    return name[:-len("_total")] if name.endswith("_total") else name
+
+
+def _safe_counter(name: str, doc: str, labels: list[str]):
+    """Counter factory that survives module re-import (test re-imports server)."""
+    try:
+        return Counter(name, doc, labels)
+    except ValueError:
+        # Already registered (e.g. test re-imported the module). Fetch existing.
+        if REGISTRY is None:  # graceful-degradation path
+            return Counter(name, doc, labels)
+        stripped = _strip_counter_suffix(name)
+        for collector in list(REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+            if getattr(collector, "_name", None) == stripped:
+                return collector
+        return Counter(name, doc, labels)
+
+
+def _safe_histogram(name: str, doc: str, labels: list[str]):
+    try:
+        return Histogram(name, doc, labels)
+    except ValueError:
+        if REGISTRY is None:
+            return Histogram(name, doc, labels)
+        for collector in list(REGISTRY._collector_to_names.keys()):  # type: ignore[attr-defined]
+            if getattr(collector, "_name", None) == name:
+                return collector
+        return Histogram(name, doc, labels)
+
+
+HTTP_REQUESTS_TOTAL = _safe_counter(
+    "http_requests_total",
+    "Total HTTP requests by method, route, and status code",
+    ["method", "route", "status"],
+)
+HTTP_REQUEST_DURATION = _safe_histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds by method and route",
+    ["method", "route"],
+)
+
+# ---------------------------------------------------------------------------
 # In-flight task tracking (deduplication + observability)
 # ---------------------------------------------------------------------------
 _processing_tasks: dict[str, datetime] = {}  # key: "g{group}_l{lecture}" -> start time
@@ -114,6 +198,17 @@ def _task_key(group: int, lecture: int) -> str:
     return f"g{group}_l{lecture}"
 
 
+def _g_label(group: int) -> str:
+    """Return the operator-visible cohort label for a group number.
+
+    Uses GROUPS[n]['name'] (e.g. 'მაისის ჯგუფი #1') when configured, otherwise
+    falls back to ``Group N``. Use this in every HTTP response detail, error
+    message, and any other string an operator will read. Plain ``Group N``
+    strings remain only in numeric log lines where they parse cleanly.
+    """
+    return GROUPS.get(group, {}).get("name") or f"Group {group}"
+
+
 def _rebuild_task_cache() -> None:
     """Rebuild in-memory task cache from persistent pipeline state files."""
     active = list_active_pipelines()
@@ -138,27 +233,74 @@ def _ensure_tz_aware(dt: datetime) -> datetime:
     return dt
 
 
+def _fire_alert(message: str) -> None:
+    """Issue #42 — fire-and-forget WhatsApp operator alert that never
+    blocks the event loop.
+
+    ``alert_operator`` runs the WhatsApp rate limiter, which uses
+    ``time.sleep`` while waiting for a slot.  Calling it directly from an
+    ``async def`` handler — as several error paths did — stalls the entire
+    event loop for the duration of the sleep, freezing every concurrent
+    request the server is serving.
+
+    Behaviour:
+      * If a running event loop is detected, schedule the alert on the
+        loop via ``asyncio.to_thread`` so the sleep happens on a thread.
+      * Otherwise (sync caller, e.g. scheduler job or CLI), call
+        ``alert_operator`` synchronously — preserves existing semantics.
+
+    Exceptions are swallowed and logged: an alert failure must never
+    propagate into the caller's error path.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            alert_operator(message)
+        except Exception as err:  # noqa: BLE001
+            logger.warning("alert_operator failed (sync): %s", err)
+        return
+
+    async def _do_alert() -> None:
+        try:
+            await asyncio.to_thread(alert_operator, message)
+        except Exception as err:  # noqa: BLE001
+            logger.warning("alert_operator failed (async): %s", err)
+
+    loop.create_task(_do_alert())
+
+
 def _evict_stale_tasks() -> list[str]:
     """Remove tasks that have been running longer than STALE_TASK_HOURS.
 
     Returns list of evicted task keys (for logging).
+
+    Concurrency: snapshots the dict under the lock so the sweep iterates a
+    copy, never the live structure. Each pop is then re-acquired under the
+    lock — bounded work per critical section, no "dictionary changed size
+    during iteration" race with concurrent webhook handlers.
     """
     now = datetime.now(tz=TBILISI_TZ)
+    with _processing_lock:
+        snapshot = list(_processing_tasks.items())
     stale = [
-        key for key, started in _processing_tasks.items()
+        key for key, started in snapshot
         if (now - _ensure_tz_aware(started)).total_seconds() > STALE_TASK_HOURS * 3600
     ]
     for key in stale:
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
         logger.warning("Evicted stale task: %s (exceeded %dh timeout)", key, STALE_TASK_HOURS)
     if stale:
-        try:
-            alert_operator(
-                f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
-                f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
-            )
-        except Exception as alert_err:
-            logger.warning("alert_operator failed during stale task eviction: %s", alert_err)
+        # ``_evict_stale_tasks`` is sync but invoked from both sync and
+        # async paths.  Use ``_fire_alert`` so the WhatsApp rate limiter's
+        # ``time.sleep`` runs off the event loop when one is detected
+        # (Issue #42); pure sync callers still get a direct synchronous
+        # ``alert_operator`` call so unit tests can verify the side-effect.
+        _fire_alert(
+            f"Evicted {len(stale)} stale tasks: {', '.join(stale)}. "
+            f"These ran for over {STALE_TASK_HOURS}h — check for hung pipelines."
+        )
     return stale
 
 
@@ -181,13 +323,20 @@ async def _eviction_loop() -> None:
 from contextlib import asynccontextmanager  # noqa: E402
 
 
-async def _check_unprocessed_recordings() -> None:
-    """Startup recovery: check Zoom for any unprocessed recordings from today.
+async def _check_unprocessed_recordings(window_days: int = 7) -> None:
+    """Startup + periodic recovery: scan Zoom for any unprocessed recordings.
 
-    Uses GET /v2/users/me/recordings to list today's recordings, then checks
+    Uses GET /v2/users/me/recordings to list recent recordings, then checks
     if each one has already been processed (by looking for vectors in Pinecone
     with matching group + lecture number). If unprocessed recordings are found,
     starts the pipeline automatically.
+
+    The window was 2 days originally — too narrow.  After three consecutive
+    lectures missed their post-meeting pipeline (G3 L2 2026-05-14, G4 L2
+    2026-05-15, G3 L3 2026-05-18; see issue tracking the new "trigger
+    failure" report) we widened to 7 days so a Friday lecture that was
+    missed because the container was cycling can still be picked up on
+    the following Monday's startup or periodic rescan.
     """
 
     try:
@@ -197,8 +346,7 @@ async def _check_unprocessed_recordings() -> None:
         return
 
     today = datetime.now(TBILISI_TZ).date()
-    # Check last 3 days for missed recordings (not just today)
-    from_date = (today - timedelta(days=2)).isoformat()
+    from_date = (today - timedelta(days=window_days)).isoformat()
     today_str = today.isoformat()
 
     try:
@@ -331,7 +479,8 @@ async def _check_unprocessed_recordings() -> None:
             except PipelineClaimError as exc:
                 logger.info("[startup-recovery] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
@@ -354,9 +503,13 @@ async def _deferred_lifespan_init() -> None:
     global _startup_complete
 
     try:
-        await asyncio.wait_for(_check_unprocessed_recordings(), timeout=60)
+        # 5-minute budget — listing 7 days of Zoom recordings then checking
+        # each against Pinecone can legitimately take 60-180s. The old
+        # 60-second cap silently aborted the scan halfway through, which
+        # contributed to missed lectures after a deploy.
+        await asyncio.wait_for(_check_unprocessed_recordings(window_days=7), timeout=300)
     except asyncio.TimeoutError:
-        logger.warning("[startup-recovery] timed out after 60s — continuing")
+        logger.warning("[startup-recovery] timed out after 300s — continuing")
     except Exception as exc:
         logger.error("[startup-recovery] Unexpected error: %s", exc, exc_info=True)
 
@@ -490,11 +643,30 @@ if _server_public_url:
 if not IS_RAILWAY:
     _allowed_hosts.append("*.trycloudflare.com")
 
-# On Railway, the internal health checker and proxy use IP-based Host headers
-# that can't be enumerated. Railway's own proxy already validates external
-# hosts, so we use wildcard to avoid rejecting legitimate internal traffic.
+# On Railway, the internal proxy and health checker may use Host headers we
+# can't enumerate ahead of time, but they are always either the public
+# *.railway.app / *.up.railway.app domain or the internal *.railway.internal
+# DNS name. Use suffix-wildcards (leading dot = "this domain and any
+# subdomain") rather than the unconstrained ``["*"]`` that the original
+# implementation used — that wildcard accepted any Host header and was
+# flagged HIGH by the security audit (issue #43, host-header-injection
+# class). The pinned domains below still let Railway's healthcheck and
+# proxy through while rejecting arbitrary Host values.
 if IS_RAILWAY:
-    _allowed_hosts = ["*"]
+    _allowed_hosts = [
+        ".railway.app",
+        ".up.railway.app",
+        ".railway.internal",
+        "healthcheck.railway.app",
+    ]
+    if _railway_domain:
+        _allowed_hosts.append(_railway_domain)
+    if _server_public_url:
+        from urllib.parse import urlparse as _urlparse2
+
+        _parsed2 = _urlparse2(_server_public_url)
+        if _parsed2.hostname:
+            _allowed_hosts.append(_parsed2.hostname)
 
 app.add_middleware(
     TrustedHostMiddleware,
@@ -508,7 +680,23 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["POST", "GET"])
 
 # Rate limiting
-limiter = Limiter(key_func=get_remote_address)
+def _client_ip_key(request: Request) -> str:
+    """Rate-limit key: prefer first hop in X-Forwarded-For, fall back to client.host.
+
+    Railway places its proxy in front, so request.client.host is always the
+    Railway IP — useless for per-client rate limiting. The first IP in
+    X-Forwarded-For is the actual client per RFC 7239 reverse-proxy convention.
+    Empty / malformed headers fall through to the standard remote-address key.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_ip_key)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -580,16 +768,88 @@ async def add_security_headers(request: Request, call_next) -> JSONResponse:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; "
-        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
-        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
-        "font-src https://fonts.gstatic.com; "
-        "img-src 'self' data:; "
-        "connect-src 'self'; "
-        "frame-ancestors 'none'"
+    # CSP — strict by default. ``/dashboard`` ships inline scripts/styles
+    # generated by render_dashboard_html(), so it gets a scoped exception that
+    # still excludes object-src, frame-src, and any non-self resource origins
+    # other than the fonts/CDN we explicitly trust.  Everywhere else the
+    # webhook server returns JSON; the strict default-src 'none' is correct.
+    # (Issue #46 — was unconstrained 'unsafe-inline' on every response.)
+    if request.url.path.rstrip("/") == "/dashboard":
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+            "font-src https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "object-src 'none'; "
+            "base-uri 'self'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "object-src 'none'; "
+            "base-uri 'self'"
+        )
+    # HSTS only in production (Railway). Local dev shouldn't preload HSTS or it
+    # poisons browsers against http://localhost on the same port.
+    if IS_RAILWAY:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains; preload"
+        )
+    # Disable powerful browser features we never use — defense-in-depth against
+    # third-party scripts loaded via CSP exceptions.
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=()"
     )
     return response
+
+
+# Metrics collection middleware (US-026) — registered LAST so it runs FIRST
+# (FastAPI middleware is LIFO). This guarantees /metrics counts even requests
+# that body-size-limit or security middleware would 4xx-reject.
+@app.middleware("http")
+async def collect_request_metrics(request: Request, call_next):
+    """Record http_requests_total + http_request_duration_seconds.
+
+    Uses the matched FastAPI route template (e.g. ``/process-recording``) as
+    the ``route`` label so we never explode cardinality on path parameters.
+    Falls back to ``"unknown"`` when no route matched (404).
+    """
+    start = time.perf_counter()
+    response = None
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        # Resolve route template from the matched APIRoute if available; this
+        # collapses /api/foo/abc-123 into the registered template and prevents
+        # high-cardinality blow-up from UUIDs/IDs in the URL path.
+        route_obj = request.scope.get("route")
+        route_label = getattr(route_obj, "path", None) or "unknown"
+        duration = time.perf_counter() - start
+        try:
+            HTTP_REQUESTS_TOTAL.labels(
+                method=request.method,
+                route=route_label,
+                status=str(status_code),
+            ).inc()
+            HTTP_REQUEST_DURATION.labels(
+                method=request.method, route=route_label,
+            ).observe(duration)
+        except Exception:  # pragma: no cover — metric failures must never break a request
+            logger.debug("metrics collection failed", exc_info=True)
 
 
 assistant: WhatsAppAssistant | None = None
@@ -657,12 +917,19 @@ def _verify_bearer_secret(
             detail=f"Server misconfigured: {secret_name} not set",
         )
 
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-
+    # Issue #47 — return identical 401 for BOTH "missing header" and
+    # "wrong bearer" so callers cannot distinguish the two by status code.
+    # The previous 401 vs 403 split was a status-code oracle: an attacker
+    # could tell whether the header was missing (401) or whether the secret
+    # was simply wrong (403), narrowing brute-force search.  Both paths now
+    # return the same status with the same generic detail, and the
+    # constant-time compare runs unconditionally to also eliminate the
+    # timing-based oracle (short-circuit on missing header would have made
+    # the missing-header path measurably faster).
     expected = f"Bearer {expected_secret}"
-    if not hmac.compare_digest(authorization, expected):
-        raise HTTPException(status_code=403, detail="Invalid bearer secret")
+    provided = authorization or ""
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def verify_webhook_secret(authorization: str | None = Header(None)) -> None:
@@ -802,10 +1069,9 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
         # Last-resort alert — ensures Tornike knows even if n8n callback fails
         try:
-            _g_label = GROUPS.get(group, {}).get("name") or f"Group {group}"
             await asyncio.to_thread(
                 alert_operator,
-                f"Pipeline FAILED for {_g_label}, Lecture #{lecture}.\n"
+                f"Pipeline FAILED for {_g_label(group)}, Lecture #{lecture}.\n"
                 f"Error: {e}",
             )
         except Exception as alert_err:
@@ -817,7 +1083,8 @@ async def process_recording_task(payload: ProcessRecordingRequest) -> None:
 
     finally:
         key = _task_key(group, lecture)
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
 
         if local_path and local_path.exists():
             local_path.unlink()
@@ -884,14 +1151,20 @@ async def _send_callback(payload: CallbackPayload) -> None:
                 await asyncio.sleep(delay)
             else:
                 logger.error("Failed to send callback to n8n after 3 attempts: %s", e)
+                # Issue #42 — offload the WhatsApp alert to a worker thread
+                # so the rate limiter's time.sleep cannot stall the event loop.
                 try:
-                    alert_operator(f"n8n callback failed after 3 retries: {e}")
+                    await asyncio.to_thread(
+                        alert_operator, f"n8n callback failed after 3 retries: {e}",
+                    )
                 except Exception as alert_err:
                     logger.error("alert_operator also failed: %s", alert_err)
         except Exception as e:
             logger.error("Callback failed with non-retryable error: %s", e)
             try:
-                alert_operator(f"n8n callback failed (non-retryable): {e}")
+                await asyncio.to_thread(
+                    alert_operator, f"n8n callback failed (non-retryable): {e}",
+                )
             except Exception as alert_err:
                 logger.error("alert_operator also failed: %s", alert_err)
             return
@@ -936,6 +1209,61 @@ async def liveness(request: Request):  # noqa: ARG001
     )
 
 
+@limiter.limit("60/minute")
+@app.get("/healthz")
+async def healthz(request: Request):  # noqa: ARG001
+    """Public, unauthenticated minimal health probe.
+
+    Designed for CI deploy gates (``.github/workflows/deploy.yml``), Kubernetes
+    liveness/readiness probes, and uptime monitors. Returns 200 with a small
+    JSON payload containing only the fields a probe needs:
+
+      - ``ok``         — always True when the process can serve a request
+      - ``version``    — APP_VERSION env or "unknown" (no secrets, no commit)
+      - ``timestamp``  — UTC ISO-8601 (helps debug clock drift)
+      - ``is_railway`` — bool, lets ops tell which environment answered
+
+    Does NOT include: GROUPS config, env state, internal IPs, stack traces,
+    pipeline state, dependency status, or any secret. Use ``/health`` (auth'd)
+    for that.
+
+    Rate limited at 60/minute per IP — generous enough for kube-probe
+    workloads, tight enough that a public attacker cannot trivially flood
+    the endpoint.
+    """
+    import os as _os
+    return JSONResponse(
+        content={
+            "ok": True,
+            "version": _os.environ.get("APP_VERSION", "unknown"),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "is_railway": bool(IS_RAILWAY),
+        },
+        status_code=200,
+    )
+
+
+@limiter.limit("60/minute")
+@app.get("/metrics")
+async def metrics(request: Request):  # noqa: ARG001
+    """Prometheus scrape endpoint (US-026).
+
+    Exposes RED-method counters and histograms for tonight's first
+    production-load test of the May cohort path:
+      - http_requests_total{method,route,status}
+      - http_request_duration_seconds{method,route}
+      - whatsapp_messages_sent_total{result=sent|suppressed|failed}
+      - pipeline_runs_total{state=started|completed|failed}
+
+    Public (no auth) — Prometheus scrapers cannot attach bearer tokens
+    without extra config, and the body contains no secrets. Rate limited
+    at 60/minute per IP to prevent flooding.
+    """
+    from fastapi.responses import Response
+    payload = generate_latest(REGISTRY) if REGISTRY is not None else generate_latest()
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/ready")
 async def readiness(request: Request):  # noqa: ARG001
     """Readiness probe — has the app completed startup initialisation?
@@ -957,12 +1285,14 @@ async def readiness(request: Request):  # noqa: ARG001
             status_code=503,
         )
 
+    with _processing_lock:
+        tasks_in_progress = len(_processing_tasks)
     return JSONResponse(
         content={
             "status": "ready",
             "uptime_s": int(time.time() - _server_start_time),
             "version": _APP_VERSION,
-            "tasks_in_progress": len(_processing_tasks),
+            "tasks_in_progress": tasks_in_progress,
         },
         status_code=200,
     )
@@ -1012,7 +1342,8 @@ async def health_check(
     report["status"] = report["overall_status"]
     report["version"] = _APP_VERSION
     report["commit"] = _GIT_COMMIT
-    report["tasks_in_progress"] = len(_processing_tasks)
+    with _processing_lock:
+        report["tasks_in_progress"] = len(_processing_tasks)
 
     # Only 503 on CRITICAL — warning-level ("degraded") returns 200 so
     # Railway and Docker do not restart the service for dependency noise.
@@ -1208,8 +1539,12 @@ async def _handle_assistant_message(message: IncomingMessage) -> None:
             )
     except Exception as e:
         logger.error("Assistant error: %s", e, exc_info=True)
+        # Issue #42 — async handler path; offload the WhatsApp alert so
+        # the rate limiter's time.sleep cannot stall the event loop.
         try:
-            alert_operator(f"WhatsApp assistant crashed: {e}")
+            await asyncio.to_thread(
+                alert_operator, f"WhatsApp assistant crashed: {e}",
+            )
         except Exception as alert_err:
             logger.error("alert_operator also failed: %s", alert_err)
 
@@ -1366,7 +1701,8 @@ def _handle_recording_completed_via_polling(
         except PipelineClaimError as exc:
             logger.info("[recording.completed fallback] Claim rejected: %s", exc)
         finally:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
 
     background_tasks.add_task(_run_and_cleanup)
 
@@ -1477,7 +1813,8 @@ def _handle_meeting_ended(body: dict, background_tasks: BackgroundTasks) -> dict
         except PipelineClaimError as exc:
             logger.info("[meeting.ended] Claim rejected: %s", exc)
         finally:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
 
     background_tasks.add_task(_run_and_cleanup)
 
@@ -1598,7 +1935,8 @@ async def process_recording(
             )
             raise HTTPException(
                 status_code=409,
-                detail=f"Recording for Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                detail=f"Recording for {_g_label(payload.group_number)}, "
+                       f"Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
@@ -1621,10 +1959,11 @@ async def process_recording(
         group_cfg = GROUPS.get(payload.group_number, {})
         meeting_id = group_cfg.get("zoom_meeting_id", "")
         if not meeting_id:
-            _processing_tasks.pop(key, None)
+            with _processing_lock:
+                _processing_tasks.pop(key, None)
             raise HTTPException(
                 status_code=422,
-                detail=f"No zoom_meeting_id configured for Group {payload.group_number} "
+                detail=f"No zoom_meeting_id configured for {_g_label(payload.group_number)} "
                        f"— cannot auto-discover recording",
             )
 
@@ -1645,7 +1984,8 @@ async def process_recording(
             except PipelineClaimError as exc:
                 logger.info("[process-recording/auto] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         # add_task expects a sync callable — _run_auto runs in a thread pool
         # Do NOT wrap in asyncio.to_thread — BackgroundTasks handles threading
@@ -1659,7 +1999,7 @@ async def process_recording(
         return {
             "status": "accepted",
             "mode": "auto-discovery",
-            "message": f"Auto-discovery pipeline started for Group {payload.group_number}, "
+            "message": f"Auto-discovery pipeline started for {_g_label(payload.group_number)}, "
                        f"Lecture #{payload.lecture_number} (polling meeting {meeting_id})",
         }
 
@@ -1667,7 +2007,8 @@ async def process_recording(
 
     return {
         "status": "accepted",
-        "message": f"Processing started for Group {payload.group_number}, Lecture #{payload.lecture_number}",
+        "message": f"Processing started for {_g_label(payload.group_number)}, "
+                   f"Lecture #{payload.lecture_number}",
     }
 
 
@@ -1820,7 +2161,8 @@ async def retry_latest(
             except PipelineClaimError as exc:
                 logger.info("[retry-latest] Claim rejected: %s", exc)
             finally:
-                _processing_tasks.pop(_task_key(gn, ln), None)
+                with _processing_lock:
+                    _processing_tasks.pop(_task_key(gn, ln), None)
 
         # add_task expects a sync callable — do NOT wrap in asyncio.to_thread
         background_tasks.add_task(
@@ -1883,15 +2225,15 @@ async def _manual_pipeline_task(
     except Exception as e:
         error_msg = f"Manual pipeline failed: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
-        _g_label = GROUPS.get(group_number, {}).get("name") or f"Group {group_number}"
         await asyncio.to_thread(
             alert_operator,
-            f"Manual pipeline FAILED for {_g_label}, Lecture #{lecture_number}.\n"
+            f"Manual pipeline FAILED for {_g_label(group_number)}, Lecture #{lecture_number}.\n"
             f"Error: {e}",
         )
     finally:
         key = _task_key(group_number, lecture_number)
-        _processing_tasks.pop(key, None)
+        with _processing_lock:
+            _processing_tasks.pop(key, None)
         if local_path and local_path.exists():
             local_path.unlink()
             logger.info("Cleaned up temp file: %s", local_path)
@@ -1929,7 +2271,8 @@ async def manual_trigger(
             started_str = started.isoformat() if started else "unknown"
             raise HTTPException(
                 status_code=409,
-                detail=f"Group {payload.group_number}, Lecture #{payload.lecture_number} "
+                detail=f"{_g_label(payload.group_number)}, "
+                       f"Lecture #{payload.lecture_number} "
                        f"is already being processed (started {started_str})",
             )
         _processing_tasks[key] = datetime.now(tz=TBILISI_TZ)
@@ -1952,7 +2295,7 @@ async def manual_trigger(
 
     return {
         "status": "accepted",
-        "message": f"Manual pipeline started for Group {payload.group_number}, "
+        "message": f"Manual pipeline started for {_g_label(payload.group_number)}, "
                    f"Lecture #{payload.lecture_number} (Drive file: {payload.drive_file_id})",
     }
 
@@ -2075,11 +2418,12 @@ def verify_paperclip_secret(authorization: str | None) -> None:
             status_code=503,
             detail="Server misconfigured: PAPERCLIP_WEBHOOK_SECRET not set",
         )
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    # Issue #47 — eliminate the auth oracle: same status, same detail,
+    # constant-time compare always runs (no short-circuit on missing header).
     expected = f"Bearer {PAPERCLIP_WEBHOOK_SECRET}"
-    if not hmac.compare_digest(authorization, expected):
-        raise HTTPException(status_code=401, detail="Invalid Paperclip secret")
+    provided = authorization or ""
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 class PaperclipTaskPayload(BaseModel):

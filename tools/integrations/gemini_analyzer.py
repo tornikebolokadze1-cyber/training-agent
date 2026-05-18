@@ -58,9 +58,20 @@ try:
 except ImportError:
     MAX_COST_PER_LECTURE = float(os.environ.get("LECTURE_COST_LIMIT_USD", "5.0"))
 
-# Fallback model when primary transcription model fails repeatedly
+# Cascade of fallback models used when the primary transcription model
+# produces a degraded chunk (prompt-echo, timestamp spiral, repetition loop)
+# OR raises a safety/recitation block. Tried in order.
+# Tier 1 default: gemini-2.5-flash — more robust than flash-lite for
+#   context-overflow; supports disable_thinking=True.
+# Tier 2 default: gemini-2.5-pro — different safety-filter behavior; required
+#   when an 8-min audio segment triggers RECITATION on both flash variants
+#   (observed on G3 L2 chunk 13/21, 2026-05-15). Pro requires thinking mode;
+#   transcribe_video auto-derives disable_thinking=False for pro models.
 GEMINI_FALLBACK_TRANSCRIPTION_MODEL = os.environ.get(
-    "GEMINI_FALLBACK_TRANSCRIPTION_MODEL", "gemini-2.5-pro"
+    "GEMINI_FALLBACK_TRANSCRIPTION_MODEL", "gemini-2.5-flash"
+)
+GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2 = os.environ.get(
+    "GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2", "gemini-2.5-pro"
 )
 
 # Per-execution pipeline key for cost tracking.
@@ -103,6 +114,17 @@ def _is_quota_error(error: Exception) -> bool:
         "too many requests",
     ]
     return any(indicator in error_str for indicator in quota_indicators)
+
+
+def _is_safety_or_recitation_error(error: Exception) -> bool:
+    """Check if an error is a Gemini safety/recitation block.
+
+    These are deterministic per (model, content) pairs, so retrying the same
+    model is useless — but switching to a different model often succeeds.
+    Discovered 2026-05-15 on G3 L2 chunk 13/21 (RECITATION).
+    """
+    error_str = str(error).lower()
+    return "safety filter" in error_str or "recitation" in error_str
 
 
 _cache_lock = threading.Lock()
@@ -530,11 +552,19 @@ _MAX_NGRAM_REPEATS = 6
 # Minimum fraction of real Georgian/content chars vs total chars.
 # Degraded output is dominated by ASCII timestamps "00:00:00,000 --> 00:00:03,000".
 _MIN_CONTENT_RATIO = 0.40
-# Prompt-echo detector: if the prompt's opening phrase appears in the output, reject.
+# Prompt-echo detector: if the prompt's opening phrase appears in the output,
+# OR if the model replies with a chatbot-style "please upload the file" /
+# "I'd be happy to listen" instead of transcribing — reject.
+# The latter pattern was observed on G3 L2 chunk 0 (2026-05-15): instead of
+# transcribing the audio, the model asked the user to upload it.
 _PROMPT_ECHO_PHRASES = [
     "გადმოეცი ყველაფერი ზუსტად",
     "მონიშნე ვინ ლაპარაკობს",
     "შენ ხარ პროფესიონალი ტრანსკრიპტორი",
+    "ატვირთოთ აუდიო ფაილი",
+    "გთხოვთ, ატვირთო",
+    "სიამოვნებით მოგისმენთ",
+    "მოგაწოდოთ აუდიო",
 ]
 
 
@@ -924,6 +954,7 @@ def transcribe_video(
     chunk_number: int = 0,
     total_chunks: int = 1,
     prev_chunk_tail: str = "",
+    model: str | None = None,
 ) -> str:
     """Transcribe an audio/video chunk using Gemini Flash-lite.
 
@@ -936,6 +967,10 @@ def transcribe_video(
             Injected into the continuation prompt so the model has a concrete
             anchor — prevents prompt-echo and repetition spirals at chunk
             boundaries (the G3 L1 failure mode, 2026-05-12).
+        model: Override the default transcription model. Used by the
+            caller to retry a degraded chunk with the fallback model
+            (GEMINI_FALLBACK_TRANSCRIPTION_MODEL). Defaults to
+            GEMINI_MODEL_TRANSCRIPTION.
 
     Returns:
         Georgian transcript for this chunk with timestamps and speaker markers.
@@ -953,14 +988,19 @@ def transcribe_video(
             else "(წინა ნაწილი მიუწვდომელია)",
         )
 
+    chosen_model = model or GEMINI_MODEL_TRANSCRIPTION
+    # gemini-2.5-pro REQUIRES thinking mode — passing disable_thinking=True
+    # causes 400 INVALID_ARGUMENT ("Budget 0 is invalid"). Flash and flash-lite
+    # both accept disable_thinking=True. Discovered 2026-05-15 on G3 L2 fallback.
+    can_disable_thinking = "pro" not in chosen_model
     return _generate_with_retry(
         client,
-        model=GEMINI_MODEL_TRANSCRIPTION,
+        model=chosen_model,
         contents=[file_ref, prompt],
         purpose=f"transcription (chunk {chunk_number + 1}/{total_chunks})",
         max_output_tokens=16384,  # 8-min chunks produce ~3K-6K chars; 16K is generous ceiling
         use_free=use_free,
-        disable_thinking=True,  # Transcription doesn't need reasoning — saves ~$50+/month
+        disable_thinking=can_disable_thinking,  # Pro models need thinking; others save ~$50+/month
     )
 
 
@@ -1200,6 +1240,37 @@ def transcribe_chunked_video(
                         total_chunks=total_chunks,
                         prev_chunk_tail=prev_chunk_tail,
                     )
+                elif (
+                    _is_safety_or_recitation_error(exc)
+                    and GEMINI_FALLBACK_TRANSCRIPTION_MODEL
+                    and GEMINI_FALLBACK_TRANSCRIPTION_MODEL != GEMINI_MODEL_TRANSCRIPTION
+                ):
+                    # Safety/recitation blocks are deterministic per model —
+                    # switching to a different model often unblocks the chunk.
+                    # Discovered 2026-05-15 on G3 L2 chunk 13/21 (RECITATION).
+                    logger.warning(
+                        "Chunk %d/%d safety-blocked on %s (%s). Retrying with fallback model %s...",
+                        i + 1,
+                        total_chunks,
+                        GEMINI_MODEL_TRANSCRIPTION,
+                        exc,
+                        GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                    )
+                    transcript = transcribe_video(
+                        file_ref,
+                        use_free=use_free,
+                        chunk_number=i,
+                        total_chunks=total_chunks,
+                        prev_chunk_tail=prev_chunk_tail,
+                        model=GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                    )
+                    logger.info(
+                        "Fallback model %s succeeded for chunk %d/%d after safety block (%d chars)",
+                        GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                        i + 1,
+                        total_chunks,
+                        len(transcript),
+                    )
                 else:
                     raise
 
@@ -1207,12 +1278,149 @@ def transcribe_chunked_video(
             chunk_label = f"chunk {i + 1}/{total_chunks}"
             degradation_reason = _detect_transcript_degradation(transcript, chunk_label)
             if degradation_reason:
+                # Try fallback model once before aborting. The primary model
+                # (flash-lite by default) occasionally context-overflows on
+                # certain audio segments — pro is more robust on these.
+                # Discovered 2026-05-15 on G3 L2 chunk 6/21 prompt-echo.
+                if GEMINI_FALLBACK_TRANSCRIPTION_MODEL and (
+                    GEMINI_FALLBACK_TRANSCRIPTION_MODEL != GEMINI_MODEL_TRANSCRIPTION
+                ):
+                    logger.warning(
+                        "Chunk %d/%d degraded on %s (%s). Retrying once with fallback model %s...",
+                        i + 1,
+                        total_chunks,
+                        GEMINI_MODEL_TRANSCRIPTION,
+                        degradation_reason,
+                        GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                    )
+                    try:
+                        fallback_transcript = transcribe_video(
+                            file_ref,
+                            use_free=use_free,
+                            chunk_number=i,
+                            total_chunks=total_chunks,
+                            prev_chunk_tail=prev_chunk_tail,
+                            model=GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                        )
+                        fallback_degradation = _detect_transcript_degradation(
+                            fallback_transcript, chunk_label
+                        )
+                        if not fallback_degradation:
+                            logger.info(
+                                "Fallback model %s succeeded for %s (%d chars)",
+                                GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                                chunk_label,
+                                len(fallback_transcript),
+                            )
+                            transcript = fallback_transcript
+                            degradation_reason = None  # cleared — proceed
+                        else:
+                            degradation_reason = (
+                                f"primary({GEMINI_MODEL_TRANSCRIPTION})={degradation_reason}; "
+                                f"fallback({GEMINI_FALLBACK_TRANSCRIPTION_MODEL})={fallback_degradation}"
+                            )
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "Fallback model %s raised exception for %s: %s",
+                            GEMINI_FALLBACK_TRANSCRIPTION_MODEL,
+                            chunk_label,
+                            fallback_exc,
+                        )
+                        degradation_reason = (
+                            f"primary({GEMINI_MODEL_TRANSCRIPTION}) degraded ({degradation_reason}); "
+                            f"fallback({GEMINI_FALLBACK_TRANSCRIPTION_MODEL}) raised: {fallback_exc}"
+                        )
+
+            # Tier 2 fallback: if both primary and Tier 1 fallback failed
+            # (degraded or raised), try the second-tier fallback model.
+            # Default tier-2 is gemini-2.5-pro, which has a different safety
+            # filter behavior than flash variants. Required for audio that
+            # triggers RECITATION on BOTH flash models (observed on G3 L2
+            # chunk 13/21, 2026-05-15).
+            if degradation_reason and GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2 and (
+                GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2 != GEMINI_MODEL_TRANSCRIPTION
+                and GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2 != GEMINI_FALLBACK_TRANSCRIPTION_MODEL
+            ):
+                logger.warning(
+                    "Both primary and tier-1 fallback failed for %s. Trying tier-2 fallback %s...",
+                    chunk_label,
+                    GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2,
+                )
+                try:
+                    tier2_transcript = transcribe_video(
+                        file_ref,
+                        use_free=use_free,
+                        chunk_number=i,
+                        total_chunks=total_chunks,
+                        prev_chunk_tail=prev_chunk_tail,
+                        model=GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2,
+                    )
+                    tier2_degradation = _detect_transcript_degradation(
+                        tier2_transcript, chunk_label
+                    )
+                    if not tier2_degradation:
+                        logger.info(
+                            "Tier-2 fallback %s succeeded for %s (%d chars)",
+                            GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2,
+                            chunk_label,
+                            len(tier2_transcript),
+                        )
+                        transcript = tier2_transcript
+                        degradation_reason = None
+                    else:
+                        degradation_reason = (
+                            f"{degradation_reason}; "
+                            f"tier2({GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2})={tier2_degradation}"
+                        )
+                except Exception as tier2_exc:
+                    logger.warning(
+                        "Tier-2 fallback %s raised exception for %s: %s",
+                        GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2,
+                        chunk_label,
+                        tier2_exc,
+                    )
+                    degradation_reason = (
+                        f"{degradation_reason}; "
+                        f"tier2({GEMINI_FALLBACK_TRANSCRIPTION_MODEL_2}) raised: {tier2_exc}"
+                    )
+
+            if degradation_reason:
+                # Last-resort: optionally accept a placeholder so the rest of
+                # the lecture can still be summarized/analyzed/indexed.
+                # Enabled via ALLOW_SKIP_DEGRADED_CHUNK=1 — opt-in because it
+                # creates a 5%-ish content gap in the final transcript.
+                if os.environ.get("ALLOW_SKIP_DEGRADED_CHUNK", "0") == "1":
+                    placeholder = (
+                        f"[ნაწილი {i + 1}/{total_chunks}: ვერ მოხერხდა ტრანსკრიფცია — "
+                        f"Gemini-ის უსაფრთხოების ფილტრმა/ვერსიის overload-მა დაბლოკა "
+                        f"({CHUNK_DURATION_MINUTES} წუთი აუდიო გამოტოვებულია). "
+                        f"მიზეზი: {degradation_reason[:300]}]"
+                    )
+                    logger.warning(
+                        "ALLOW_SKIP_DEGRADED_CHUNK=1 — using placeholder for %s (%d chars)",
+                        chunk_label,
+                        len(placeholder),
+                    )
+                    try:
+                        from tools.integrations.whatsapp_sender import alert_operator
+
+                        alert_operator(
+                            f"⚠️ Skipped degraded chunk: {chunk_label} (placeholder used). "
+                            f"Reason: {degradation_reason[:200]}"
+                        )
+                    except Exception:
+                        pass
+                    transcript = placeholder
+                    degradation_reason = None
+
+            if degradation_reason:
                 # Alert and fail fast — better to abort than to index garbage into Pinecone
                 err_msg = (
-                    f"Transcript degradation detected in {chunk_label}: {degradation_reason}. "
+                    f"Transcript degradation in {chunk_label}: {degradation_reason}. "
                     f"This is the flash-lite context-overflow failure mode. "
                     f"The chunk duration ({CHUNK_DURATION_MINUTES} min) may still be too long, "
-                    f"or the model hit a transient overload. Aborting pipeline."
+                    f"or all fallback models hit transient overload/blocks. Aborting pipeline. "
+                    f"Set ALLOW_SKIP_DEGRADED_CHUNK=1 to continue with a placeholder for this chunk."
                 )
                 logger.error(err_msg)
                 try:
@@ -1336,7 +1544,11 @@ def _claude_reason(
     max_tokens: int = 16000,
     budget_tokens: int = 10000,
 ) -> str:
-    """Use Claude Opus 4.6 with extended thinking to reason about the transcript.
+    """Use Claude Sonnet 4.6 with extended thinking to reason about the transcript.
+
+    Model is configured via ``ASSISTANT_CLAUDE_MODEL`` in ``tools/core/config.py``
+    (currently ``claude-sonnet-4-6``; Sonnet was chosen over Opus for
+    ~$150/course savings with minimal quality loss).
 
     Returns Claude's analysis in English (reasoning output), which will then
     be sent to Gemini for Georgian writing.

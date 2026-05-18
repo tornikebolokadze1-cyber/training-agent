@@ -341,7 +341,7 @@ class TestDownloadRecording:
         mock_client.stream.return_value = mock_response
 
         with patch("tools.integrations.zoom_manager.httpx.Client", return_value=mock_client):
-            result = zm.download_recording("https://zoom/dl", "tok", dest)
+            result = zm.download_recording("https://zoom.us/dl", "tok", dest)
 
         assert result.exists()
 
@@ -461,3 +461,54 @@ class TestStartRecordingLive:
             r = zm.start_recording_live(0)
         assert isinstance(r, dict)
         assert r.get("ok") is False
+
+
+# ===========================================================================
+# _validate_download_url — Zoom-host allowlist (Issue #49)
+# ===========================================================================
+
+
+class TestValidateDownloadUrl:
+    """Defends against SSRF / token leak via crafted Zoom webhook payloads."""
+
+    def test_accepts_canonical_zoom_cdn_url(self):
+        url = "https://us02web.zoom.us/rec/download/abc123"
+        assert zm._validate_download_url(url) == url
+
+    def test_accepts_apex_zoom_us(self):
+        url = "https://zoom.us/rec/download/xyz"
+        assert zm._validate_download_url(url) == url
+
+    def test_rejects_http_scheme(self):
+        with pytest.raises(zm.ZoomDownloadError, match="https"):
+            zm._validate_download_url("http://us02web.zoom.us/rec/file")
+
+    def test_rejects_userinfo(self):
+        # Classic credential-leak vector: parsers may interpret host as zoom.us
+        # while http clients actually connect to evil.com.
+        with pytest.raises(zm.ZoomDownloadError, match="userinfo"):
+            zm._validate_download_url(
+                "https://attacker:pw@us02web.zoom.us/rec/file"
+            )
+
+    def test_rejects_non_zoom_host(self):
+        with pytest.raises(zm.ZoomDownloadError, match="ALLOWED_ZOOM_HOSTS"):
+            zm._validate_download_url("https://evil.example.com/rec/file")
+
+    def test_rejects_host_that_only_ends_with_zoom_us_after_a_dot(self):
+        # ``zoom.us`` allowlist must NOT match ``notzoom.us``.
+        with pytest.raises(zm.ZoomDownloadError):
+            zm._validate_download_url("https://notzoom.us/rec/file")
+
+    def test_rejects_missing_host(self):
+        with pytest.raises(zm.ZoomDownloadError, match="hostname"):
+            zm._validate_download_url("https:///rec/file")
+
+    def test_download_recording_rejects_bad_url_before_network_call(self, tmp_path):
+        # Should raise before any http client is constructed.
+        with pytest.raises(zm.ZoomDownloadError):
+            zm.download_recording(
+                "https://evil.example.com/rec/file",
+                "ignored-token",
+                tmp_path / "should-not-be-written.mp4",
+            )

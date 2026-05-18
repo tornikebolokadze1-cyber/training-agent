@@ -22,7 +22,7 @@ Full lifecycle for processing a lecture recording: from raw video to delivered r
 │             │                                                            │
 │             ▼                                                            │
 │  ┌─────────────────────┐   Gemini 2.5 Flash (transcription)               │
-│  │ Step 1: Analyze      │   Claude Opus 4.6 (reasoning)                  │
+│  │ Step 1: Analyze      │   Claude Sonnet 4.6 (reasoning)                │
 │  │   analyze_lecture()  │   Gemini 3.1 Pro Preview (Georgian writing)    │
 │  └──────────┬──────────┘                                                 │
 │             │                                                            │
@@ -139,7 +139,7 @@ TRANSCRIBING → UPLOADING_DOCS → NOTIFYING → INDEXING → COMPLETE
 Runs the multi-model AI pipeline from `tools/integrations/gemini_analyzer.py`:
 
 1. **Gemini 2.5 Flash** — Multimodal transcription of the lecture video (processed in 45-minute chunks to stay within the 1M token context window).
-2. **Claude Opus 4.6** — Extended thinking for deep reasoning and analysis (gap analysis, pedagogical evaluation).
+2. **Claude Sonnet 4.6** — Extended thinking for deep reasoning and analysis (gap analysis, pedagogical evaluation). Originally chose Opus but switched to Sonnet for ~$150/course savings with minimal quality loss; see `tools/core/config.py:558` and ADR 007.
 3. **Gemini 3.1 Pro Preview** — Georgian language writing (summary, formatted reports).
 
 **Resume**: If a valid transcript already exists in `.tmp/g{N}_l{N}_transcript.txt` (2000+ characters), transcription is skipped entirely.

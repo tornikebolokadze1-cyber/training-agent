@@ -95,7 +95,7 @@ Zoom Manager downloads recording (resumable for large files)
 Gemini 2.5 Pro transcribes 2-hour video (1M token context)
        │
        ▼
-Claude Opus 4.6 analyzes content (extended thinking)
+Claude Sonnet 4.6 analyzes content (extended thinking)
   ├── Gap analysis: what students struggle with
   ├── Deep analysis: pedagogical insights
   └── Lecture summary: key takeaways
@@ -195,7 +195,7 @@ Training Agent/
 | Google Drive | OAuth2 + refresh tokens | Folder management, file upload |
 | Google Docs | OAuth2 + refresh tokens | Document creation for summaries |
 | Gemini | API key | Video transcription (2.5 Pro), Georgian writing (3.1 Pro Preview) |
-| Claude/Anthropic | API key | Analysis reasoning (Opus 4.6, extended thinking) |
+| Claude/Anthropic | API key | Analysis reasoning (Sonnet 4.6, extended thinking) |
 | Pinecone | API key | Vector DB for course knowledge RAG |
 | WhatsApp | Green API REST | Group + private messaging |
 | Gmail | OAuth2 | Backup notifications |

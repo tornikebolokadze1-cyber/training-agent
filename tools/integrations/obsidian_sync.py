@@ -17,11 +17,15 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 import time
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from tools.core.config import (
@@ -31,8 +35,6 @@ from tools.core.config import (
     GROUPS,
     PROJECT_ROOT,
     TMP_DIR,
-    WHATSAPP_GROUP1_ID,
-    WHATSAPP_GROUP2_ID,
 )
 from tools.core.retry import retry_with_backoff
 
@@ -1146,15 +1148,41 @@ def _generate_obsidian_config() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cleanup_stale_files(concept_index: dict[str, dict]) -> int:
+def _cleanup_stale_files(
+    concept_index: dict[str, dict],
+    *,
+    partial_run_safe: bool = False,
+) -> int:
     """Remove vault files that are no longer in the concept index.
 
     Scans both კონცეფციები and ინსტრუმენტები folders for .md files
     that don't correspond to any current concept.
 
+    Args:
+        concept_index: The current concept index to compare against.
+        partial_run_safe: When False (default), the cleanup refuses to run
+            if a sync_full run is currently in progress (detected via the
+            ``.tmp/obsidian_sync_progress.json`` checkpoint). This prevents
+            the 2026-05-07-style destructive wipe where a mid-rebuild crash
+            left the vault with only the partial concept index, and the
+            cleanup then deleted every "missing" .md file. Pass True only
+            from a fully-completed sync.
+
     Returns:
-        Count of deleted files.
+        Count of deleted files (0 if refused).
     """
+    if not partial_run_safe:
+        checkpoint = _load_sync_checkpoint()
+        if checkpoint is not None and not checkpoint.get("last_run_completed"):
+            logger.warning(
+                "obsidian_sync: refusing to clean stale files — a partial "
+                "sync_full run is in progress (checkpoint at %s shows "
+                "incomplete state). Pass partial_run_safe=True only when "
+                "the rebuild has finished.",
+                _SYNC_CHECKPOINT_PATH,
+            )
+            return 0
+
     # Build set of expected filenames from current index
     expected_files: set[str] = set()
     for norm_key, info in concept_index.items():
@@ -1177,11 +1205,103 @@ def _cleanup_stale_files(concept_index: dict[str, dict]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Resilience helpers: skip-if-exists hashing + sync_full checkpoint
+# ---------------------------------------------------------------------------
+
+_SYNC_HASH_RE = re.compile(r"<!--\s*sync-hash:\s*([0-9a-f]{8,64})\s*-->")
+_SYNC_CHECKPOINT_PATH: Path = TMP_DIR / "obsidian_sync_progress.json"
+
+
+def _compute_payload_hash(payload: Any) -> str:
+    """Compute a stable SHA256 hex digest for a sync payload.
+
+    Used by the skip-if-exists guard so that an unchanged Pinecone
+    extract produces an unchanged .md file. ``sort_keys=True`` keeps the
+    digest stable across runs even when dict ordering changes.
+    """
+    serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _read_existing_sync_hash(path: Path) -> str | None:
+    """Return the sync-hash recorded in the file header, or None.
+
+    Only the first ~512 bytes are inspected to keep this cheap.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            head = fh.read(512)
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = _SYNC_HASH_RE.search(head)
+    return match.group(1) if match else None
+
+
+def _write_with_hash(path: Path, body: str, payload_hash: str) -> None:
+    """Write ``body`` to ``path``, prefixed with a sync-hash header comment."""
+    header = f"<!-- sync-hash: {payload_hash} -->\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(header + body, encoding="utf-8")
+
+
+def _write_if_changed(path: Path, body: str, payload: Any, *, force: bool = False) -> bool:
+    """Skip-if-exists write: only writes when the hash differs.
+
+    Returns True if the file was (re)written, False if skipped.
+    """
+    payload_hash = _compute_payload_hash(payload)
+    if not force and path.exists():
+        existing = _read_existing_sync_hash(path)
+        if existing == payload_hash:
+            logger.debug("obsidian_sync: skip-if-exists hit for %s", path.name)
+            return False
+    _write_with_hash(path, body, payload_hash)
+    return True
+
+
+def _load_sync_checkpoint() -> dict[str, Any] | None:
+    """Load the sync_full checkpoint, or None if missing/unreadable."""
+    if not _SYNC_CHECKPOINT_PATH.exists():
+        return None
+    try:
+        with open(_SYNC_CHECKPOINT_PATH, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("obsidian_sync: checkpoint at %s unreadable: %s",
+                       _SYNC_CHECKPOINT_PATH, e)
+        return None
+
+
+def _save_sync_checkpoint(state: dict[str, Any]) -> None:
+    """Atomically persist the sync_full checkpoint (temp + os.replace)."""
+    _SYNC_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _SYNC_CHECKPOINT_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, _SYNC_CHECKPOINT_PATH)
+
+
+def _lecture_key(g: int, lec: int) -> str:
+    """Stable identifier for checkpoint entries (e.g. ``g1_l3``)."""
+    return f"g{g}_l{lec}"
+
+
+def _now_iso() -> str:
+    """ISO-8601 UTC timestamp for checkpoint fields."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
-def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
+def sync_lecture(
+    group_number: int,
+    lecture_number: int,
+    *,
+    force: bool = False,
+) -> dict[str, int]:
     """Sync a single lecture to the Obsidian vault.
 
     Called after transcribe_lecture pipeline completes. Extracts data from
@@ -1191,9 +1311,15 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
     Args:
         group_number: Training group (1 or 2).
         lecture_number: Lecture sequence number.
+        force: When True, every generated file is rewritten even if its
+            sync-hash matches the existing on-disk header. Default False
+            makes the call idempotent — a re-run with identical Pinecone
+            content performs no writes (US-014 skip-if-exists guard).
 
     Returns:
         Dict with counts: concepts, relationships, files_updated.
+        ``files_updated`` counts only the files actually (re)written —
+        skipped-because-unchanged files are NOT counted.
     """
     logger.info(
         "Syncing Obsidian vault for Group %d, Lecture %d...",
@@ -1225,11 +1351,11 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
     # Step 5: Generate files
     files_updated = 0
 
-    # Lecture note
+    # Lecture note — skip-if-exists via sync-hash of the entity payload
     note = _generate_lecture_note(group_number, lecture_number, entity_data)
     path = VAULT_ROOT / "ლექციები" / _group_label(group_number) / f"ლექცია {lecture_number}.md"
-    path.write_text(note, encoding="utf-8")
-    files_updated += 1
+    if _write_if_changed(path, note, entity_data, force=force):
+        files_updated += 1
 
     # Analysis note
     analysis = _generate_analysis_note(group_number, lecture_number)
@@ -1238,8 +1364,8 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
             VAULT_ROOT / "ანალიზი" / _group_label(group_number)
             / f"ლექცია {lecture_number} -- ანალიზი.md"
         )
-        path.write_text(analysis, encoding="utf-8")
-        files_updated += 1
+        if _write_if_changed(path, analysis, analysis, force=force):
+            files_updated += 1
 
     # Concept/tool notes — filter low-importance, then generate
     pre_filter = len(concept_index)
@@ -1272,10 +1398,15 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
             else VAULT_ROOT / "კონცეფციები"
         )
         filename = _safe_filename(display) + ".md"
-        (folder / filename).write_text(note_text, encoding="utf-8")
-        files_updated += 1
+        if _write_if_changed(folder / filename, note_text, info, force=force):
+            files_updated += 1
 
-    # Clean up stale files no longer in the index
+    # Clean up stale files no longer in the index.
+    # NOTE: do NOT pass partial_run_safe=True from here — a single-lecture
+    # sync is by definition mid-cohort and cannot know whether other
+    # lectures are still pending. The cleanup will refuse if a sync_full
+    # run is in progress; otherwise it runs normally for single-lecture
+    # callbacks from the post-recording pipeline.
     _cleanup_stale_files(filtered_index)
 
     # Practical examples index
@@ -1318,11 +1449,21 @@ def sync_lecture(group_number: int, lecture_number: int) -> dict[str, int]:
     }
 
 
-def sync_full() -> dict[str, int]:
+def sync_full(*, force: bool = False) -> dict[str, int]:
     """Full vault rebuild from all available Pinecone data.
 
-    Extracts data for all lectures in both groups, runs entity extraction,
-    and regenerates the entire vault.
+    Extracts data for all lectures in every configured group, runs entity
+    extraction, and regenerates the entire vault. Resumable: a per-lecture
+    checkpoint is persisted to ``.tmp/obsidian_sync_progress.json`` so that
+    a crash mid-rebuild does not require restarting from lecture 1, and the
+    destructive stale-file cleanup will not run unless this method
+    completes successfully (US-014 — prevents the 2026-05-07 wipe).
+
+    Args:
+        force: When True, discard any prior incomplete checkpoint and
+            re-sync every lecture from scratch, ignoring the skip-if-exists
+            sync-hash guard. Default False resumes from the last completed
+            lecture and skips unchanged files.
 
     Returns:
         Dict with total counts.
@@ -1331,6 +1472,23 @@ def sync_full() -> dict[str, int]:
     _ensure_vault_dirs()
 
     total = {"concepts": 0, "relationships": 0, "files_updated": 0}
+
+    # Load (or initialise) the resumable checkpoint.
+    checkpoint = _load_sync_checkpoint() or {}
+    completed_before: list[str] = list(checkpoint.get("completed", []))
+    if force:
+        logger.info("obsidian_sync: force=True — clearing checkpoint and re-syncing all")
+        completed_before = []
+    completed_set: set[str] = set(completed_before)
+
+    # Start a new run-window — mark not-yet-completed.
+    checkpoint = {
+        "completed": completed_before,
+        "last_run_started": _now_iso(),
+        "last_lecture_completed": checkpoint.get("last_lecture_completed"),
+        "last_run_completed": None,
+    }
+    _save_sync_checkpoint(checkpoint)
 
     # Discover which lectures exist in Pinecone
     from tools.integrations.knowledge_indexer import get_pinecone_index
@@ -1360,13 +1518,23 @@ def sync_full() -> dict[str, int]:
     logger.info("Found %d lectures in Pinecone: %s", len(existing_lectures), existing_lectures)
 
     for g, lec in existing_lectures:
+        key = _lecture_key(g, lec)
+        if key in completed_set:
+            logger.info("obsidian_sync: skipping %s — already in checkpoint", key)
+            continue
         try:
-            result = sync_lecture(g, lec)
+            result = sync_lecture(g, lec, force=force)
             for k in total:
                 total[k] += result.get(k, 0)
+            completed_set.add(key)
+            checkpoint["completed"] = sorted(completed_set)
+            checkpoint["last_lecture_completed"] = key
+            _save_sync_checkpoint(checkpoint)
             time.sleep(2)  # Rate limiting for Gemini
         except Exception as e:
             logger.error("Failed to sync G%d L%d: %s", g, lec, e)
+            # Checkpoint stays at "incomplete" — subsequent _cleanup_stale_files
+            # calls will refuse until this run finishes successfully.
 
     # Generate WhatsApp placeholder — list every configured group dynamically
     wa_note = """---
@@ -1387,6 +1555,10 @@ tags: [WhatsApp, დისკუსია]
     (VAULT_ROOT / "WhatsApp დისკუსიები" / "ინდექსი.md").write_text(
         wa_note, encoding="utf-8"
     )
+
+    # Mark run as completed — opens the gate for stale-file cleanup.
+    checkpoint["last_run_completed"] = _now_iso()
+    _save_sync_checkpoint(checkpoint)
 
     logger.info(
         "Full vault rebuild complete: %d concepts, %d relationships, %d files",
@@ -1416,19 +1588,19 @@ def sync_whatsapp() -> int:
     total_messages = 0
 
     # Build (chat_id, group_num, group_name) tuples dynamically from GROUPS.
-    # Falls back to the legacy WHATSAPP_GROUP1/2_ID env vars when a group's
-    # whatsapp_chat_id is unset so existing March-cohort deployments keep
-    # working unchanged.
+    # GROUPS[n]["whatsapp_chat_id"] is populated from WHATSAPP_GROUP{N}_ID env
+    # vars in config.py, so legacy March-cohort deployments continue to work
+    # unchanged while new cohorts (G3/G4 etc.) appear automatically.
     chats: list[tuple[str, int, str]] = []
     for g_num in sorted(GROUPS.keys()):
-        cfg = GROUPS[g_num]
+        try:
+            cfg = GROUPS[g_num]
+        except KeyError:
+            logger.warning(
+                "obsidian_sync: no GROUPS config for group_number=%d, skipping", g_num
+            )
+            continue
         chat_id = cfg.get("whatsapp_chat_id", "")
-        if not chat_id:
-            # Legacy fallback for groups 1 and 2 from module-level imports
-            if g_num == 1 and WHATSAPP_GROUP1_ID:
-                chat_id = WHATSAPP_GROUP1_ID
-            elif g_num == 2 and WHATSAPP_GROUP2_ID:
-                chat_id = WHATSAPP_GROUP2_ID
         if chat_id:
             chats.append((chat_id, g_num, cfg.get("name", f"ჯგუფი #{g_num}")))
 
@@ -1512,17 +1684,22 @@ if __name__ == "__main__":
     parser.add_argument("--lecture", "-l", type=int, help="Lecture number (1-15)")
     parser.add_argument("--full", action="store_true", help="Full vault rebuild from Pinecone")
     parser.add_argument("--whatsapp", action="store_true", help="Sync WhatsApp chat history")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore checkpoint + sync-hash and rewrite every file",
+    )
 
     args = parser.parse_args()
 
     if args.full:
-        result = sync_full()
+        result = sync_full(force=args.force)
         print(f"\nFull rebuild: {result}")
     elif args.whatsapp:
         n = sync_whatsapp()
         print(f"\nWhatsApp: {n} messages synced")
     elif args.group and args.lecture:
-        result = sync_lecture(args.group, args.lecture)
+        result = sync_lecture(args.group, args.lecture, force=args.force)
         print(f"\nSync G{args.group} L{args.lecture}: {result}")
     else:
         parser.print_help()

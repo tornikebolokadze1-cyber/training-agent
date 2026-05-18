@@ -7,7 +7,17 @@ Provides operator-level curl commands for:
 - Forcing Google OAuth token refresh
 - Generating WhatsApp-friendly system reports
 
-All endpoints require WEBHOOK_SECRET auth and are rate-limited to 5/min.
+All endpoints require WEBHOOK_SECRET auth.
+
+Rate limits (per IP, enforced by slowapi):
+- POST (write/mutating) endpoints: 5/minute
+- GET (read-only) endpoints:       20/minute
+
+Backfill size cap: ``/admin/backfill-deep-analysis`` accepts at most
+``MAX_BACKFILL_ITEMS`` (default 15, env-configurable) lectures per call;
+oversized requests return 400.  Prevents an API-bill DoS from a paste-
+twice operator typo (e.g. a 500-item array would otherwise queue 500
+Claude + Gemini backfills in the background).
 
 Note: server.py internals (_processing_lock, _processing_tasks, _task_key,
 verify_webhook_secret) are imported lazily inside each endpoint function
@@ -18,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,6 +36,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+from tools.app.server import limiter
 from tools.core.config import GROUPS, TBILISI_TZ
 from tools.core.pipeline_state import (
     COMPLETE,
@@ -43,6 +55,28 @@ logger = logging.getLogger(__name__)
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 
 MAX_LECTURES = 15
+
+# Backfill DoS protection: cap total queued lectures per request.
+# Default 15 lectures (one full cohort).  Env-overrideable for emergencies.
+# Read lazily inside the endpoint so tests can monkeypatch the env var
+# without re-importing the module.
+MAX_BACKFILL_ITEMS = int(os.environ.get("MAX_BACKFILL_ITEMS", "15"))
+
+
+def _max_backfill_items() -> int:
+    """Return the current backfill size cap, re-reading env each call.
+
+    Re-read on every call so tests can monkeypatch ``MAX_BACKFILL_ITEMS``
+    via ``monkeypatch.setenv`` without re-importing the module.  Falls back
+    to the module-level constant when the env var is unset.
+    """
+    raw = os.environ.get("MAX_BACKFILL_ITEMS")
+    if raw is None:
+        return MAX_BACKFILL_ITEMS
+    try:
+        return int(raw)
+    except ValueError:
+        return MAX_BACKFILL_ITEMS
 
 
 def _configured_group_numbers() -> list[int]:
@@ -104,6 +138,7 @@ class LectureRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/retry-lecture")
 async def retry_lecture(
     request: Request,
@@ -192,6 +227,7 @@ async def retry_lecture(
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/reset-pipeline")
 async def reset_pipeline(
     request: Request,
@@ -228,6 +264,64 @@ async def reset_pipeline(
     if previous_state not in (FAILED, COMPLETE):
         mark_failed(existing, f"Admin force-reset from state={previous_state}")
 
+    # ----------------------------------------------------------------
+    # Issue #45 — cleanup orphans BEFORE the state file is deleted.
+    # The previous implementation deleted the state file and left every
+    # downstream artifact dangling: the lecture's Drive summary doc,
+    # the private analysis report, the Pinecone vectors, and (in some
+    # historical cases) the uploaded video file.  Subsequent reruns
+    # then double-indexed the lecture and the analytics dashboard
+    # showed the same content twice.
+    #
+    # Cleanup is best-effort: failures are logged but never abort the
+    # reset itself — an admin invoking reset wants the lecture re-runnable,
+    # not blocked on a Drive API hiccup.  Drive files are moved to trash
+    # (recoverable within 30 days) rather than hard-deleted, so an
+    # operator who reset by mistake can still restore the documents.
+    # ----------------------------------------------------------------
+    orphan_cleanup: dict[str, Any] = {
+        "drive_trashed": [],
+        "pinecone_deleted": 0,
+        "errors": [],
+    }
+
+    drive_ids_to_trash = [
+        doc_id for doc_id in (
+            existing.summary_doc_id,
+            existing.report_doc_id,
+            existing.drive_video_id,
+        ) if doc_id
+    ]
+    if drive_ids_to_trash:
+        try:
+            from tools.integrations.gdrive_manager import get_drive_service
+
+            svc = get_drive_service()
+            for file_id in drive_ids_to_trash:
+                try:
+                    svc.files().update(
+                        fileId=file_id, body={"trashed": True},
+                    ).execute()
+                    orphan_cleanup["drive_trashed"].append(file_id)
+                except Exception as exc:
+                    msg = f"drive trash failed for {file_id}: {exc}"
+                    logger.warning(msg)
+                    orphan_cleanup["errors"].append(msg)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"drive service unavailable for orphan cleanup: {exc}"
+            logger.warning(msg)
+            orphan_cleanup["errors"].append(msg)
+
+    try:
+        from tools.integrations.knowledge_indexer import delete_lecture_vectors
+
+        deleted = delete_lecture_vectors(group, lecture)
+        orphan_cleanup["pinecone_deleted"] = deleted
+    except Exception as exc:  # noqa: BLE001
+        msg = f"pinecone cleanup failed: {exc}"
+        logger.warning(msg)
+        orphan_cleanup["errors"].append(msg)
+
     # Remove the state file
     path = state_file_path(group, lecture)
     try:
@@ -241,10 +335,12 @@ async def reset_pipeline(
         _processing_tasks.pop(key, None)
 
     logger.info(
-        "Admin reset: G%d L%d (previous_state=%s)",
+        "Admin reset: G%d L%d (previous_state=%s, drive_trashed=%d, vectors_deleted=%d)",
         group,
         lecture,
         previous_state,
+        len(orphan_cleanup["drive_trashed"]),
+        orphan_cleanup["pinecone_deleted"],
     )
 
     return JSONResponse(
@@ -253,6 +349,7 @@ async def reset_pipeline(
             "group": group,
             "lecture": lecture,
             "previous_state": previous_state,
+            "orphan_cleanup": orphan_cleanup,
         }
     )
 
@@ -296,6 +393,7 @@ def _get_lecture_status(group: int, lecture: int) -> dict[str, Any]:
     }
 
 
+@limiter.limit("20/minute")
 @admin_router.get("/lecture-status")
 async def lecture_status(
     request: Request,
@@ -390,6 +488,7 @@ async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/force-refresh-token")
 async def force_refresh_token(
     request: Request,
@@ -437,6 +536,7 @@ async def force_refresh_token(
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("20/minute")
 @admin_router.get("/system-report")
 async def system_report(
     request: Request,
@@ -1312,6 +1412,7 @@ def _auto_detect_missing_deep_analysis() -> list[str]:
     return missing
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/backfill-deep-analysis")
 async def backfill_deep_analysis(
     request: Request,
@@ -1361,8 +1462,29 @@ async def backfill_deep_analysis(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Auto-detect if no explicit list provided
+    # US-020: size cap on explicit-list path BEFORE any background work or
+    # auto-detect.  Prevents an API-bill DoS from a paste-twice operator typo
+    # (a 500-item array would otherwise queue 500 Claude+Gemini backfills).
+    cap = _max_backfill_items()
+    explicit_total = len(all_keys)
+    if explicit_total > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"მოთხოვნა აღემატება მაქსიმუმს: {explicit_total} ლექცია > "
+                f"MAX_BACKFILL_ITEMS={cap}. დაყავი მცირე ბუნდულებად."
+            ),
+        )
+
+    # Auto-detect if no explicit list provided.
+    # Choice: TRUNCATE the auto-detected set to the cap (with a warning log)
+    # rather than rejecting outright.  Rationale: auto-detect is the "just
+    # backfill whatever is missing" convenience path used in operator runbooks
+    # — outright rejection would force the operator to manually paginate, which
+    # defeats the auto-detect feature.  Truncation still bounds API spend per
+    # call, and the operator can simply re-invoke until empty.
     lectures_to_deep = req_body.lectures
+    auto_detect_truncated = False
     if not lectures_to_deep and not req_body.reprocess and not req_body.full_rebuild:
         try:
             lectures_to_deep = await asyncio.to_thread(_auto_detect_missing_deep_analysis)
@@ -1371,6 +1493,15 @@ async def backfill_deep_analysis(
             raise HTTPException(
                 status_code=503, detail=f"Pinecone auto-detect failed: {exc}"
             ) from exc
+        if len(lectures_to_deep) > cap:
+            logger.warning(
+                "[backfill] Auto-detect found %d missing lectures, truncating "
+                "to MAX_BACKFILL_ITEMS=%d. Re-run the endpoint to backfill the rest.",
+                len(lectures_to_deep),
+                cap,
+            )
+            lectures_to_deep = lectures_to_deep[:cap]
+            auto_detect_truncated = True
 
     lectures_to_reprocess = req_body.reprocess
     lectures_to_full_rebuild = req_body.full_rebuild
@@ -1411,20 +1542,27 @@ async def backfill_deep_analysis(
         name=f"backfill_{datetime.now(timezone.utc).strftime('%H%M%S')}",
     )
 
-    return JSONResponse(
-        content={
-            "status": "accepted",
-            "queued_deep_only": lectures_to_deep,
-            "queued_reprocess": lectures_to_reprocess,
-            "queued_full_rebuild": lectures_to_full_rebuild,
-            "total_queued": total_queued,
-            "message": (
-                "Backfill running in background. "
-                "Check server logs for progress and per-lecture results."
-            ),
-        },
-        status_code=202,
-    )
+    response_payload: dict[str, Any] = {
+        "status": "accepted",
+        "queued_deep_only": lectures_to_deep,
+        "queued_reprocess": lectures_to_reprocess,
+        "queued_full_rebuild": lectures_to_full_rebuild,
+        "total_queued": total_queued,
+        "max_backfill_items": cap,
+        "message": (
+            "Backfill running in background. "
+            "Check server logs for progress and per-lecture results."
+        ),
+    }
+    if auto_detect_truncated:
+        response_payload["auto_detect_truncated"] = True
+        response_payload["message"] = (
+            f"Auto-detect found more than MAX_BACKFILL_ITEMS={cap} missing lectures; "
+            f"truncated to {cap}. Re-invoke the endpoint to backfill the rest. "
+            + response_payload["message"]
+        )
+
+    return JSONResponse(content=response_payload, status_code=202)
 
 
 # ---------------------------------------------------------------------------
@@ -1432,6 +1570,7 @@ async def backfill_deep_analysis(
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("20/minute")
 @admin_router.get("/whatsapp-webhook-status")
 async def whatsapp_webhook_status(
     request: Request,
@@ -1495,6 +1634,7 @@ async def whatsapp_webhook_status(
     )
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/whatsapp-webhook-repair")
 async def whatsapp_webhook_repair(
     request: Request,
@@ -1556,6 +1696,7 @@ async def whatsapp_webhook_repair(
 # ---------------------------------------------------------------------------
 
 
+@limiter.limit("5/minute")
 @admin_router.post("/whatsapp-catchup")
 async def whatsapp_catchup(
     request: Request,

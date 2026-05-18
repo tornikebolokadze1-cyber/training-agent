@@ -350,6 +350,91 @@ def lecture_exists_in_index(
         return False
 
 
+def delete_lecture_vectors(
+    group_number: int,
+    lecture_number: int,
+    content_type: str | None = None,
+) -> int:
+    """Delete every vector belonging to a lecture (or one content_type of it).
+
+    Used by ``/admin/reset-pipeline`` (Issue #45) and the data-reconciliation
+    job to evict orphaned Pinecone vectors when the originating pipeline is
+    invalidated.  Uses the same ID-prefix convention as the rest of the
+    indexer: ``g{N}_l{N}_{content_type}_…`` (full lecture prefix when no
+    content_type is given).
+
+    Best-effort: returns the count of IDs sent for deletion.  Pinecone's
+    delete-by-ID accepts up to 1,000 IDs per call so the implementation
+    chunks larger sets.  Failures are logged but do not raise — callers
+    should treat the count as an estimate.
+
+    Args:
+        group_number: Training group (1, 2, 3, …).
+        lecture_number: Lecture sequence number (1–15).
+        content_type: Optional — restrict the delete to one content type
+            (``summary``, ``transcript``, ``gap_analysis``, …).
+
+    Returns:
+        Approximate number of vector IDs that were submitted for delete.
+        Zero if no vectors existed for the prefix or if the delete failed.
+    """
+    index = get_pinecone_index()
+
+    if content_type:
+        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
+    else:
+        prefix = f"g{group_number}_l{lecture_number}_"
+
+    ids_to_delete: list[str] = []
+    try:
+        for page in index.list(prefix=prefix):
+            if isinstance(page, dict):
+                # Newer SDK shape — {"vectors": [{"id": "...", ...}, ...]}
+                for v in page.get("vectors", []):
+                    if isinstance(v, dict) and v.get("id"):
+                        ids_to_delete.append(v["id"])
+                    elif isinstance(v, str):
+                        ids_to_delete.append(v)
+            elif isinstance(page, list):
+                for v in page:
+                    if isinstance(v, dict) and v.get("id"):
+                        ids_to_delete.append(v["id"])
+                    elif isinstance(v, str):
+                        ids_to_delete.append(v)
+            elif isinstance(page, str):
+                ids_to_delete.append(page)
+    except Exception as exc:
+        logger.warning(
+            "delete_lecture_vectors: prefix listing failed for g%d l%d (%s): %s",
+            group_number, lecture_number, content_type or "all", exc,
+        )
+        return 0
+
+    if not ids_to_delete:
+        return 0
+
+    # Pinecone caps single delete payload at 1,000 IDs.
+    deleted = 0
+    for start in range(0, len(ids_to_delete), 1000):
+        batch = ids_to_delete[start : start + 1000]
+        try:
+            index.delete(ids=batch)
+            deleted += len(batch)
+        except Exception as exc:
+            logger.warning(
+                "delete_lecture_vectors: delete batch [%d:%d] failed for g%d l%d: %s",
+                start, start + len(batch), group_number, lecture_number, exc,
+            )
+
+    logger.info(
+        "delete_lecture_vectors: removed %d/%d vectors for g%d l%d (%s)",
+        deleted, len(ids_to_delete),
+        group_number, lecture_number,
+        content_type or "all",
+    )
+    return deleted
+
+
 def get_lecture_vector_count(
     group_number: int,
     lecture_number: int,

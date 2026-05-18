@@ -139,7 +139,9 @@ class TestRetryLecture:
                 json={"group_number": 1, "lecture_number": 6},
                 headers={"Authorization": "Bearer wrong"},
             )
-        assert resp.status_code == 403
+        # Issue #47 — wrong secret now returns 401 (same as missing header)
+        # to remove the 401 vs 403 auth-status oracle.
+        assert resp.status_code == 401
 
     async def test_validates_group_number(self, patched_secrets):
         async with await _client() as c:

@@ -30,7 +30,7 @@ import logging
 import os
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.core.config import TBILISI_TZ, TMP_DIR
@@ -42,8 +42,20 @@ DAILY_COST_LIMIT_USD = float(os.environ.get("DAILY_COST_LIMIT_USD", "50.0"))
 LECTURE_COST_LIMIT_USD = float(os.environ.get("LECTURE_COST_LIMIT_USD", "20.0"))
 DAILY_COST_ALERT_THRESHOLD = 0.80  # alert at 80% of daily limit
 
+# Thresholds (percent of DAILY_COST_LIMIT_USD) that fire operator alerts.
+# Each threshold fires at most once per UTC day; state lives in a JSON file
+# under TMP_DIR keyed by date so it survives server restarts.
+COST_ALERT_THRESHOLDS_PCT: tuple[int, ...] = (80, 100)
+
 _lock = threading.Lock()
-_alert_sent_today: str = ""  # date string when 80% alert was last sent
+_alert_sent_today: str = ""  # date string when 80% alert was last sent (legacy)
+
+
+class CostCapExceededError(RuntimeError):
+    """Raised when a recorded cost pushes the daily total at/over 100% of the cap.
+
+    Bypass by setting environment variable ``OVERRIDE_COST_CAP=1``.
+    """
 
 
 @dataclass
@@ -103,6 +115,120 @@ def _save_entries(entries: list[dict], date_str: str | None = None) -> None:
         raise
 
 
+def _utc_today_str() -> str:
+    """Current UTC date as YYYY-MM-DD — used to key the threshold-fire state.
+
+    Threshold dedup uses UTC (not Tbilisi) so the state file rolls at the same
+    instant globally regardless of operator location.
+    """
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _alert_state_path(date_str: str | None = None) -> Path:
+    """Path to the per-day cost-alert dedup state file."""
+    if date_str is None:
+        date_str = _utc_today_str()
+    return TMP_DIR / f"cost_alerts_{date_str}.json"
+
+
+def _load_alert_state(date_str: str | None = None) -> dict:
+    """Load the dedup state for the given (or today's UTC) date.
+
+    Returns a dict shaped like:
+        {"thresholds_fired": [80], "last_total": 42.0, "last_updated": "<iso>"}
+    Missing or corrupt files yield an empty default.
+    """
+    path = _alert_state_path(date_str)
+    if not path.exists():
+        return {"thresholds_fired": [], "last_total": 0.0, "last_updated": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"thresholds_fired": [], "last_total": 0.0, "last_updated": ""}
+        fired_raw = data.get("thresholds_fired", [])
+        fired = [int(x) for x in fired_raw if isinstance(x, (int, float))]
+        return {
+            "thresholds_fired": fired,
+            "last_total": float(data.get("last_total", 0.0)),
+            "last_updated": str(data.get("last_updated", "")),
+        }
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning("Failed to load alert state %s: %s", path, exc)
+        return {"thresholds_fired": [], "last_total": 0.0, "last_updated": ""}
+
+
+def _save_alert_state(state: dict, date_str: str | None = None) -> None:
+    """Atomically persist the dedup state for the given (or today's UTC) date."""
+    path = _alert_state_path(date_str)
+    tmp_path = path.with_suffix(".tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        logger.warning("Failed to save alert state %s: %s", path, exc)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _check_cost_thresholds(daily_total_usd: float) -> None:
+    """Fire alert_operator at 80% and 100% of DAILY_COST_LIMIT_USD, dedup'd per day.
+
+    Each threshold in :data:`COST_ALERT_THRESHOLDS_PCT` fires exactly once per
+    UTC day.  State is persisted to ``TMP_DIR/cost_alerts_<utc-date>.json`` so
+    a server restart in the middle of the day cannot double-alert.
+
+    Safe to call from inside the cost-record lock — purely local file I/O.
+    Never raises; alert failures are logged and swallowed.
+    """
+    if DAILY_COST_LIMIT_USD <= 0:
+        return  # cap disabled
+
+    pct = (daily_total_usd / DAILY_COST_LIMIT_USD) * 100.0
+    state = _load_alert_state()
+    fired = set(state.get("thresholds_fired", []))
+
+    changed = False
+    for threshold_pct in COST_ALERT_THRESHOLDS_PCT:
+        if pct >= threshold_pct and threshold_pct not in fired:
+            try:
+                from tools.integrations.whatsapp_sender import alert_operator
+
+                icon = "⚠️" if threshold_pct == 80 else "🚨"
+                tail = (
+                    "მონიტორი"
+                    if threshold_pct == 80
+                    else (
+                        "ლიმიტი მიღწეულია — შემდეგი API call შეჩერდება თუ "
+                        "OVERRIDE_COST_CAP არ არის ჩართული."
+                    )
+                )
+                alert_operator(
+                    f"{icon} დღევანდელი API ხარჯი: ${daily_total_usd:.2f} = "
+                    f"{pct:.0f}% ლიმიტისგან (${DAILY_COST_LIMIT_USD:.2f}). "
+                    + tail
+                )
+                fired.add(threshold_pct)
+                changed = True
+                logger.warning(
+                    "Cost ceiling alert fired at %d%% threshold: $%.2f / $%.2f",
+                    threshold_pct, daily_total_usd, DAILY_COST_LIMIT_USD,
+                )
+            except Exception as exc:
+                logger.warning("cost ceiling alert failed: %s", exc)
+
+    if changed:
+        _save_alert_state({
+            "thresholds_fired": sorted(fired),
+            "last_total": round(daily_total_usd, 4),
+            "last_updated": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+
 def record_cost(
     service: str,
     model: str,
@@ -144,6 +270,24 @@ def record_cost(
     with _lock:
         today = _today_str()
         entries = _load_entries(today)
+
+        # Hard-stop guard: if today's total is ALREADY at/over the cap
+        # BEFORE we add this entry, refuse the new spend unless
+        # OVERRIDE_COST_CAP is set.  This prevents runaway burn while
+        # still letting the call that first crosses the threshold complete
+        # (its alert is the user's notification that the cap was hit).
+        pre_total = sum(e.get("cost_usd", 0) for e in entries)
+        if (
+            DAILY_COST_LIMIT_USD > 0
+            and pre_total >= DAILY_COST_LIMIT_USD
+            and not os.environ.get("OVERRIDE_COST_CAP")
+        ):
+            raise CostCapExceededError(
+                f"Daily cost cap reached: ${pre_total:.2f} >= "
+                f"${DAILY_COST_LIMIT_USD:.2f}. "
+                f"Set OVERRIDE_COST_CAP=1 to bypass."
+            )
+
         entries.append(asdict(entry))
         _save_entries(entries, today)
         daily_total = sum(e.get("cost_usd", 0) for e in entries)
@@ -153,9 +297,15 @@ def record_cost(
         service, model, purpose, cost_usd, daily_total, DAILY_COST_LIMIT_USD,
     )
 
-    # Alert at 80% threshold (once per day)
+    # Fire 80% / 100% threshold alerts (per-UTC-day dedup, file-backed).
+    _check_cost_thresholds(daily_total)
+
+    # Legacy in-memory 80% alert hook — retained for backward compatibility
+    # with tests that patch ``_send_budget_alert``.  New deployments rely on
+    # ``_check_cost_thresholds`` above for the actual operator notification.
     if (
-        daily_total >= DAILY_COST_LIMIT_USD * DAILY_COST_ALERT_THRESHOLD
+        DAILY_COST_LIMIT_USD > 0
+        and daily_total >= DAILY_COST_LIMIT_USD * DAILY_COST_ALERT_THRESHOLD
         and _alert_sent_today != today
     ):
         _alert_sent_today = today

@@ -15,7 +15,7 @@
   - Start time: 20:00 Tbilisi GMT+4 (ან სხვა თუ სპეციფიკური)
   - Course start date: პირველი ლექციის თარიღი (ISO ფორმატი: YYYY-MM-DD)
   - Total lecture count: 15 (ან სხვა, თუ განსხვავებული კურსი)
-- **Course display name** — ქართულად (მაგ. "მაისის ჯგუფი #3")
+- **Course display name** — ქართულად (მაგ. "ივნისის ჯგუფი #1" — ახალი კოჰორტი ყოველთვის #1-დან იწყება, თუნდაც internal ID 3, 4, 5... იყოს)
 - **Google Drive setup**:
   - Parent folder ID (სადაც ყველა ლექცია აიტვირთება)
   - Separate analysis folder ID (private reports — სამი ნაბიჯი უკან, არ კვეთთან)
@@ -51,7 +51,7 @@
 შექმენით მთავარი კურსის ფოლდერი და ცალკე analysis ფოლდერი.
 
 1. [Google Drive-ზე](https://drive.google.com) გახსენით **AI კურსი** ფოლდერი (parent).
-2. მან ახალი ფოლდერი: დააწკაპეთ **+ დამატება** → **ფოლდერი** და დააწერეთ ქართული სახელი (მაგ. "AI კურსი (მაისის ჯგუფი #3. 2026)").
+2. მან ახალი ფოლდერი: დააწკაპეთ **+ დამატება** → **ფოლდერი** და დააწერეთ ქართული სახელი (მაგ. "AI კურსი (ივნისის ჯგუფი #1. 2026)").
 3. გახსენით ფოლდერი და ნახეთ URL: `https://drive.google.com/drive/folders/1Abc2Def3Ghi4Jkl5Mno6Pqr7Stu8Vwx`
    - ფოლდერის ID = `1Abc2Def3Ghi4Jkl5Mno6Pqr7Stu8Vwx` (copy-paste და შენახეთ)
 4. იმავე ფოლდერში შექმენით **ქვე-ფოლდერი** სახელით "ანალიზი": მან დაქვემდებარებული ფოლდერი (gap reports, deep analysis docs).
@@ -66,8 +66,8 @@ GROUPS: dict[int, GroupConfig] = {
     1: { ... },  # Group 1 (existing)
     2: { ... },  # Group 2 (existing)
     3: {  # Group 3 (NEW)
-        "name": "მაისის ჯგუფი #3",
-        "folder_name": "AI კურსი (მაისის ჯგუფი #3. 2026)",
+        "name": "ივნისის ჯგუფი #1",
+        "folder_name": "AI კურსი (ივნისის ჯგუფი #1. 2026)",
         "drive_folder_id": _env("DRIVE_GROUP3_FOLDER_ID"),
         "analysis_folder_id": _env("DRIVE_GROUP3_ANALYSIS_FOLDER_ID"),
         "zoom_meeting_id": _env("ZOOM_GROUP3_MEETING_ID"),

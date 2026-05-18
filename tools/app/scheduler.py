@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,6 +44,25 @@ from tools.core.pipeline_state import (
 from tools.integrations.whatsapp_sender import alert_operator
 
 logger = logging.getLogger(__name__)
+
+# Prometheus metric (US-026) — graceful-import; no-op when dep missing.
+try:
+    from prometheus_client import Counter as _PromCounter
+
+    PIPELINE_RUNS = _PromCounter(
+        "pipeline_runs_total",
+        "Post-meeting pipeline runs by state (started|completed|failed)",
+        ["state"],
+    )
+except Exception:  # pragma: no cover — exercised only without the dep
+    class _NoOpCounter:
+        def labels(self, *a, **kw):
+            return self
+
+        def inc(self, *a, **kw) -> None:
+            return None
+
+    PIPELINE_RUNS = _NoOpCounter()
 
 
 def _group_label(group_number: int) -> str:
@@ -117,41 +137,72 @@ RECORDING_POLL_TIMEOUT = 3 * 60 * 60    # 3 hours absolute deadline
 # ---------------------------------------------------------------------------
 _PENDING_JOBS_FILE = Path(TMP_DIR) / "pending_post_meeting_jobs.json"
 
+# Module-level lock protecting read-modify-write sequences on
+# _PENDING_JOBS_FILE. The scheduler tick (saving a new job) and the
+# webhook handler / post-meeting pipeline (removing a completed job)
+# can otherwise interleave reads and writes and corrupt the JSON.
+_pending_jobs_lock = threading.Lock()
+
 
 def _save_pending_job(group_number: int, lecture_number: int, meeting_id: str,
                       fire_time_iso: str) -> None:
-    """Persist a pending post-meeting job to disk so it survives restarts."""
-    jobs: list[dict] = []
-    if _PENDING_JOBS_FILE.exists():
-        try:
-            jobs = json.loads(_PENDING_JOBS_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Replace existing entry for same group+lecture
-    jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-    jobs.append({
-        "group": group_number,
-        "lecture": lecture_number,
-        "meeting_id": meeting_id,
-        "fire_time": fire_time_iso,
-    })
-    tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
-    tmp_path.replace(_PENDING_JOBS_FILE)
-    logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
-                group_number, lecture_number, fire_time_iso)
+    """Persist a pending post-meeting job to disk so it survives restarts.
+
+    Acquires the module-level ``_pending_jobs_lock`` to serialize with
+    ``_remove_pending_job``; writes atomically via a temp file + rename.
+    """
+    with _pending_jobs_lock:
+        jobs: list[dict] = []
+        if _PENDING_JOBS_FILE.exists():
+            try:
+                jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        # Replace existing entry for same group+lecture
+        jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
+        jobs.append({
+            "group": group_number,
+            "lecture": lecture_number,
+            "meeting_id": meeting_id,
+            "fire_time": fire_time_iso,
+        })
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+        tmp_path.replace(_PENDING_JOBS_FILE)
+        logger.info("[persist] Saved pending post-meeting job: G%d L%d -> %s",
+                    group_number, lecture_number, fire_time_iso)
 
 
 def _remove_pending_job(group_number: int, lecture_number: int) -> None:
-    """Remove a completed/consumed post-meeting job from the persistent store."""
-    if not _PENDING_JOBS_FILE.exists():
-        return
-    try:
-        jobs = json.loads(_PENDING_JOBS_FILE.read_text())
+    """Remove a completed/consumed post-meeting job from the persistent store.
+
+    Acquires ``_pending_jobs_lock`` and writes atomically (temp file +
+    ``Path.replace``) to mirror ``_save_pending_job`` and prevent partial
+    writes from concurrent callers (scheduler tick vs webhook handler).
+    Silently returns when the pending-jobs file does not exist.
+    """
+    with _pending_jobs_lock:
+        try:
+            raw = _PENDING_JOBS_FILE.read_text()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("[persist] Failed to read pending jobs file: %s", exc)
+            return
+
+        try:
+            jobs = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("[persist] Pending jobs file is corrupt: %s", exc)
+            return
+
         jobs = [j for j in jobs if not (j["group"] == group_number and j["lecture"] == lecture_number)]
-        _PENDING_JOBS_FILE.write_text(json.dumps(jobs, indent=2))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("[persist] Failed to remove pending job: %s", exc)
+        tmp_path = _PENDING_JOBS_FILE.with_suffix(".json.tmp")
+        try:
+            tmp_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            tmp_path.replace(_PENDING_JOBS_FILE)
+        except OSError as exc:
+            logger.warning("[persist] Failed to remove pending job: %s", exc)
 
 
 def _restore_pending_jobs(scheduler: AsyncIOScheduler) -> int:
@@ -443,6 +494,7 @@ def _run_post_meeting_pipeline(
         lecture_number: Ordinal lecture number (1–15).
         meeting_id: Zoom meeting ID used to poll for the recording.
     """
+    PIPELINE_RUNS.labels(state="started").inc()
     from tools.core.pipeline_retry import (
         classify_error,
         retry_orchestrator,
@@ -696,8 +748,10 @@ def _run_post_meeting_pipeline(
             lecture_number,
             sum(index_counts.values()),
         )
+        PIPELINE_RUNS.labels(state="completed").inc()
 
     except Exception as exc:
+        PIPELINE_RUNS.labels(state="failed").inc()
         logger.exception(
             "[post] Pipeline failed for Group %d, Lecture #%d: %s",
             group_number,
@@ -1428,6 +1482,76 @@ def start_scheduler() -> AsyncIOScheduler:
         trigger=CronTrigger(hour=4, minute=30, timezone=TBILISI_TZ),
         id="whatsapp_archive_catchup",
         name="Nightly WhatsApp archive catch-up (Green API)",
+        replace_existing=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    #  Daily messages.db backup — 03:00 Tbilisi every day (US-027).        #
+    #  messages.db has no other backup; a Railway volume wipe would lose   #
+    #  all chat history (Green API only retains hours-days of forward      #
+    #  history). Uses sqlite3.backup() so concurrent writes don't lock     #
+    #  the source. Retention keeps the 7 most recent backups. Fires at     #
+    #  03:00 — off-peak and after the 02:00 nightly catch-all.             #
+    # ------------------------------------------------------------------ #
+    # Periodic Zoom recovery sweep — runs every 30 minutes around the clock.
+    # The startup-recovery scan in server.py already catches lectures that
+    # were missed while the container was down, but it only fires once per
+    # container lifetime.  A persistent cron mirror ensures that a webhook
+    # rejected because of a deploy-cycle (Zoom's 300-second timestamp gate)
+    # or a recording that finished processing AFTER the container last
+    # restarted will still be picked up, without waiting for the next
+    # container restart or the 02:00 nightly catch-all.
+    #
+    # Calls the same coroutine that lifespan calls, so the recovery path is
+    # the single source of truth.
+    async def _periodic_zoom_recovery() -> None:
+        from tools.app.server import _check_unprocessed_recordings
+        try:
+            await asyncio.wait_for(
+                _check_unprocessed_recordings(window_days=7),
+                timeout=240,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[periodic-zoom-recovery] timed out after 240s — continuing")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[periodic-zoom-recovery] error: %s", exc, exc_info=True)
+
+    scheduler.add_job(
+        _periodic_zoom_recovery,
+        trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
+        id="periodic_zoom_recovery",
+        name="Zoom recordings sweep (every 30 min)",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+        replace_existing=True,
+    )
+
+    from tools.services.message_archive import backup_messages_db, purge_old_messages_job
+
+    scheduler.add_job(
+        backup_messages_db,
+        trigger=CronTrigger(hour=3, minute=0, timezone=TBILISI_TZ),
+        id="messages_db_backup",
+        name="messages.db daily backup",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
+    # Issue #44 — daily PII retention sweep.  Runs at 03:15 Tbilisi, 15
+    # minutes after the messages.db backup at 03:00 so the freshest
+    # backup always contains the pre-purge state and an operator can
+    # restore from it if the retention window was too aggressive.
+    scheduler.add_job(
+        purge_old_messages_job,
+        trigger=CronTrigger(hour=3, minute=15, timezone=TBILISI_TZ),
+        id="messages_db_retention_purge",
+        name="messages.db retention purge (PII)",
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
         replace_existing=True,
     )
 

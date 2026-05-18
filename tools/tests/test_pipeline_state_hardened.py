@@ -59,20 +59,56 @@ _G = 99  # Test group (different from test_pipeline_state.py's 88)
 _L = 99  # Test lecture
 
 
-@pytest.fixture(autouse=True)
-def cleanup_state_and_checkpoint_files():
-    """Remove pipeline state files and checkpoint files created during tests."""
-    yield
-    for path in TMP_DIR.glob("pipeline_state_g99_l*.json"):
-        path.unlink(missing_ok=True)
-    for path in TMP_DIR.glob("g99_l*_*.txt"):
-        path.unlink(missing_ok=True)
-    for path in TMP_DIR.glob("g99_l*_*.json"):
-        path.unlink(missing_ok=True)
-    # Stop any lingering heartbeat threads
+def _purge_g99_artifacts() -> None:
+    """Remove every state/checkpoint/atomic-write-temp file under group 99.
+
+    Also stops any background heartbeat thread for g=99 so the next test
+    starts from a clean slate. Includes ``.tmp`` siblings (created by
+    ``atomic_write`` and orphaned when a previous test crashed), which is
+    new in this fixture — the original cleanup missed them and they could
+    block ``os.replace`` on Windows with a ``PermissionError``.
+
+    Retries each delete up to 3 times with a tiny back-off because Windows
+    sometimes holds a transient handle on a file that was just closed
+    (antivirus indexer, Search service, etc.).
+    """
+    import time as _time
+    # Stop heartbeat threads FIRST so they can't write while we are deleting.
     for key in list(_heartbeat_threads.keys()):
         if key[0] == 99:
-            stop_heartbeat(*key)
+            try:
+                stop_heartbeat(*key)
+            except Exception:
+                pass
+    for pattern in (
+        "pipeline_state_g99_l*.json",
+        "pipeline_state_g99_l*.tmp",
+        "g99_l*_*.txt",
+        "g99_l*_*.json",
+    ):
+        for path in TMP_DIR.glob(pattern):
+            for attempt in range(3):
+                try:
+                    path.unlink(missing_ok=True)
+                    break
+                except (OSError, PermissionError):
+                    if attempt == 2:
+                        # Last-ditch: leave the file; the next test's
+                        # save_state will overwrite via os.replace.
+                        break
+                    _time.sleep(0.02 * (attempt + 1))
+
+
+@pytest.fixture(autouse=True)
+def cleanup_state_and_checkpoint_files():
+    """Remove pipeline state files and checkpoint files created during tests.
+
+    Runs BOTH before and after each test so a crashed predecessor cannot
+    leak ``.tmp`` artifacts that would block ``os.replace`` on Windows.
+    """
+    _purge_g99_artifacts()
+    yield
+    _purge_g99_artifacts()
 
 
 # ===========================================================================
@@ -245,6 +281,7 @@ class TestPipelineGuard:
             assert s.meeting_id == "test-123"
             transition(
                 s, DOWNLOADING,
+                drive_video_id="drive-vid-id",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",
@@ -519,6 +556,7 @@ class TestIntegration:
             s = transition(s, NOTIFYING)
             s = transition(
                 s, INDEXING,
+                drive_video_id="drive-vid-id",
                 analysis_done=True,
                 summary_doc_id="doc-s",
                 report_doc_id="doc-r",

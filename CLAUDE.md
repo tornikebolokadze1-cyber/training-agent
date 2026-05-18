@@ -14,13 +14,21 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 - `.env` — API keys and secrets (NEVER commit)
 - `.tmp/` — Temporary processing files (auto-cleaned)
 
-## Two Training Groups
-| Group | Days | Time (GMT+4) | Drive Folder |
-|-------|------|-------------|--------------|
-| #1 | Tuesday, Friday | 20:00-22:00 | AI კურსი (მარტის ჯგუფი #1. 2026) |
-| #2 | Monday, Thursday | 20:00-22:00 | AI კურსი (მარტის ჯგუფი #2. 2026) |
+## Training Cohorts
 
-15 lectures per group.
+The system runs cohorts in sequence. Each cohort has two groups meeting on different days.
+Internal IDs in code (`GROUPS` dict in `tools/core/config.py`) increment across cohorts; cohort-facing labels restart at #1 per cohort.
+
+| Internal ID | Cohort Label | Days | Time (GMT+4) | Status |
+|-------------|--------------|------|--------------|--------|
+| 1 | მარტის ჯგუფი #1 | Tuesday, Friday | 20:00-22:00 | COMPLETED 2026-05-06 |
+| 2 | მარტის ჯგუფი #2 | Monday, Thursday | 20:00-22:00 | COMPLETED 2026-05-06 |
+| 3 | მაისის ჯგუფი #1 | per `GROUP3_MEETING_DAYS` env | 20:00-22:00 | ACTIVE |
+| 4 | მაისის ჯგუფი #2 | per `GROUP4_MEETING_DAYS` env | 20:00-22:00 | ACTIVE |
+
+15 lectures per group. Drive folder names follow `AI კურსი (<cohort label>. 2026)` for completed cohorts and `GROUP{N}_FOLDER_NAME` env var for active ones.
+
+**In conversation, refer to active groups by cohort label** ("მაისის ჯგუფი #1/#2") — internal IDs (3, 4) stay only in code, logs, and env var names.
 
 ## System Components
 
@@ -60,7 +68,7 @@ This project follows the **WAT framework** (Workflows, Agents, Tools):
 - **Zoom**: Server-to-Server OAuth (meeting:write, recording:read)
 - **Google Drive/Docs**: OAuth2 with refresh tokens
 - **Gemini**: API key, 2.5 Flash for video transcription, 3.1 Pro Preview for Georgian text
-- **Claude/Anthropic**: API key, Opus 4.6 with extended thinking for analysis reasoning
+- **Claude/Anthropic**: API key, Sonnet 4.6 for analysis reasoning (Sonnet chosen over Opus for ~$150/course savings; see `tools/core/config.py:558` `ASSISTANT_CLAUDE_MODEL`)
 - **Pinecone**: Vector DB (gemini-embedding-001, 3072 dims) for course knowledge RAG
 - **WhatsApp (Green API)**: REST API via WhatsApp Web QR code connection
 - **Email**: Gmail OAuth2 (backup — Zoom handles meeting invitations directly)
