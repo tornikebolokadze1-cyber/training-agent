@@ -596,15 +596,17 @@ class TestProcessRecordingEndpoint:
             )
         assert resp.status_code == 401
 
-    async def test_wrong_secret_returns_403(self, patched_secrets):
-        """Request with a wrong Bearer token is rejected with 403."""
+    async def test_wrong_secret_returns_401(self, patched_secrets):
+        """Issue #47 — wrong Bearer token now returns the same 401 as a
+        missing one, so the response no longer leaks whether the header
+        was missing or simply wrong."""
         async with await _async_client() as client:
             resp = await client.post(
                 "/process-recording",
                 json=_VALID_RECORDING_PAYLOAD,
                 headers={"Authorization": "Bearer wrong-secret"},
             )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     async def test_missing_webhook_secret_config_returns_503(self):
         """When WEBHOOK_SECRET is not configured, any request returns 503."""

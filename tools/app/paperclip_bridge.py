@@ -85,13 +85,14 @@ def _verify_bearer(authorization: str | None) -> None:
             status_code=503,
             detail="Server misconfigured: PAPERCLIP_WEBHOOK_SECRET not set",
         )
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-
+    # Issue #47 — single response for both missing and invalid bearer to
+    # eliminate the status/detail/timing oracle.  Constant-time compare runs
+    # unconditionally (empty string when header is missing).
     import hmac
     expected = f"Bearer {secret}"
-    if not hmac.compare_digest(authorization, expected):
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
+    provided = authorization or ""
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _env_key_present(name: str) -> bool:
@@ -206,43 +207,13 @@ def _route_task(task: PaperclipTask) -> PaperclipResponse:
 router = APIRouter(tags=["Paperclip"])
 
 
-@router.post("/paperclip/task", response_model=PaperclipResponse)
-async def paperclip_task_bridge(
-    task: PaperclipTask,
-    authorization: str | None = Header(None),
-) -> JSONResponse:
-    """Accept a structured task from Paperclip, route it, and return a result.
-
-    Authentication: ``Authorization: Bearer <PAPERCLIP_WEBHOOK_SECRET>``
-
-    This endpoint uses the newer ``PaperclipTask`` schema.  If a legacy
-    ``/paperclip/task`` route is already registered on the app, FastAPI will
-    serve the first-registered route; this route is effectively available when
-    the legacy one is absent.
-    """
-    _verify_bearer(authorization)
-
-    logger.info(
-        "[paperclip-bridge] Incoming task id=%s title=%r priority=%s",
-        task.task_id,
-        task.title[:80],
-        task.priority,
-    )
-
-    response = _route_task(task)
-
-    # Record last-task summary for /paperclip/status
-    global _last_task_summary
-    _last_task_summary = {
-        "task_id": task.task_id,
-        "title": task.title[:120],
-        "priority": task.priority,
-        "ok": response.ok,
-        "summary": response.summary[:200],
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    return JSONResponse(content=response.model_dump(), status_code=200)
+# NOTE: /paperclip/task is registered directly on the FastAPI app in
+# tools/app/server.py (see `paperclip_task` there).  A duplicate
+# ``@router.post("/paperclip/task")`` route here was silently ignored by
+# FastAPI's first-wins routing — it created ambiguity and dead code that
+# never executed.  Removed (issue #41) so that the canonical handler in
+# server.py is the single source of truth.  Health + status endpoints below
+# remain the router's responsibility.
 
 
 @router.get("/paperclip/health")
