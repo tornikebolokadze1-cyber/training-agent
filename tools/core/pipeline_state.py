@@ -573,6 +573,21 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
     Appends the error to the error history list with a timestamp so
     recurring failures can be diagnosed without needing external logs.
 
+    **Issue #51 — idempotent for FAILED→FAILED**: when the pipeline is
+    already FAILED, this skips the ``transition()`` call and only appends
+    the new error to the history.  Two concurrent code paths can race to
+    mark the same pipeline failed (e.g. an async error handler in
+    ``process_lecture_pipeline`` and the nightly stuck-pipeline sweep
+    in ``nightly_catch_all``).  Without this guard each call would:
+      • Re-run the FAILED→FAILED transition (no-op apart from logging).
+      • Overwrite the ``error`` field with its own value (clobbering the
+        original root-cause message).
+      • Issue a ``save_state`` against a stale snapshot, racing the other
+        writer.
+    The idempotent path preserves the original error as the latest
+    history entry (newer entries push older ones out of the 20-slot ring)
+    and still records the duplicate failure for diagnosis.
+
     Args:
         state: The current pipeline state.
         error: Human-readable description of what went wrong.
@@ -589,6 +604,21 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
     # Append to error history (keep last 20 entries to bound file size)
     error_entry = {"timestamp": _now_iso(), "error": error}
     new_errors = (*state.errors, error_entry)[-20:]
+
+    if state.state == FAILED:
+        # Already failed — append-only, no state transition or duelling
+        # save_state with a concurrent writer.  Preserve the existing
+        # `error` field (root cause) but record the new event in history.
+        logger.info(
+            "Pipeline g%d/l%d already FAILED; recording duplicate failure in history",
+            state.group,
+            state.lecture,
+        )
+        now = _now_iso()
+        new = _replace_state(state, errors=new_errors, updated_at=now)  # type: ignore[call-arg]
+        save_state(new)
+        return new
+
     return transition(state, FAILED, error=error, errors=new_errors)
 
 

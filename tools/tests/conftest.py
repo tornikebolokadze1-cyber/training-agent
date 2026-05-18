@@ -272,6 +272,19 @@ def _field_validator(*args, **kwargs):
 _pydantic.field_validator = _field_validator
 _pydantic.ValidationError = type("ValidationError", (Exception,), {})
 
+
+def _ConfigDict(**kwargs):
+    """Stub for pydantic v2 ConfigDict — production code uses it as a
+    typed dict for model configuration. Tests don't enforce the config,
+    so the stub returns the kwargs dict and is a no-op at validation
+    time. Added to unblock imports that pin pydantic v2 ConfigDict at
+    module load (e.g. tools/app/server.py).
+    """
+    return kwargs
+
+
+_pydantic.ConfigDict = _ConfigDict
+
 # ===================================================================
 # dotenv
 # ===================================================================
