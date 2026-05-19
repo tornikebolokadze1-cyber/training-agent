@@ -427,6 +427,7 @@ class TestPreMeetingJobWhatsAppAlert:
                  patch.object(sched, "alert_operator", alert_mock), \
                  patch.object(sched, "_get_running_scheduler", return_value=fake_scheduler), \
                  patch.object(sched, "_schedule_post_meeting"), \
+                 patch.dict(sched.GROUPS, {1: {**sched.GROUPS[1], "course_completed": False}}), \
                  patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
 
                 mock_dt.now.return_value = now_tbilisi
@@ -747,6 +748,7 @@ class TestPreMeetingJobEdgeCases:
             with patch.object(sched, "get_lecture_number", return_value=3), \
                  patch.object(sched, "_import_zoom_manager", return_value=mock_zm), \
                  patch.object(sched, "alert_operator", alert_mock), \
+                 patch.dict(sched.GROUPS, {1: {**sched.GROUPS[1], "course_completed": False}}), \
                  patch("tools.app.scheduler.datetime") as mock_dt, \
                  patch("tools.app.scheduler.asyncio.get_running_loop", return_value=mock_loop):
                 mock_dt.now.return_value = datetime(2026, 3, 17, 19, 0, 0, tzinfo=sched.TBILISI_TZ)
