@@ -51,15 +51,23 @@ Four workflows exist on the n8n instance:
 
 | Workflow | ID | Status | Purpose |
 |----------|-----|--------|---------|
-| Pre-Meeting Reminders | Hsa5YDWrOytFxAL5 | Inactive | Sends emails + WhatsApp 2hrs before |
+| Pre-Meeting Reminders | Hsa5YDWrOytFxAL5 | **MUST stay Inactive** | Superseded by `tools/app/scheduler.py` — see warning below |
 | Recording Processor (v1) | zoz7yWVzTMqhfVyd | Inactive | Original Zoom webhook handler (superseded) |
 | Zoom Recording → Python | 9K6kBOFPgG8xSuff | **Active** | Catches Zoom webhook + CRC validation, triggers Python |
 | Post-Processing Delivery | 1mw2v47eliAk2l1s | Inactive | Delivers results after analysis |
 
-> **Note:** Workflow `9K6kBOFPgG8xSuff` is the active recording processor.
-> It supersedes the original `zoz7yWVzTMqhfVyd` with added Zoom CRC
-> challenge support. Secrets in this workflow should be moved from
-> hardcoded values to n8n environment variables before production use.
+> **Critical:** Workflow `9K6kBOFPgG8xSuff` is the active recording
+> processor. It supersedes the original `zoz7yWVzTMqhfVyd` with added
+> Zoom CRC challenge support. Secrets in this workflow should be moved
+> from hardcoded values to n8n environment variables before production
+> use.
+>
+> **Warning — never reactivate `Hsa5YDWrOytFxAL5`.** It targets the
+> March cohort's WhatsApp chats by their legacy ManyChat / Green API
+> node and runs Mon/Tue/Thu/Fri at 18:00 Tbilisi. If it is active at
+> the same time as the Python scheduler, every weekday a March chat
+> *and* the active May cohort chat both receive duplicate reminders.
+> See `workflows/pre_meeting.md` for the diagnostic and fix.
 
 **For each workflow:**
 1. Open in n8n UI
