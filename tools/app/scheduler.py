@@ -800,10 +800,43 @@ async def pre_meeting_job(group_number: int) -> None:
     Immediately schedules a post-meeting job on the scheduler for T+120 min
     (22:00) so recording polling starts right after the lecture ends.
 
+    Defensive guard: if the target group is flagged ``course_completed=True``
+    in the GROUPS config, the job short-circuits with a warning log and
+    operator alert. The scheduler should never register cron jobs for
+    completed cohorts (``iter_active_groups`` filters them out at
+    ``start_scheduler`` time), so reaching this branch implies a stale
+    cron entry from an earlier deploy, a manual ``/trigger-pre-meeting``
+    call, or a second Python instance still running with an older
+    GROUPS config. Either way the right behaviour is to refuse to spam
+    the completed cohort's WhatsApp chat — losing one legitimate reminder
+    is far cheaper than sending lecture-day messages to students who
+    finished the course weeks ago.
+
     Args:
-        group_number: 1 or 2.
+        group_number: any internal group id present in GROUPS.
     """
     today = datetime.now(TBILISI_TZ).date()
+
+    group_cfg = GROUPS.get(group_number) or {}
+    if group_cfg.get("course_completed", False):
+        group_label = _group_label(group_number)
+        logger.warning(
+            "[pre] Refusing to send reminder for %s (group=%d) — "
+            "course_completed=True. Caller bypassed iter_active_groups; "
+            "investigate stale cron registration or duplicate scheduler.",
+            group_label, group_number,
+        )
+        try:
+            alert_operator(
+                f"Blocked stale pre-meeting reminder for {group_label} "
+                f"(group {group_number}). course_completed=True so no "
+                f"WhatsApp/Zoom should fire. Check for a second running "
+                f"instance or a stale cron entry."
+            )
+        except Exception as exc:
+            logger.error("[pre] alert_operator failed on completed-course guard: %s", exc)
+        return
+
     lecture_number = get_lecture_number(group_number, for_date=today)
 
     if lecture_number == 0:
