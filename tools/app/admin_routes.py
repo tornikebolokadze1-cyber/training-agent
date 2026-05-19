@@ -1791,7 +1791,7 @@ async def groups_debug(
 # WEBHOOK_SECRET bearer as the rest of /admin/*.
 
 
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 @admin_router.get("/recent-outgoing")
 async def recent_outgoing(
     request: Request,
