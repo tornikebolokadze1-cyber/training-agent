@@ -1696,6 +1696,90 @@ async def whatsapp_webhook_repair(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# GET /admin/groups-debug
+# ---------------------------------------------------------------------------
+# Diagnostic endpoint exposing the live GROUPS configuration as the running
+# process sees it.  Returns each group's name, course_completed flag,
+# meeting_days, and a partially-masked chat_id so that the operator can
+# verify on production whether Railway env vars route messages to the
+# expected WhatsApp chats.  Full chat IDs are never returned — masking keeps
+# the response safe to share in support channels.
+#
+# Mask format: first 6 chars + "…" + last 6 chars of the chat ID.  Example:
+# ``120363425514041539@g.us`` becomes ``120363…41539@g.us``.  Enough to
+# distinguish the four chats without exposing the full identifier.
+
+
+def _mask_chat_id(chat_id: str | None) -> str:
+    """Mask a WhatsApp chat ID so the operator can identify it without leakage."""
+    if not chat_id:
+        return ""
+    if "@" in chat_id:
+        local, _, suffix = chat_id.partition("@")
+    else:
+        local, suffix = chat_id, ""
+    if len(local) <= 14:
+        masked_local = local
+    else:
+        masked_local = f"{local[:6]}…{local[-6:]}"
+    return f"{masked_local}@{suffix}" if suffix else masked_local
+
+
+@limiter.limit("20/minute")
+@admin_router.get("/groups-debug")
+async def groups_debug(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> JSONResponse:
+    """Return the running GROUPS config (masked chat IDs) for diagnostics.
+
+    Authentication: ``Authorization: Bearer ${WEBHOOK_SECRET}``.
+
+    Used to verify on Railway whether WHATSAPP_GROUP{N}_ID and related env
+    vars are pointing to the expected cohort chats.  Specifically catches
+    the case where an env var rotation accidentally maps a completed cohort
+    (March) onto the active one (May) or vice versa.
+    """
+    verify_webhook_secret = _server_internals()[0]
+    verify_webhook_secret(authorization)
+
+    payload: list[dict[str, Any]] = []
+    for group_num in sorted(GROUPS.keys()):
+        cfg = GROUPS[group_num]
+        payload.append({
+            "group_number": group_num,
+            "name": cfg.get("name", ""),
+            "course_completed": bool(cfg.get("course_completed", False)),
+            "meeting_days": list(cfg.get("meeting_days", [])),
+            "start_date": cfg.get("start_date").isoformat() if cfg.get("start_date") else None,
+            "chat_id_masked": _mask_chat_id(cfg.get("whatsapp_chat_id", "")),
+            "chat_id_set": bool(cfg.get("whatsapp_chat_id")),
+            "drive_folder_id_set": bool(cfg.get("drive_folder_id")),
+            "analysis_folder_id_set": bool(cfg.get("analysis_folder_id")),
+            "zoom_meeting_id_set": bool(cfg.get("zoom_meeting_id")),
+        })
+
+    # Cross-reference: duplicate chat IDs across groups are a red flag —
+    # they're the most common cause of "messages going to old groups too".
+    seen: dict[str, list[int]] = {}
+    for group_num, cfg in GROUPS.items():
+        chat = cfg.get("whatsapp_chat_id", "")
+        if chat:
+            seen.setdefault(chat, []).append(group_num)
+    duplicates = {
+        _mask_chat_id(chat): groups for chat, groups in seen.items() if len(groups) > 1
+    }
+
+    return JSONResponse(
+        content={
+            "groups": payload,
+            "duplicate_chat_ids": duplicates,
+            "timestamp": datetime.now(TBILISI_TZ).isoformat(),
+        }
+    )
+
+
 @limiter.limit("5/minute")
 @admin_router.post("/whatsapp-catchup")
 async def whatsapp_catchup(
