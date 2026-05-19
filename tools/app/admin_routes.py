@@ -1780,6 +1780,102 @@ async def groups_debug(
     )
 
 
+# ---------------------------------------------------------------------------
+# GET /admin/recent-outgoing
+# ---------------------------------------------------------------------------
+# Diagnostic-only: ask Green API which chats our bot actually sent to in the
+# last N hours.  This isolates "is the duplicate-reminder coming from our
+# Python sender?" from "is something else (legacy n8n, a forwarding rule)
+# delivering it?".  Returns masked chat IDs + the first 80 chars of each
+# message body, never full chat IDs and never the full text.  Auth: same
+# WEBHOOK_SECRET bearer as the rest of /admin/*.
+
+
+@limiter.limit("10/minute")
+@admin_router.get("/recent-outgoing")
+async def recent_outgoing(
+    request: Request,
+    authorization: str | None = Header(None),
+    minutes: int = 1440,
+) -> JSONResponse:
+    """Return the bot's recent outgoing WhatsApp messages from Green API.
+
+    Calls Green API's ``lastOutgoingMessages`` endpoint with the configured
+    instance credentials, filters to the window ``minutes`` minutes back
+    (max 7 days), and returns a redacted view: masked chat IDs, message
+    preview (first 80 chars), timestamp, and idMessage. Useful to verify
+    whether duplicate reminders observed in March chats are coming from
+    our Python sender or from a different source (legacy n8n, etc.).
+    """
+    verify_webhook_secret = _server_internals()[0]
+    verify_webhook_secret(authorization)
+
+    if minutes < 1 or minutes > 10080:
+        raise HTTPException(
+            status_code=400, detail="minutes must be between 1 and 10080 (7 days)"
+        )
+
+    instance_id = os.environ.get("GREEN_API_INSTANCE_ID", "")
+    token = os.environ.get("GREEN_API_TOKEN", "")
+    if not instance_id or not token:
+        raise HTTPException(status_code=503, detail="Green API not configured")
+
+    import httpx
+
+    url = (
+        f"https://api.green-api.com/waInstance{instance_id}"
+        f"/lastOutgoingMessages/{token}?minutes={minutes}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Green API call failed: {exc}")
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Green API HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+
+    try:
+        raw = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Green API non-JSON response")
+
+    if not isinstance(raw, list):
+        return JSONResponse(content={"messages": [], "count": 0})
+
+    redacted: list[dict[str, Any]] = []
+    per_chat: dict[str, int] = {}
+    for msg in raw:
+        chat_id = str(msg.get("chatId") or "")
+        text = (
+            str(msg.get("textMessage") or "")
+            or str((msg.get("extendedTextMessage") or {}).get("text") or "")
+        )
+        ts = msg.get("timestamp")
+        masked = _mask_chat_id(chat_id)
+        redacted.append({
+            "chat_id_masked": masked,
+            "type_message": msg.get("typeMessage"),
+            "preview": text[:80],
+            "timestamp": ts,
+            "id_message": msg.get("idMessage"),
+        })
+        per_chat[masked] = per_chat.get(masked, 0) + 1
+
+    return JSONResponse(
+        content={
+            "count": len(redacted),
+            "messages_per_chat": per_chat,
+            "messages": redacted[:50],
+            "window_minutes": minutes,
+            "timestamp": datetime.now(TBILISI_TZ).isoformat(),
+        }
+    )
+
+
 @limiter.limit("5/minute")
 @admin_router.post("/whatsapp-catchup")
 async def whatsapp_catchup(
