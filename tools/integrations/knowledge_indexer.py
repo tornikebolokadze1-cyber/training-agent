@@ -1,8 +1,13 @@
-"""Pinecone RAG indexing pipeline for the Training Agent.
+"""Qdrant RAG indexing pipeline for the Training Agent.
 
 Indexes lecture transcripts, summaries, gap analyses, and deep analyses
-into a Pinecone vector database so the WhatsApp assistant can retrieve
+into a Qdrant Cloud collection so the WhatsApp assistant can retrieve
 relevant course knowledge.
+
+Migrated from Pinecone to Qdrant on 2026-05-20 — Pinecone hit its monthly
+1M read limit and broke the assistant. Function signatures are preserved
+so existing call sites (server.py, scheduler.py, admin_routes.py,
+pipeline_retry.py, health_monitor.py) keep working without changes.
 
 Embedding model:
 - gemini-embedding-001: text embedding (3072 dims)
@@ -14,23 +19,36 @@ import logging
 import math
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import date
 
 from google import genai
-from pinecone import Pinecone, ServerlessSpec
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as qmodels
 
 from tools.core.config import (
     GEMINI_API_KEY,
     GEMINI_API_KEY_PAID,
     GEMINI_EMBEDDING_MODEL,
     GROUPS,
-    PINECONE_API_KEY,
-    PINECONE_INDEX_NAME,
     PINECONE_SCORE_THRESHOLD_DIRECT,
     PINECONE_SCORE_THRESHOLD_PASSIVE,
+    QDRANT_API_KEY,
+    QDRANT_COLLECTION_NAME,
+    QDRANT_URL,
 )
 from tools.core.retry import retry_with_backoff
+
+# Shared low-level Qdrant primitives (cached client, deterministic UUID
+# hashing). Importing the module — not its individual symbols — keeps the
+# import lightweight: knowledge_indexer can still construct its own client
+# during transition if qdrant_client.py is unavailable, while delegating
+# to the shared cache when it is.
+try:
+    from tools.integrations import qdrant_client as _shared_qdrant
+except Exception:  # pragma: no cover — only triggered if the shared module is missing
+    _shared_qdrant = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +57,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 EMBEDDING_DIMENSION = 3072      # gemini-embedding-001 output size
-EMBEDDING_CLOUD = "aws"
-EMBEDDING_REGION = "us-east-1"
 
 # Approximate character counts: 4 chars ~= 1 token
 CHARS_PER_TOKEN = 4
@@ -49,8 +65,19 @@ CHARS_PER_TOKEN = 4
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5  # seconds
 
-# Pinecone upsert batch size limit
+# Qdrant upsert batch size — Qdrant accepts much larger batches than Pinecone
+# but we keep the same limit so the throughput envelope is identical.
 UPSERT_BATCH_SIZE = 100
+
+# Namespace used for deterministic uuid5 generation. The original Pinecone
+# vector IDs (e.g. "g4_l3_summary_0") are converted to UUIDs via
+# uuid.uuid5(NAMESPACE, original_id) so re-indexing stays idempotent.
+#
+# IMPORTANT: must stay in sync with ``tools.integrations.qdrant_client.
+# _LEGACY_ID_NAMESPACE`` so the two modules produce identical Qdrant
+# point IDs for the same legacy string ID. Changing this UUID would
+# orphan all previously-indexed vectors.
+_VECTOR_ID_NAMESPACE = uuid.UUID("c6f7e1a2-8b3d-4e5f-9c0a-1d2e3f4a5b6c")
 
 # Valid content types (used for metadata and vector ID generation)
 CONTENT_TYPES = frozenset({
@@ -60,92 +87,127 @@ CONTENT_TYPES = frozenset({
 })
 
 
-# ---------------------------------------------------------------------------
-# Pinecone index management
-# ---------------------------------------------------------------------------
+def _vector_id_for(
+    group_number: int,
+    lecture_number: int,
+    content_type: str,
+    chunk_index: int,
+) -> str:
+    """Build the deterministic UUID5 used as a Qdrant point ID.
 
-_pinecone_index_cache: object | None = None
-_pinecone_lock = threading.Lock()
-
-
-def get_pinecone_index() -> object:
-    """Get or create the Pinecone index (cached after first call).
-
-    Uses dimension=3072 (gemini-embedding-001 output size) with cosine metric.
-    Creates a serverless index if it does not yet exist.
-    Thread-safe via lock to prevent duplicate initialization.
+    Qdrant requires UUIDs or uint64 IDs; it does not accept arbitrary strings
+    like Pinecone does. We derive a stable UUID5 from the original Pinecone-
+    style key ``g{N}_l{N}_{ctype}_{idx}`` so that re-indexing the same lecture
+    overwrites the existing point in place.
 
     Returns:
-        A Pinecone Index object ready for upsert and query operations.
+        A UUID string usable as a Qdrant point ID.
+    """
+    raw_id = f"g{group_number}_l{lecture_number}_{content_type}_{chunk_index}"
+    return str(uuid.uuid5(_VECTOR_ID_NAMESPACE, raw_id))
+
+
+# ---------------------------------------------------------------------------
+# Qdrant client / collection management
+# ---------------------------------------------------------------------------
+
+_qdrant_client_cache: QdrantClient | None = None
+_qdrant_lock = threading.Lock()
+
+
+def get_qdrant_client() -> QdrantClient:
+    """Get or create the Qdrant client (cached after first call).
+
+    Creates the ``training-course`` collection with vector size 3072 and
+    cosine distance if it does not yet exist. Thread-safe.
+
+    Returns:
+        A QdrantClient connected to QDRANT_URL.
 
     Raises:
-        RuntimeError: If PINECONE_API_KEY is not configured.
+        RuntimeError: If QDRANT_URL is not configured.
     """
-    global _pinecone_index_cache
-    if _pinecone_index_cache is not None:
-        return _pinecone_index_cache
+    global _qdrant_client_cache
+    if _qdrant_client_cache is not None:
+        return _qdrant_client_cache
 
-    with _pinecone_lock:
-        # Double-check after acquiring lock (another thread may have initialized)
-        if _pinecone_index_cache is not None:
-            return _pinecone_index_cache
+    with _qdrant_lock:
+        if _qdrant_client_cache is not None:
+            return _qdrant_client_cache
 
-        if not PINECONE_API_KEY:
-            raise RuntimeError("Pinecone API key not configured — set PINECONE_API_KEY in .env")
-
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-
-        existing = [idx.name for idx in pc.list_indexes()]
-        if PINECONE_INDEX_NAME not in existing:
-            logger.info(
-                "Creating Pinecone index '%s' (dim=%d, metric=cosine)...",
-                PINECONE_INDEX_NAME,
-                EMBEDDING_DIMENSION,
+        if not QDRANT_URL:
+            raise RuntimeError(
+                "Qdrant URL not configured — set QDRANT_URL in .env"
             )
-            pc.create_index(
-                name=PINECONE_INDEX_NAME,
-                dimension=EMBEDDING_DIMENSION,
-                metric="cosine",
-                spec=ServerlessSpec(cloud=EMBEDDING_CLOUD, region=EMBEDDING_REGION),
+
+        # api_key is optional for self-hosted Qdrant; required for Qdrant Cloud.
+        client = QdrantClient(
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY or None,
+            timeout=60,
+        )
+
+        try:
+            _ensure_collection(client)
+        except Exception as exc:
+            logger.warning(
+                "Qdrant collection bootstrap failed (%s) — caller may retry on demand",
+                exc,
             )
-            # Wait until the index is ready
-            _wait_for_index_ready(pc)
-            logger.info("Pinecone index '%s' created and ready.", PINECONE_INDEX_NAME)
-        else:
-            logger.debug("Pinecone index '%s' already exists.", PINECONE_INDEX_NAME)
 
-        index = pc.Index(PINECONE_INDEX_NAME)
-        _pinecone_index_cache = index
-        return index
+        _qdrant_client_cache = client
+        return client
 
 
-def _wait_for_index_ready(pc: Pinecone, timeout: int = 120) -> None:
-    """Poll until the newly created index transitions to ready state.
+def _ensure_collection(client: QdrantClient) -> None:
+    """Create the Qdrant collection if it does not exist.
 
-    Args:
-        pc: Authenticated Pinecone client.
-        timeout: Maximum seconds to wait before raising TimeoutError.
-
-    Raises:
-        TimeoutError: If the index does not become ready within timeout.
+    Uses vector size 3072 (gemini-embedding-001) and cosine distance.
     """
-    elapsed = 0
-    poll_interval = 5
-    while elapsed < timeout:
-        description = pc.describe_index(PINECONE_INDEX_NAME)
-        status = description.status
-        ready = status.get("ready", False) if isinstance(status, dict) else getattr(status, "ready", False)
-        if ready:
-            return
-        logger.debug("Index not ready yet (%ds elapsed), waiting...", elapsed)
-        time.sleep(poll_interval)
-        elapsed += poll_interval
-    raise TimeoutError(
-        f"Pinecone index '{PINECONE_INDEX_NAME}' did not become ready within {timeout}s"
+    try:
+        existing = {c.name for c in client.get_collections().collections}
+    except Exception as exc:
+        logger.warning("Could not list Qdrant collections: %s", exc)
+        existing = set()
+
+    if QDRANT_COLLECTION_NAME in existing:
+        logger.debug(
+            "Qdrant collection '%s' already exists.", QDRANT_COLLECTION_NAME
+        )
+        return
+
+    logger.info(
+        "Creating Qdrant collection '%s' (dim=%d, distance=Cosine)...",
+        QDRANT_COLLECTION_NAME,
+        EMBEDDING_DIMENSION,
     )
+    client.create_collection(
+        collection_name=QDRANT_COLLECTION_NAME,
+        vectors_config=qmodels.VectorParams(
+            size=EMBEDDING_DIMENSION,
+            distance=qmodels.Distance.COSINE,
+        ),
+    )
+    logger.info("Qdrant collection '%s' created.", QDRANT_COLLECTION_NAME)
 
 
-# lecture_exists_in_index is defined below (line ~334) with content_type support
+# ---------------------------------------------------------------------------
+# Backward-compatible alias — older callers import ``get_pinecone_index``.
+# Returning the Qdrant client (which exposes the same high-level operations
+# this module wraps) keeps reachability checks like ``await asyncio.to_thread
+# (get_pinecone_index)`` in pipeline_retry.py / orchestrator.py working
+# without changes.
+# ---------------------------------------------------------------------------
+
+
+def get_pinecone_index() -> QdrantClient:
+    """Backward-compatible alias for ``get_qdrant_client``.
+
+    Returns the Qdrant client. The historical name is kept so the dozen
+    call sites across server.py, scheduler.py, orchestrator.py, and
+    pipeline_retry.py do not need to change in this migration PR.
+    """
+    return get_qdrant_client()
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +366,34 @@ def validate_embedding(vector: list[float], *, label: str = "embedding") -> None
 
 
 # ---------------------------------------------------------------------------
-# Lecture existence check (prefix-based, no zero-vector hack)
+# Lecture filter helper
 # ---------------------------------------------------------------------------
+
+
+def _lecture_filter(
+    group_number: int,
+    lecture_number: int,
+    content_type: str | None = None,
+) -> qmodels.Filter:
+    """Build a Qdrant Filter selecting all points for one (group, lecture[, ctype])."""
+    must: list[qmodels.FieldCondition] = [
+        qmodels.FieldCondition(
+            key="group_number",
+            match=qmodels.MatchValue(value=group_number),
+        ),
+        qmodels.FieldCondition(
+            key="lecture_number",
+            match=qmodels.MatchValue(value=lecture_number),
+        ),
+    ]
+    if content_type:
+        must.append(
+            qmodels.FieldCondition(
+                key="content_type",
+                match=qmodels.MatchValue(value=content_type),
+            )
+        )
+    return qmodels.Filter(must=must)
 
 
 def lecture_exists_in_index(
@@ -313,35 +401,27 @@ def lecture_exists_in_index(
     lecture_number: int,
     content_type: str | None = None,
 ) -> bool:
-    """Check whether vectors for a lecture already exist in the index.
+    """Check whether vectors for a lecture already exist in the collection.
 
-    Uses Pinecone's ``list()`` with an ID prefix instead of querying with a
-    dummy zero-vector (which returns meaningless results).
+    Uses Qdrant's ``count`` API with a filter — fast, exact, no embedding
+    required.
 
     Args:
-        group_number: Training group (1 or 2).
+        group_number: Training group (1, 2, 3, ...).
         lecture_number: Lecture sequence number (1-15).
         content_type: Optional filter — check a specific content type only.
 
     Returns:
-        True if at least one vector with the matching prefix exists.
+        True if at least one matching point exists.
     """
-    index = get_pinecone_index()
-
-    if content_type:
-        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
-    else:
-        prefix = f"g{group_number}_l{lecture_number}_"
-
     try:
-        page = index.list(prefix=prefix, limit=1)
-        # Pinecone list() returns a ListResponse; check if any IDs came back.
-        vectors = page.get("vectors", []) if isinstance(page, dict) else getattr(page, "vectors", [])
-        if vectors:
-            return True
-        # Some SDK versions return the IDs directly in the iterable
-        id_list = list(page) if not isinstance(page, dict) else []
-        return len(id_list) > 0
+        client = get_qdrant_client()
+        result = client.count(
+            collection_name=QDRANT_COLLECTION_NAME,
+            count_filter=_lecture_filter(group_number, lecture_number, content_type),
+            exact=False,
+        )
+        return getattr(result, "count", 0) > 0
     except Exception as exc:
         logger.warning(
             "lecture_exists_in_index check failed for g%d l%d: %s — assuming not indexed",
@@ -358,81 +438,60 @@ def delete_lecture_vectors(
     """Delete every vector belonging to a lecture (or one content_type of it).
 
     Used by ``/admin/reset-pipeline`` (Issue #45) and the data-reconciliation
-    job to evict orphaned Pinecone vectors when the originating pipeline is
-    invalidated.  Uses the same ID-prefix convention as the rest of the
-    indexer: ``g{N}_l{N}_{content_type}_…`` (full lecture prefix when no
-    content_type is given).
+    job to evict orphaned vectors when the originating pipeline is invalidated.
 
-    Best-effort: returns the count of IDs sent for deletion.  Pinecone's
-    delete-by-ID accepts up to 1,000 IDs per call so the implementation
-    chunks larger sets.  Failures are logged but do not raise — callers
-    should treat the count as an estimate.
+    Best-effort: returns the approximate count of points that matched before
+    deletion. Failures are logged but do not raise.
 
     Args:
-        group_number: Training group (1, 2, 3, …).
-        lecture_number: Lecture sequence number (1–15).
-        content_type: Optional — restrict the delete to one content type
-            (``summary``, ``transcript``, ``gap_analysis``, …).
+        group_number: Training group (1, 2, 3, ...).
+        lecture_number: Lecture sequence number (1-15).
+        content_type: Optional — restrict the delete to one content type.
 
     Returns:
-        Approximate number of vector IDs that were submitted for delete.
-        Zero if no vectors existed for the prefix or if the delete failed.
+        Approximate number of points that were deleted. Zero on error or
+        when no matching points existed.
     """
-    index = get_pinecone_index()
+    client = get_qdrant_client()
+    flt = _lecture_filter(group_number, lecture_number, content_type)
 
-    if content_type:
-        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
-    else:
-        prefix = f"g{group_number}_l{lecture_number}_"
-
-    ids_to_delete: list[str] = []
+    # Count first so the caller learns how many points went away.
+    pre_count = 0
     try:
-        for page in index.list(prefix=prefix):
-            if isinstance(page, dict):
-                # Newer SDK shape — {"vectors": [{"id": "...", ...}, ...]}
-                for v in page.get("vectors", []):
-                    if isinstance(v, dict) and v.get("id"):
-                        ids_to_delete.append(v["id"])
-                    elif isinstance(v, str):
-                        ids_to_delete.append(v)
-            elif isinstance(page, list):
-                for v in page:
-                    if isinstance(v, dict) and v.get("id"):
-                        ids_to_delete.append(v["id"])
-                    elif isinstance(v, str):
-                        ids_to_delete.append(v)
-            elif isinstance(page, str):
-                ids_to_delete.append(page)
+        result = client.count(
+            collection_name=QDRANT_COLLECTION_NAME,
+            count_filter=flt,
+            exact=True,
+        )
+        pre_count = int(getattr(result, "count", 0))
     except Exception as exc:
         logger.warning(
-            "delete_lecture_vectors: prefix listing failed for g%d l%d (%s): %s",
+            "delete_lecture_vectors: pre-count failed for g%d l%d (%s): %s",
+            group_number, lecture_number, content_type or "all", exc,
+        )
+
+    if pre_count == 0:
+        return 0
+
+    try:
+        client.delete(
+            collection_name=QDRANT_COLLECTION_NAME,
+            points_selector=qmodels.FilterSelector(filter=flt),
+        )
+    except Exception as exc:
+        logger.warning(
+            "delete_lecture_vectors: delete failed for g%d l%d (%s): %s",
             group_number, lecture_number, content_type or "all", exc,
         )
         return 0
 
-    if not ids_to_delete:
-        return 0
-
-    # Pinecone caps single delete payload at 1,000 IDs.
-    deleted = 0
-    for start in range(0, len(ids_to_delete), 1000):
-        batch = ids_to_delete[start : start + 1000]
-        try:
-            index.delete(ids=batch)
-            deleted += len(batch)
-        except Exception as exc:
-            logger.warning(
-                "delete_lecture_vectors: delete batch [%d:%d] failed for g%d l%d: %s",
-                start, start + len(batch), group_number, lecture_number, exc,
-            )
-
     logger.info(
-        "delete_lecture_vectors: removed %d/%d vectors for g%d l%d (%s)",
-        deleted, len(ids_to_delete),
+        "delete_lecture_vectors: removed %d vectors for g%d l%d (%s)",
+        pre_count,
         group_number, lecture_number,
         content_type or "all",
     )
-    return deleted
+    return pre_count
 
 
 def get_lecture_vector_count(
@@ -440,37 +499,24 @@ def get_lecture_vector_count(
     lecture_number: int,
     content_type: str | None = None,
 ) -> int:
-    """Count vectors for a lecture in the index.
+    """Count vectors for a lecture in the collection.
 
     Args:
-        group_number: Training group (1 or 2).
+        group_number: Training group (1, 2, 3, ...).
         lecture_number: Lecture sequence number (1-15).
         content_type: Optional — count for a specific content type only.
 
     Returns:
         Number of vectors found (0 if none or on error).
     """
-    index = get_pinecone_index()
-
-    if content_type:
-        prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
-    else:
-        prefix = f"g{group_number}_l{lecture_number}_"
-
     try:
-        # Pinecone's index.list(prefix=...) returns a generator of pages,
-        # where each page is a list of vector IDs. Previous code did
-        # len(list(generator)) which counted PAGES, not vectors — causing
-        # all lectures to appear as "0 vectors" and triggering false retries.
-        count = 0
-        for page in index.list(prefix=prefix):
-            if isinstance(page, dict):
-                count += len(page.get("vectors", []))
-            elif hasattr(page, "__len__"):
-                count += len(page)
-            else:
-                count += 1
-        return count
+        client = get_qdrant_client()
+        result = client.count(
+            collection_name=QDRANT_COLLECTION_NAME,
+            count_filter=_lecture_filter(group_number, lecture_number, content_type),
+            exact=True,
+        )
+        return int(getattr(result, "count", 0))
     except Exception as exc:
         logger.warning(
             "get_lecture_vector_count failed for g%d l%d: %s",
@@ -486,7 +532,12 @@ def get_lecture_vector_count(
 
 @dataclass(frozen=True)
 class PineconeHealthReport:
-    """Result of check_pinecone_health()."""
+    """Result of check_pinecone_health().
+
+    Name kept as ``PineconeHealthReport`` for backward compatibility with
+    callers in health_monitor.py / admin_routes.py that import it directly.
+    The semantics now describe the Qdrant collection.
+    """
 
     healthy: bool
     total_vectors: int
@@ -494,35 +545,50 @@ class PineconeHealthReport:
     error: str | None = None
 
 
+# Forward-compatible alias for new call sites.
+QdrantHealthReport = PineconeHealthReport
+
+
 def check_pinecone_health() -> PineconeHealthReport:
-    """Verify the Pinecone index is reachable and return vector statistics.
+    """Verify the Qdrant collection is reachable and return vector statistics.
+
+    Function name preserved for backward compatibility — see migration notes
+    at the top of this file.
 
     Returns:
         A PineconeHealthReport with total count and per-group/per-lecture counts.
     """
     try:
-        index = get_pinecone_index()
-        stats = index.describe_index_stats()
+        client = get_qdrant_client()
 
-        # stats can be a dict or an object
-        if isinstance(stats, dict):
-            total = stats.get("total_vector_count", 0)
-            stats.get("namespaces", {})
-        else:
-            total = getattr(stats, "total_vector_count", 0)
-            getattr(stats, "namespaces", {})
+        # Total point count across the collection.
+        total = 0
+        try:
+            info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            total = int(getattr(info, "points_count", 0) or 0)
+        except Exception as exc:
+            logger.debug("get_collection failed, falling back to count(): %s", exc)
+            try:
+                result = client.count(
+                    collection_name=QDRANT_COLLECTION_NAME, exact=True,
+                )
+                total = int(getattr(result, "count", 0))
+            except Exception as inner:
+                logger.warning("Qdrant total count fallback failed: %s", inner)
 
-        # Build per-group, per-lecture counts by listing with prefixes
+        # Per-group, per-lecture counts.
         lecture_counts: dict[str, int] = {}
         for group_num in sorted(GROUPS.keys()):
             for lecture_num in range(1, 16):
-                prefix = f"g{group_num}_l{lecture_num}_"
                 try:
-                    page = index.list(prefix=prefix, limit=1000)
-                    ids = list(page) if not isinstance(page, dict) else page.get("vectors", [])
-                    count = len(ids)
-                    if count > 0:
-                        lecture_counts[f"g{group_num}_l{lecture_num}"] = count
+                    res = client.count(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        count_filter=_lecture_filter(group_num, lecture_num),
+                        exact=True,
+                    )
+                    cnt = int(getattr(res, "count", 0))
+                    if cnt > 0:
+                        lecture_counts[f"g{group_num}_l{lecture_num}"] = cnt
                 except Exception:
                     pass  # skip on error, don't fail the whole health check
 
@@ -533,7 +599,7 @@ def check_pinecone_health() -> PineconeHealthReport:
         )
 
     except Exception as exc:
-        logger.error("Pinecone health check failed: %s", exc)
+        logger.error("Qdrant health check failed: %s", exc)
         return PineconeHealthReport(
             healthy=False,
             total_vectors=0,
@@ -598,12 +664,12 @@ def index_lecture_content(
     *,
     force: bool = False,
 ) -> int:
-    """Chunk, embed, and upsert lecture content into Pinecone.
+    """Chunk, embed, and upsert lecture content into Qdrant.
 
-    Each vector is stored with metadata so the assistant can filter by group,
-    lecture number, and content type during retrieval.
-
-    Vector ID format: ``g{group_number}_l{lecture_number}_{content_type}_{chunk_index}``
+    Each point is stored with payload metadata so the assistant can filter by
+    group, lecture number, and content type during retrieval. Point IDs are
+    deterministic UUID5 values derived from the original Pinecone-style key
+    so re-indexing the same chunk overwrites in place.
 
     Idempotent: if vectors already exist for this lecture+content_type with the
     same chunk count, the function skips re-indexing. If the new content produces
@@ -611,7 +677,7 @@ def index_lecture_content(
     re-index.
 
     Args:
-        group_number: Training group identifier (1 or 2).
+        group_number: Training group identifier (1, 2, 3, ...).
         lecture_number: Lecture sequence number (1-15).
         content: Raw text content to index.
         content_type: One of "transcript", "summary", "gap_analysis", "deep_analysis".
@@ -623,7 +689,7 @@ def index_lecture_content(
     Raises:
         ValueError: If content_type is not a recognised type.
         EmbeddingQualityError: If generated embeddings fail validation.
-        RuntimeError: If Pinecone or Gemini API calls fail after retries.
+        RuntimeError: If Qdrant or Gemini API calls fail after retries.
     """
     if content_type not in CONTENT_TYPES:
         raise ValueError(
@@ -637,7 +703,7 @@ def index_lecture_content(
         )
         return 0
 
-    index = get_pinecone_index()
+    client = get_qdrant_client()
     chunks = chunk_text(content)
     new_chunk_count = len(chunks)
 
@@ -657,17 +723,18 @@ def index_lecture_content(
     today_iso = date.today().isoformat()
 
     # Delete stale vectors from a previous indexing run (e.g., if re-indexing
-    # produces fewer chunks, old vectors with higher indices would remain)
-    id_prefix = f"g{group_number}_l{lecture_number}_{content_type}_"
+    # produces fewer chunks, old vectors with higher indices would remain).
     try:
-        index.delete(
-            filter={
-                "group_number": {"$eq": group_number},
-                "lecture_number": {"$eq": lecture_number},
-                "content_type": {"$eq": content_type},
-            },
+        client.delete(
+            collection_name=QDRANT_COLLECTION_NAME,
+            points_selector=qmodels.FilterSelector(
+                filter=_lecture_filter(group_number, lecture_number, content_type),
+            ),
         )
-        logger.info("Cleaned stale vectors with prefix '%s'", id_prefix)
+        logger.info(
+            "Cleaned stale vectors for g%d l%d [%s]",
+            group_number, lecture_number, content_type,
+        )
     except Exception as e:
         logger.warning("Failed to clean stale vectors: %s — proceeding with upsert", e)
 
@@ -681,25 +748,31 @@ def index_lecture_content(
             label=f"g{group_number}_l{lecture_number}_{content_type}_{i}",
         )
 
-    vectors: list[dict] = []
+    points: list[qmodels.PointStruct] = []
     for chunk_index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        vector_id = f"g{group_number}_l{lecture_number}_{content_type}_{chunk_index}"
-        vectors.append({
-            "id": vector_id,
-            "values": embedding,
-            "metadata": {
-                "group_number": group_number,
-                "lecture_number": lecture_number,
-                "content_type": content_type,
-                "date": today_iso,
-                "chunk_index": chunk_index,
-                "text": chunk,
-            },
-        })
-        logger.debug("Prepared vector %s (%d chars).", vector_id, len(chunk))
+        point_id = _vector_id_for(
+            group_number, lecture_number, content_type, chunk_index,
+        )
+        points.append(
+            qmodels.PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload={
+                    "group_number": group_number,
+                    "lecture_number": lecture_number,
+                    "content_type": content_type,
+                    "date": today_iso,
+                    "chunk_index": chunk_index,
+                    "text": chunk,
+                    # Preserve the original Pinecone-style key for debugging
+                    # and so future migrations / dashboards can resolve it.
+                    "legacy_id": f"g{group_number}_l{lecture_number}_{content_type}_{chunk_index}",
+                },
+            )
+        )
+        logger.debug("Prepared point %s (%d chars).", point_id, len(chunk))
 
-    # Upsert in batches to stay within Pinecone limits
-    total_upserted = _batch_upsert(index, vectors)
+    total_upserted = _batch_upsert(client, points)
     logger.info(
         "Indexed %d vectors for g%d l%d [%s].",
         total_upserted, group_number, lecture_number, content_type,
@@ -707,36 +780,85 @@ def index_lecture_content(
     return total_upserted
 
 
-def _batch_upsert(index: object, vectors: list[dict]) -> int:
-    """Upsert vectors into Pinecone in batches of UPSERT_BATCH_SIZE.
+def _batch_upsert(client: object, vectors: list) -> int:
+    """Upsert points into Qdrant in batches of UPSERT_BATCH_SIZE.
+
+    Accepts either Qdrant PointStruct objects or legacy Pinecone-style dicts
+    (``{"id": ..., "values": ..., "metadata": {...}}``) — the dict form is
+    converted on the fly so existing tests and any leftover callers don't
+    break during the transition.
 
     Args:
-        index: Pinecone Index object.
-        vectors: List of vector dicts (id, values, metadata).
+        client: A QdrantClient (or compatible mock).
+        vectors: List of PointStruct or legacy vector dicts.
 
     Returns:
-        Total number of vectors upserted.
+        Total number of points upserted.
     """
+    if not vectors:
+        return 0
+
+    points = [_to_point(v) for v in vectors]
+
     total = 0
-    for batch_start in range(0, len(vectors), UPSERT_BATCH_SIZE):
-        batch = vectors[batch_start: batch_start + UPSERT_BATCH_SIZE]
+    for batch_start in range(0, len(points), UPSERT_BATCH_SIZE):
+        batch = points[batch_start: batch_start + UPSERT_BATCH_SIZE]
+
         retry_with_backoff(
-            index.upsert,
-            vectors=batch,
+            client.upsert,
+            collection_name=QDRANT_COLLECTION_NAME,
+            points=batch,
             max_retries=MAX_RETRIES,
             backoff_base=RETRY_BASE_DELAY,
-            operation_name="Pinecone upsert",
+            operation_name="Qdrant upsert",
         )
         total += len(batch)
         logger.debug(
-            "Upserted batch of %d vectors (total so far: %d).", len(batch), total
+            "Upserted batch of %d points (total so far: %d).", len(batch), total
         )
     return total
+
+
+def _to_point(v: object) -> qmodels.PointStruct:
+    """Coerce a legacy Pinecone-style vector dict into a Qdrant PointStruct.
+
+    Accepts:
+    - ``qmodels.PointStruct`` → returned unchanged.
+    - ``{"id": str, "values": [...], "metadata": {...}}`` → converted.
+    """
+    if isinstance(v, qmodels.PointStruct):
+        return v
+    if isinstance(v, dict):
+        raw_id = v.get("id")
+        vector = v.get("values") or v.get("vector")
+        payload = dict(v.get("metadata") or v.get("payload") or {})
+        # Convert Pinecone-style string IDs to deterministic UUID5.
+        if isinstance(raw_id, str) and not _looks_like_uuid(raw_id):
+            point_id: str | int = str(uuid.uuid5(_VECTOR_ID_NAMESPACE, raw_id))
+            payload.setdefault("legacy_id", raw_id)
+        else:
+            point_id = raw_id  # type: ignore[assignment]
+        return qmodels.PointStruct(id=point_id, vector=vector, payload=payload)
+    raise TypeError(f"Cannot convert {type(v).__name__} to Qdrant PointStruct")
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Cheap UUID-format check used to avoid double-hashing already-uuid IDs."""
+    try:
+        uuid.UUID(s)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 # ---------------------------------------------------------------------------
 # Querying
 # ---------------------------------------------------------------------------
+
+# Conservative pre-filter applied before the mode-specific threshold so very
+# weak matches (random Georgian noise hits) never reach the assistant.
+MIN_RELEVANCE_SCORE = 0.40
+
 
 def query_knowledge(
     query_text: str,
@@ -746,7 +868,7 @@ def query_knowledge(
     score_threshold: float | None = None,
     mode: str = "direct",
 ) -> list[dict]:
-    """Query Pinecone for course knowledge chunks relevant to the query.
+    """Query Qdrant for course knowledge chunks relevant to the query.
 
     Args:
         query_text: The question or topic to search for.
@@ -761,7 +883,7 @@ def query_knowledge(
         List of result dicts (filtered by score), each containing:
         - ``text`` (str): The matched chunk text.
         - ``score`` (float): Cosine similarity score (higher is better).
-        - ``metadata`` (dict): Full vector metadata (group, lecture, type, etc.).
+        - ``metadata`` (dict): Full payload (group, lecture, type, etc.).
 
     Raises:
         RuntimeError: If the query fails after retries.
@@ -777,7 +899,7 @@ def query_knowledge(
         else:
             score_threshold = PINECONE_SCORE_THRESHOLD_DIRECT
 
-    index = get_pinecone_index()
+    client = get_qdrant_client()
     query_vector = embed_text(query_text)
 
     # Validate query vector before sending
@@ -787,49 +909,68 @@ def query_knowledge(
         logger.error("Query embedding failed validation: %s", exc)
         return []
 
-    filter_dict: dict | None = None
+    query_filter: qmodels.Filter | None = None
     if group_number is not None:
-        filter_dict = {"group_number": {"$eq": group_number}}
+        query_filter = qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="group_number",
+                    match=qmodels.MatchValue(value=group_number),
+                )
+            ]
+        )
 
     logger.info(
-        "Querying Pinecone: top_k=%d, group_filter=%s, threshold=%.2f, "
+        "Querying Qdrant: top_k=%d, group_filter=%s, threshold=%.2f, "
         "mode=%s, query='%s...'",
         top_k, group_number, score_threshold, mode, query_text[:80],
     )
-    response = retry_with_backoff(
-        index.query,
-        vector=query_vector,
-        top_k=top_k,
-        include_metadata=True,
-        filter=filter_dict,
-        max_retries=MAX_RETRIES,
-        backoff_base=RETRY_BASE_DELAY,
-        operation_name="Pinecone query",
-    )
 
-    MIN_RELEVANCE_SCORE = 0.40  # Conservative threshold for Georgian text (multi-byte tokenization)
+    try:
+        response = retry_with_backoff(
+            client.query_points,
+            collection_name=QDRANT_COLLECTION_NAME,
+            query=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True,
+            max_retries=MAX_RETRIES,
+            backoff_base=RETRY_BASE_DELAY,
+            operation_name="Qdrant query",
+        )
+    except Exception as exc:
+        logger.error("Qdrant query failed: %s", exc)
+        return []
 
-    raw_matches = response.get("matches", []) if isinstance(response, dict) else response.matches
-    matches = [m for m in raw_matches if (m.get("score", 0) if isinstance(m, dict) else getattr(m, "score", 0)) >= MIN_RELEVANCE_SCORE]
+    raw_matches = _extract_matches(response)
 
-    if not matches:
-        logger.info("No Pinecone results above score threshold %.2f for query", MIN_RELEVANCE_SCORE)
+    # Apply the conservative pre-filter first.
+    above_floor = [
+        m for m in raw_matches
+        if _match_score(m) >= MIN_RELEVANCE_SCORE
+    ]
+
+    if not above_floor:
+        logger.info(
+            "No Qdrant results above pre-filter score %.2f for query",
+            MIN_RELEVANCE_SCORE,
+        )
         return []
 
     results: list[dict] = []
     filtered_count = 0
-    for match in matches:
-        metadata = match.get("metadata", {}) if isinstance(match, dict) else match.metadata
-        score = match.get("score", 0.0) if isinstance(match, dict) else match.score
+    for match in above_floor:
+        score = _match_score(match)
+        payload = _match_payload(match)
 
         if score < score_threshold:
             filtered_count += 1
             continue
 
         results.append({
-            "text": metadata.get("text", ""),
+            "text": payload.get("text", ""),
             "score": score,
-            "metadata": metadata,
+            "metadata": payload,
         })
 
     logger.info(
@@ -839,13 +980,42 @@ def query_knowledge(
     return results
 
 
+def _extract_matches(response: object) -> list:
+    """Pull the list of scored points out of a Qdrant query_points response.
+
+    The official client returns a QueryResponse with a ``.points`` attribute;
+    some older mocks may return a bare list or a dict — handle all three.
+    """
+    if response is None:
+        return []
+    if isinstance(response, list):
+        return response
+    if isinstance(response, dict):
+        return response.get("points") or response.get("matches") or []
+    return list(getattr(response, "points", None) or getattr(response, "matches", []) or [])
+
+
+def _match_score(match: object) -> float:
+    if isinstance(match, dict):
+        return float(match.get("score", 0.0) or 0.0)
+    return float(getattr(match, "score", 0.0) or 0.0)
+
+
+def _match_payload(match: object) -> dict:
+    if isinstance(match, dict):
+        payload = match.get("payload") or match.get("metadata") or {}
+        return dict(payload) if isinstance(payload, dict) else {}
+    payload = getattr(match, "payload", None) or getattr(match, "metadata", None) or {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # WhatsApp chat indexing
 # ---------------------------------------------------------------------------
 
 
 def index_whatsapp_chats() -> int:
-    """Fetch WhatsApp chat history from Green API and index into Pinecone.
+    """Fetch WhatsApp chat history from Green API and index into the collection.
 
     Indexes messages from both training group chats as searchable content.
     Uses a synthetic group-level ID (group_number=N, lecture_number=0)
@@ -893,7 +1063,6 @@ def index_whatsapp_chats() -> int:
             if not messages:
                 continue
 
-            # Build readable text from messages
             lines: list[str] = []
             for msg in messages:
                 sender = msg.get("senderName", msg.get("senderId", "?"))
@@ -907,7 +1076,6 @@ def index_whatsapp_chats() -> int:
             if not chat_text.strip():
                 continue
 
-            # Index as whatsapp_chat content type, lecture_number=0 (non-lecture)
             count = index_lecture_content(
                 group_number=group_num,
                 lecture_number=0,
@@ -929,7 +1097,7 @@ def index_whatsapp_chats() -> int:
 
 
 def index_obsidian_knowledge() -> int:
-    """Index Obsidian vault concept and tool notes into Pinecone.
+    """Index Obsidian vault concept and tool notes into the collection.
 
     Reads markdown files from the vault's კონცეფციები/ and ინსტრუმენტები/
     directories and indexes their content for RAG retrieval.
@@ -961,7 +1129,6 @@ def index_obsidian_knowledge() -> int:
 
         for md_file in md_files:
             text = md_file.read_text(encoding="utf-8")
-            # Strip YAML frontmatter
             if text.startswith("---"):
                 end = text.find("---", 3)
                 if end != -1:
@@ -973,7 +1140,6 @@ def index_obsidian_knowledge() -> int:
             continue
 
         combined = "\n\n---\n\n".join(all_content)
-        # Use group_number=0 for cross-group knowledge
         count = index_lecture_content(
             group_number=0,
             lecture_number=0,
@@ -992,27 +1158,43 @@ def index_obsidian_knowledge() -> int:
 
 
 def delete_content_type(content_type: str, group_number: int | None = None) -> int:
-    """Delete all vectors of a specific content type from the index.
+    """Delete all vectors of a specific content type from the collection.
 
     Args:
         content_type: The content type to delete (e.g., "deep_analysis").
         group_number: Optional — only delete for a specific group.
 
     Returns:
-        Approximate number of vectors deleted (best effort).
+        1 on success, 0 on failure. (Qdrant delete-by-filter does not return
+        an exact count without a pre-query; the caller treats this as a
+        boolean indicator, matching the historical Pinecone behavior.)
     """
-    index = get_pinecone_index()
-    filter_dict: dict = {"content_type": {"$eq": content_type}}
+    client = get_qdrant_client()
+
+    must: list[qmodels.FieldCondition] = [
+        qmodels.FieldCondition(
+            key="content_type",
+            match=qmodels.MatchValue(value=content_type),
+        ),
+    ]
     if group_number is not None:
-        filter_dict["group_number"] = {"$eq": group_number}
+        must.append(
+            qmodels.FieldCondition(
+                key="group_number",
+                match=qmodels.MatchValue(value=group_number),
+            )
+        )
 
     try:
-        index.delete(filter=filter_dict)
+        client.delete(
+            collection_name=QDRANT_COLLECTION_NAME,
+            points_selector=qmodels.FilterSelector(filter=qmodels.Filter(must=must)),
+        )
         logger.info(
             "Deleted vectors: content_type=%s, group=%s",
             content_type, group_number or "all",
         )
-        return 1  # Pinecone delete doesn't return count
+        return 1
     except Exception as exc:
         logger.error("Failed to delete %s vectors: %s", content_type, exc)
         return 0
@@ -1023,31 +1205,7 @@ def delete_content_type(content_type: str, group_number: int | None = None) -> i
 # ---------------------------------------------------------------------------
 
 def index_all_existing_content() -> None:
-    """CLI entrypoint: scan Google Drive for existing summaries and index them.
-
-    This is a placeholder for a future bulk-indexing script. When implemented,
-    it will:
-
-    1. List all lecture folders in Google Drive for both groups.
-    2. Download each summary and transcript Google Doc.
-    3. Call index_lecture_content() for each document found.
-
-    To index content manually right now, call index_lecture_content() directly
-    with the text you want to index, specifying the group number, lecture number,
-    and content type ("transcript", "summary", "gap_analysis", or "deep_analysis").
-
-    Example::
-
-        from tools.integrations.knowledge_indexer import index_lecture_content
-
-        count = index_lecture_content(
-            group_number=1,
-            lecture_number=1,
-            content="<lecture summary text here>",
-            content_type="summary",
-        )
-        print(f"Indexed {count} vectors.")
-    """
+    """CLI entrypoint placeholder (see original docstring for usage)."""
     logger.info(
         "index_all_existing_content() is a placeholder — "
         "implement Google Drive scanning when Drive tool integration is ready. "
