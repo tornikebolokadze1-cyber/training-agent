@@ -1576,7 +1576,13 @@ def _verify_zoom_signature(raw_body: bytes, request: Request) -> None:
 
     try:
         ts_age = abs(time.time() - int(timestamp))
-        if ts_age > 300:
+        # 900s (15 min) tolerance, widened 2026-05-21 from 300s after audit I.
+        # Reason: Railway redeploy + Zoom retry window combined to silently drop
+        # the recording.completed event for several May lectures (each retry
+        # arrives with the original timestamp, which expires after 5 min).
+        # 15 min leaves room for replicate-and-retry while keeping replay
+        # attacks bounded.
+        if ts_age > 900:
             logger.warning("Zoom webhook timestamp too old: %s seconds", ts_age)
             raise HTTPException(status_code=401, detail="Zoom webhook timestamp expired")
     except ValueError:

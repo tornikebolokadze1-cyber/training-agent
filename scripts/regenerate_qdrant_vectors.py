@@ -193,6 +193,7 @@ def _find_analysis_docs(
 
     gap_text = ""
     deep_text = ""
+    combined_text = ""  # fallback for docs that have neither keyword
     for doc in docs:
         name = doc["name"]
         text = _export_doc_text(svc, doc["id"])
@@ -200,11 +201,31 @@ def _find_analysis_docs(
             continue
         # The pipeline writes "Gap Analysis" / "ნაკლოვანებათა ანალიზი" and
         # "Deep Analysis" / "ღრმა ანალიზი" — accept either spelling.
+        # Early-course May lectures (G3/G4 L2, L3) saved a single combined
+        # doc named just "ლექცია #N" without any discriminator — treat those
+        # as both gap AND deep so the assistant can still find them on either
+        # query path. The May "GAP + DEEP" combined name (L1) also fans out
+        # to both content types instead of being matched as deep only.
         lowered = name.lower()
-        if "deep" in lowered or "ღრმა" in name:
-            deep_text = text
-        elif "gap" in lowered or "ნაკლოვან" in name:
+        has_gap_marker = "gap" in lowered or "ნაკლოვან" in name
+        has_deep_marker = "deep" in lowered or "ღრმა" in name
+        if has_gap_marker and has_deep_marker:
+            # Combined "GAP + DEEP" doc — index under both content types.
             gap_text = text
+            deep_text = text
+        elif has_deep_marker:
+            deep_text = text
+        elif has_gap_marker:
+            gap_text = text
+        else:
+            # No discriminator — keep as a generic combined fallback.
+            combined_text = text
+
+    if combined_text:
+        if not gap_text:
+            gap_text = combined_text
+        if not deep_text:
+            deep_text = combined_text
     return gap_text, deep_text
 
 
