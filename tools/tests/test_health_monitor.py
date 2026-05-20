@@ -23,7 +23,8 @@ from tools.core.health_monitor import (
     check_gemini_quota,
     check_google_token,
     check_pending_lectures,
-    check_pinecone,
+    check_pinecone,  # backward-compat alias for check_qdrant
+    check_qdrant,
     check_stuck_pipelines,
     check_whatsapp,
     check_zoom_auth,
@@ -379,33 +380,84 @@ class TestCheckWhatsapp:
 
 
 # ---------------------------------------------------------------------------
-# check_pinecone
+# check_qdrant (replaces check_pinecone after the 2026-05-20 vector DB migration)
 # ---------------------------------------------------------------------------
 
 
-class TestCheckPinecone:
-    @patch("tools.core.health_monitor.PINECONE_API_KEY", "")
-    def test_no_key(self):
-        result = check_pinecone()
+class TestCheckQdrant:
+    @patch("tools.core.health_monitor.QDRANT_URL", "")
+    @patch("tools.core.health_monitor.QDRANT_API_KEY", "")
+    def test_no_config(self):
+        result = check_qdrant()
         assert result.severity == Severity.WARNING
+        assert "not configured" in result.message.lower()
 
-    @patch("tools.core.health_monitor.PINECONE_API_KEY", "pk-test")
+    @patch("tools.core.health_monitor.QDRANT_URL", "https://example-qdrant.cloud")
+    @patch("tools.core.health_monitor.QDRANT_API_KEY", "qk-test")
     def test_success(self):
-        mock_index = MagicMock()
-        mock_index.describe_index_stats.return_value = {"total_vector_count": 500}
-        mock_pc = MagicMock()
-        mock_pc.Index.return_value = mock_index
+        from tools.integrations.qdrant_client import CollectionHealth
 
-        with patch("pinecone.Pinecone", return_value=mock_pc):
-            result = check_pinecone()
+        report = CollectionHealth(
+            reachable=True,
+            collection_name="training-course",
+            points_count=500,
+        )
+        with patch(
+            "tools.integrations.qdrant_client.check_collection_health",
+            return_value=report,
+        ):
+            result = check_qdrant()
             assert result.severity == Severity.OK
             assert result.details["total_vectors"] == 500
+            assert result.details["collection"] == "training-course"
 
-    @patch("tools.core.health_monitor.PINECONE_API_KEY", "pk-test")
+    @patch("tools.core.health_monitor.QDRANT_URL", "https://example-qdrant.cloud")
+    @patch("tools.core.health_monitor.QDRANT_API_KEY", "qk-test")
+    def test_collection_missing_is_warning(self):
+        """Cluster reachable but collection not created yet — WARNING, not OK."""
+        from tools.integrations.qdrant_client import CollectionHealth
+
+        report = CollectionHealth(
+            reachable=True,
+            collection_name="training-course",
+            points_count=0,
+            error="Collection 'training-course' does not exist yet — will be created on first upsert.",
+        )
+        with patch(
+            "tools.integrations.qdrant_client.check_collection_health",
+            return_value=report,
+        ):
+            result = check_qdrant()
+            assert result.severity == Severity.WARNING
+
+    @patch("tools.core.health_monitor.QDRANT_URL", "https://example-qdrant.cloud")
+    @patch("tools.core.health_monitor.QDRANT_API_KEY", "qk-test")
     def test_failure(self):
-        with patch("pinecone.Pinecone", side_effect=RuntimeError("conn error")):
-            result = check_pinecone()
+        from tools.integrations.qdrant_client import CollectionHealth
+
+        report = CollectionHealth(
+            reachable=False,
+            collection_name="training-course",
+            points_count=0,
+            error="connection refused",
+        )
+        with patch(
+            "tools.integrations.qdrant_client.check_collection_health",
+            return_value=report,
+        ):
+            result = check_qdrant()
             assert result.severity in (Severity.WARNING, Severity.CRITICAL)
+
+
+# The legacy ``check_pinecone`` symbol stays exported as a thin alias so any
+# external monitoring code still importing it keeps working. Verify it forwards.
+class TestCheckPineconeAlias:
+    @patch("tools.core.health_monitor.QDRANT_URL", "")
+    @patch("tools.core.health_monitor.QDRANT_API_KEY", "")
+    def test_alias_forwards_to_qdrant(self):
+        result = check_pinecone()
+        # Alias should produce a result with the new name="qdrant".
+        assert result.name == "qdrant"
 
 
 # ---------------------------------------------------------------------------
@@ -475,10 +527,10 @@ class TestCheckStuckPipelines:
 class TestCheckAll:
     @patch("tools.core.health_monitor.check_disk_space")
     @patch("tools.core.health_monitor.check_whatsapp")
-    @patch("tools.core.health_monitor.check_pinecone")
+    @patch("tools.core.health_monitor.check_qdrant")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
-    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_qdrant_scores_consistency")
     @patch("tools.core.health_monitor.check_pipeline_state_drift")
     @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")
@@ -507,10 +559,10 @@ class TestCheckAll:
 
     @patch("tools.core.health_monitor.check_disk_space")
     @patch("tools.core.health_monitor.check_whatsapp")
-    @patch("tools.core.health_monitor.check_pinecone")
+    @patch("tools.core.health_monitor.check_qdrant")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
-    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_qdrant_scores_consistency")
     @patch("tools.core.health_monitor.check_pipeline_state_drift")
     @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")
@@ -539,10 +591,10 @@ class TestCheckAll:
 
     @patch("tools.core.health_monitor.check_disk_space")
     @patch("tools.core.health_monitor.check_whatsapp")
-    @patch("tools.core.health_monitor.check_pinecone")
+    @patch("tools.core.health_monitor.check_qdrant")
     @patch("tools.core.health_monitor.check_pending_lectures")
     @patch("tools.core.health_monitor.check_stuck_pipelines")
-    @patch("tools.core.health_monitor.check_pinecone_scores_consistency")
+    @patch("tools.core.health_monitor.check_qdrant_scores_consistency")
     @patch("tools.core.health_monitor.check_pipeline_state_drift")
     @patch("tools.core.health_monitor.check_oauth_token_lifetime")
     @patch("tools.core.health_monitor.check_google_token")

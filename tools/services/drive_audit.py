@@ -1,8 +1,9 @@
-"""Drive ↔ Pinecone consistency audit.
+"""Drive ↔ Qdrant consistency audit.
 
 Compares lecture artifacts across three sources of truth:
   1. Google Drive  — video file + summary doc per ლექცია folder
-  2. Pinecone      — indexed transcript vectors per (group, lecture)
+  2. Qdrant        — indexed transcript vectors per (group, lecture)
+                     (migrated from Pinecone on 2026-05-20)
   3. Pipeline state — local state file per (group, lecture)
 
 Produces a structured report flagging any divergence so the operator
@@ -40,8 +41,19 @@ class LectureAudit:
     drive_video_count: int = 0
     drive_doc_count: int = 0
     drive_video_sizes_mb: list[float] = field(default_factory=list)
-    pinecone_vector_count: int = 0
+    # qdrant_vector_count is the migrated name (was pinecone_vector_count).
+    # Both attribute names are accepted by ``to_dict`` for back-compat.
+    qdrant_vector_count: int = 0
     issues: list[str] = field(default_factory=list)
+
+    @property
+    def pinecone_vector_count(self) -> int:
+        """Deprecated alias kept so legacy callers keep reading the same field."""
+        return self.qdrant_vector_count
+
+    @pinecone_vector_count.setter
+    def pinecone_vector_count(self, value: int) -> None:
+        self.qdrant_vector_count = value
 
     @property
     def is_clean(self) -> bool:
@@ -54,7 +66,10 @@ class LectureAudit:
             "drive_videos": self.drive_video_count,
             "drive_docs": self.drive_doc_count,
             "drive_video_sizes_mb": self.drive_video_sizes_mb,
-            "pinecone_vectors": self.pinecone_vector_count,
+            # Emit both keys so consumers reading the legacy "pinecone_vectors"
+            # field keep working through the migration window.
+            "qdrant_vectors": self.qdrant_vector_count,
+            "pinecone_vectors": self.qdrant_vector_count,
             "issues": self.issues,
             "clean": self.is_clean,
         }
@@ -78,33 +93,36 @@ _HISTORICAL_DEEP_ANALYSIS_GAP: frozenset[tuple[int, int]] = frozenset({
 })
 
 
-def _list_pinecone_vectors_for_lecture(group: int, lecture: int) -> tuple[int, set[str]]:
+def _list_qdrant_vectors_for_lecture(group: int, lecture: int) -> tuple[int, set[str]]:
     """Count vectors and their distinct content types for one lecture.
 
     Returns (total_count, content_types_present). Returns (-1, set()) on error.
     """
     try:
-        from tools.integrations.knowledge_indexer import get_pinecone_index
+        from tools.integrations.qdrant_client import list_legacy_ids_with_prefix
 
-        index = get_pinecone_index()
         prefix = f"g{group}_l{lecture}_"
-        count = 0
+        legacy_ids = list_legacy_ids_with_prefix(prefix)
         types: set[str] = set()
-        for page in index.list(prefix=prefix):
-            count += len(page)
-            for id_ in page:
-                # ID shape: g{G}_l{L}_{content_type}_{chunk_index}
-                parts = id_.split("_", 2)
-                if len(parts) < 3:
-                    continue
-                tail = parts[2]
-                # Strip the trailing "_N" chunk index to isolate the type.
-                type_name = tail.rsplit("_", 1)[0] if tail.rsplit("_", 1)[-1].isdigit() else tail
-                types.add(type_name)
-        return count, types
+        for legacy_id in legacy_ids:
+            # ID shape: g{G}_l{L}_{content_type}_{chunk_index}
+            parts = legacy_id.split("_", 2)
+            if len(parts) < 3:
+                continue
+            tail = parts[2]
+            # Strip the trailing "_N" chunk index to isolate the type.
+            type_name = tail.rsplit("_", 1)[0] if tail.rsplit("_", 1)[-1].isdigit() else tail
+            types.add(type_name)
+        return len(legacy_ids), types
     except Exception as exc:
-        logger.warning("[audit] Pinecone count failed for g%d/l%d: %s", group, lecture, exc)
+        logger.warning("[audit] Qdrant count failed for g%d/l%d: %s", group, lecture, exc)
         return -1, set()  # sentinel: unknown
+
+
+# Backward-compatibility alias — old name still used by some test fixtures.
+def _list_pinecone_vectors_for_lecture(group: int, lecture: int) -> tuple[int, set[str]]:
+    """Deprecated alias for ``_list_qdrant_vectors_for_lecture``."""
+    return _list_qdrant_vectors_for_lecture(group, lecture)
 
 
 def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
@@ -172,13 +190,13 @@ def audit_group(group: int, root_folder_id: str) -> list[LectureAudit]:
         if audit.drive_doc_count == 0:
             audit.issues.append("MISSING_SUMMARY")
 
-        # Pinecone cross-check — count + content-type completeness
-        vec_count, content_types = _list_pinecone_vectors_for_lecture(group, lecture_num)
-        audit.pinecone_vector_count = vec_count
+        # Qdrant cross-check — count + content-type completeness
+        vec_count, content_types = _list_qdrant_vectors_for_lecture(group, lecture_num)
+        audit.qdrant_vector_count = vec_count
         if vec_count == 0:
-            audit.issues.append("PINECONE_EMPTY")
+            audit.issues.append("QDRANT_EMPTY")
         elif vec_count == -1:
-            audit.issues.append("PINECONE_QUERY_FAILED")
+            audit.issues.append("QDRANT_QUERY_FAILED")
         else:
             missing_types = EXPECTED_CONTENT_TYPES - content_types
             # Suppress the known historical gap: deep_analysis was added to
@@ -202,9 +220,9 @@ def run_full_audit() -> dict:
     """Run audit for every active (non-completed) cohort.
 
     Iterates ``GROUPS`` dynamically so new cohorts (G3, G4, ...) are covered
-    by the daily 09:00 Drive vs Pinecone reconciliation without code edits.
+    by the daily 09:00 Drive vs Qdrant reconciliation without code edits.
     Completed cohorts are skipped — their content is frozen so a daily audit
-    on stable archives is wasted Drive/Pinecone API quota.
+    on stable archives is wasted Drive/Qdrant API quota.
     """
     per_group_audits: dict[int, list[LectureAudit]] = {}
     all_audits: list[LectureAudit] = []
@@ -259,7 +277,7 @@ def run_full_audit() -> dict:
         )
     else:
         logger.info(
-            "[audit] All %d lectures clean (videos+summaries+pinecone in sync)",
+            "[audit] All %d lectures clean (videos+summaries+qdrant in sync)",
             len(all_audits),
         )
 
@@ -275,7 +293,7 @@ def alert_on_issues(report: dict) -> None:
         from tools.integrations.whatsapp_sender import alert_operator
 
         lines = [
-            f"🔍 Drive↔Pinecone audit found {report['issues_found']} issue(s):",
+            f"🔍 Drive↔Qdrant audit found {report['issues_found']} issue(s):",
             "",
         ]
         for issue in report.get("issues", []):
@@ -291,7 +309,7 @@ def alert_on_issues(report: dict) -> None:
 
 def daily_audit_job() -> None:
     """Entry point for the APScheduler daily job."""
-    logger.info("[audit] Starting daily Drive↔Pinecone audit...")
+    logger.info("[audit] Starting daily Drive↔Qdrant audit...")
     report = run_full_audit()
     alert_on_issues(report)
     logger.info("[audit] Audit complete: %d clean, %d issues",

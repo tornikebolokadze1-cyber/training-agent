@@ -43,11 +43,15 @@ def _fake_group_cfg(name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# sync_from_pinecone iterates every configured group
+# sync_from_qdrant (formerly sync_from_pinecone) iterates every configured group
 # ---------------------------------------------------------------------------
 
 def test_sync_from_pinecone_iterates_all_groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    """sync_from_pinecone must visit every key in GROUPS, not just [1, 2]."""
+    """sync_from_qdrant must visit every key in GROUPS, not just [1, 2].
+
+    Test name preserved for git-blame continuity even though the underlying
+    function was renamed during the 2026-05-20 Pinecone → Qdrant migration.
+    """
 
     fake_groups = {
         3: _fake_group_cfg("მაისის ჯგუფი #1"),
@@ -58,26 +62,22 @@ def test_sync_from_pinecone_iterates_all_groups(monkeypatch: pytest.MonkeyPatch)
     # Force the cooldown to elapse so the function actually runs.
     monkeypatch.setattr(analytics, "_last_sync_time", 0.0)
 
-    # Stub Pinecone connection — list() returns nothing, so the inner loop
-    # short-circuits but we still capture which (group, lecture) pairs were
-    # *probed*. That's what we care about for the iteration test.
+    # Capture which groups the sync probed. After the Qdrant migration the
+    # discovery path is `list_legacy_ids_with_prefix(prefix)` rather than
+    # `idx.list(prefix=prefix)`.
     probed_groups: set[int] = set()
 
-    class _FakeIndex:
-        def list(self, prefix: str, limit: int = 99):  # noqa: ARG002
-            # Prefix format: g{group}_l{lecture}_deep_analysis_
-            m = re.match(r"^g(\d+)_l\d+_deep_analysis_$", prefix)
-            if m:
-                probed_groups.add(int(m.group(1)))
-            return iter([])
+    def _fake_list_ids(prefix: str, *, max_results: int | None = None) -> list[str]:
+        # Prefix format: g{group}_l{lecture}_deep_analysis_
+        m = re.match(r"^g(\d+)_l\d+_deep_analysis_$", prefix)
+        if m:
+            probed_groups.add(int(m.group(1)))
+        return []
 
-        def fetch(self, ids: list[str]):  # pragma: no cover - never reached when list is empty
-            return type("F", (), {"vectors": {}})()
-
-    # Patch the indexer import so we hit the fake.
-    import tools.integrations.knowledge_indexer as ki
-
-    monkeypatch.setattr(ki, "get_pinecone_index", lambda: _FakeIndex())
+    monkeypatch.setattr(
+        "tools.integrations.qdrant_client.list_legacy_ids_with_prefix",
+        _fake_list_ids,
+    )
 
     # Patch _get_conn to return an empty existing set so every (group, lecture)
     # pair is treated as missing and therefore probed.

@@ -10,8 +10,9 @@ from tools.core.config import TBILISI_TZ
 from tools.core.health_monitor import (
     Severity,
     check_oauth_token_lifetime,
+    check_pinecone_scores_consistency,  # backward-compat alias for check_qdrant_scores_consistency
     check_pipeline_state_drift,
-    check_pinecone_scores_consistency,
+    check_qdrant_scores_consistency,
 )
 
 
@@ -123,11 +124,13 @@ def test_check_pipeline_state_drift_ok_and_critical():
 
 
 # ---------------------------------------------------------------------------
-# check_pinecone_scores_consistency
+# check_qdrant_scores_consistency
+# (formerly check_pinecone_scores_consistency — renamed during the
+# Pinecone → Qdrant migration on 2026-05-20; the old name remains as an alias)
 # ---------------------------------------------------------------------------
 
 
-def test_check_pinecone_scores_consistency_ok_and_drift():
+def test_check_qdrant_scores_consistency_ok_and_drift():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchall.return_value = [(1, 1), (1, 2), (2, 3)]
 
@@ -141,8 +144,9 @@ def test_check_pinecone_scores_consistency_ok_and_drift():
             return_value=True,
         ),
     ):
-        result = check_pinecone_scores_consistency()
+        result = check_qdrant_scores_consistency()
         assert result.severity == Severity.OK
+        assert result.name == "qdrant_scores_consistency"
 
     # Drift: one missing
     def _exists(group, lecture):
@@ -159,6 +163,25 @@ def test_check_pinecone_scores_consistency_ok_and_drift():
             side_effect=_exists,
         ),
     ):
-        result = check_pinecone_scores_consistency()
+        result = check_qdrant_scores_consistency()
         assert result.severity == Severity.WARNING
         assert "G1 L2" in result.message
+
+
+def test_check_pinecone_scores_consistency_alias_still_works():
+    """The legacy name remains exported as a thin alias for back-compat."""
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value.fetchall.return_value = [(1, 1)]
+    with (
+        patch(
+            "tools.core.health_monitor.sqlite3.connect", return_value=fake_conn
+        ),
+        patch(
+            "tools.integrations.knowledge_indexer.lecture_exists_in_index",
+            return_value=True,
+        ),
+    ):
+        result = check_pinecone_scores_consistency()
+        # Alias forwards to the new function, so name reflects the new identifier.
+        assert result.name == "qdrant_scores_consistency"
+        assert result.severity == Severity.OK
