@@ -622,49 +622,75 @@ def mark_failed(state: PipelineState, error: str) -> PipelineState:
     return transition(state, FAILED, error=error, errors=new_errors)
 
 
-#: Post-conditions that MUST be true before a pipeline is allowed to
-#: transition to COMPLETE. Each entry maps a boolean flag name to a
-#: human-readable label used in error messages. If any flag is False at
-#: mark_complete() time, the pipeline is transitioned to FAILED instead,
-#: preserving the invariant that "COMPLETE means every artifact exists".
+#: HARD post-conditions: every entry MUST be truthy before a pipeline is
+#: allowed to transition to COMPLETE. Each entry maps a boolean/string
+#: flag name on PipelineState to a human-readable label. If any HARD
+#: invariant is missing at mark_complete() time, the pipeline is coerced
+#: to FAILED so retry logic can pick it up.
 #:
-#: This closes the atomicity gap that caused G1 L7's video to go missing
-#: on 2026-04-03: summary+gap were created and indexed, the pipeline was
-#: marked COMPLETE, but the Drive video upload had silently failed. By
-#: enforcing the invariant at the state boundary instead of at every
-#: caller, this gap cannot re-open no matter which pipeline path runs.
-_COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
-    ("drive_video_id", "Drive video upload incomplete — drive_video_id is empty"),
+#: These represent artifacts whose absence would cause real harm:
+#:   - missing analysis/docs → students received no lecture summary
+#:   - missing Pinecone index → "მრჩეველი" assistant cannot answer
+#:
+#: ``drive_video_id`` is intentionally NOT here as of 2026-05-20.
+#: Operators hit a catastrophic retry loop where the Drive video upload
+#: step silently no-op'd on retry (the local mp4 had been cleaned from
+#: .tmp/), blocking COMPLETE indefinitely — and each retry re-sent the
+#: WhatsApp notification, costing ~$3 in Gemini/Claude per cycle plus
+#: duplicate student messages. Once docs + Pinecone have landed and
+#: WhatsApp delivery succeeded, the lecture is functionally delivered;
+#: a missing Drive video is a SOFT failure logged for the operator to
+#: reconcile out-of-band.
+_HARD_COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
     ("analysis_done", "analysis artifacts written"),
     ("summary_doc_id", "summary Google Doc uploaded"),
     ("report_doc_id", "private report Google Doc uploaded"),
     ("pinecone_indexed", "transcript chunks indexed in Pinecone"),
 )
 
+#: SOFT post-conditions: warned about but do NOT block COMPLETE. A missing
+#: SOFT artifact produces a logger.warning so the operator can chase it
+#: out-of-band, but the pipeline still transitions to COMPLETE —
+#: preventing the duplicate-WhatsApp / retry-cost catastrophe.
+_SOFT_COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    ("drive_video_id", "Drive video upload incomplete — drive_video_id is empty"),
+)
+
+#: Backward-compat alias. Older imports / tests may reference the full
+#: invariant set as a single tuple; HARD ∪ SOFT here keeps every artifact
+#: label discoverable.
+_COMPLETION_INVARIANTS: tuple[tuple[str, str], ...] = (
+    *_HARD_COMPLETION_INVARIANTS,
+    *_SOFT_COMPLETION_INVARIANTS,
+)
+
 
 def mark_complete(state: PipelineState) -> PipelineState:
-    """Transition a pipeline to COMPLETE — only if all artifacts exist.
+    """Transition a pipeline to COMPLETE — gated on HARD invariants only.
 
-    Enforces _COMPLETION_INVARIANTS as a gate. A pipeline that calls
-    mark_complete() with missing artifacts is coerced to FAILED with a
-    descriptive error, so downstream retry logic will pick it up.
+    Enforces ``_HARD_COMPLETION_INVARIANTS`` as a blocking gate. Missing
+    ``_SOFT_COMPLETION_INVARIANTS`` (currently: ``drive_video_id``)
+    produce a warning log but do NOT block COMPLETE. A pipeline that
+    calls mark_complete() with missing HARD artifacts is coerced to
+    FAILED with a descriptive error, so downstream retry logic will pick
+    it up.
 
     Args:
         state: The current pipeline state.
 
     Returns:
-        New PipelineState in COMPLETE if all invariants hold, else FAILED.
+        New PipelineState in COMPLETE if all HARD invariants hold, else FAILED.
     """
-    missing: list[str] = []
-    for field_name, label in _COMPLETION_INVARIANTS:
+    missing_hard: list[str] = []
+    for field_name, label in _HARD_COMPLETION_INVARIANTS:
         value = getattr(state, field_name, None)
         # Empty string, False, None, and 0 all count as "missing".
         if not value:
-            missing.append(label)
+            missing_hard.append(label)
 
-    if missing:
+    if missing_hard:
         error_msg = (
-            f"mark_complete called with missing artifacts: {', '.join(missing)}. "
+            f"mark_complete called with missing artifacts: {', '.join(missing_hard)}. "
             f"Refusing to mark COMPLETE — will be retried by nightly catch-all."
         )
         logger.error(
@@ -672,6 +698,23 @@ def mark_complete(state: PipelineState) -> PipelineState:
             state.group, state.lecture, error_msg,
         )
         return mark_failed(state, error_msg)
+
+    # SOFT invariants: log but do not block. These artifacts are
+    # operationally important but their absence does not justify a full
+    # pipeline retry (which would re-send WhatsApp + re-bill Gemini/Claude).
+    missing_soft: list[str] = []
+    for field_name, label in _SOFT_COMPLETION_INVARIANTS:
+        value = getattr(state, field_name, None)
+        if not value:
+            missing_soft.append(label)
+
+    if missing_soft:
+        logger.warning(
+            "Pipeline g%d/l%d completing with missing soft artifacts (%s). "
+            "Marking COMPLETE anyway to avoid duplicate WhatsApp / retry-cost "
+            "loop; operator should reconcile out-of-band.",
+            state.group, state.lecture, ", ".join(missing_soft),
+        )
 
     logger.info(
         "Pipeline g%d/l%d completed successfully.",
