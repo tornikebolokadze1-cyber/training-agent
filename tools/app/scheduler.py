@@ -771,9 +771,13 @@ def _run_post_meeting_pipeline(
         except Exception as retry_exc:
             logger.error("[post] Failed to schedule retry: %s", retry_exc)
 
+        import traceback as _tb
+        tb_text = _tb.format_exc()
+        tb_tail = "\n".join(tb_text.strip().splitlines()[-6:])
         alert_operator(
             f"Pipeline FAILED for {_group_label(group_number)}, Lecture #{lecture_number}.\n"
             f"Error: {exc}\n"
+            f"Traceback (last 6 lines):\n{tb_tail}\n"
             f"Automatic retry has been scheduled."
         )
     finally:
