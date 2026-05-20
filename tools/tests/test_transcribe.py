@@ -601,3 +601,167 @@ class TestPipelineResume:
         # Group and private notifications should have been skipped
         mock_notify_group.assert_not_called()
         mock_notify_private.assert_not_called()
+
+
+# ===========================================================================
+# 9. Durable delivery tracker — cross-retry idempotency
+#
+# Production bug 2026-05-19: students received the same WhatsApp lecture
+# link 3 times after a retry because reset_failed() wiped the in-pipeline
+# group_notified flag.  The durable delivery_tracker.json must prevent
+# re-sending even when the pipeline state file is gone.
+# ===========================================================================
+
+
+class TestCrossRetryIdempotency:
+    """Verify durable delivery tracker prevents duplicate WhatsApp/uploads."""
+
+    @pytest.fixture
+    def fresh_tracker(self, tmp_path, monkeypatch):
+        """Redirect both the tracker file and the in-module reference."""
+        import tools.core.delivery_tracker as dt
+        test_path = tmp_path / "delivery_tracker.json"
+        monkeypatch.setattr(dt, "DELIVERY_TRACKER_PATH", test_path)
+        dt._locks.clear()
+        return dt
+
+    def _make_video_and_cache(self, tmp_path: Path) -> tuple[Path, Path]:
+        video = tmp_path / "lecture.mp4"
+        video.write_bytes(b"fake video")
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+        # Provide cached results so analyze_lecture is never called.
+        for content_type, content in [
+            ("transcript", "t" * 3000),
+            ("summary", "s" * 600),
+            ("gap_analysis", "g" * 400),
+            ("deep_analysis", "d" * 400),
+        ]:
+            (fake_tmp / f"g1_l1_{content_type}.txt").write_text(content, encoding="utf-8")
+        return video, fake_tmp
+
+    def test_durable_tracker_blocks_duplicate_whatsapp_after_state_reset(
+        self, tmp_path, fresh_tracker,
+    ):
+        """The bug: when retry runs with no state file but tracker says sent,
+        WhatsApp MUST NOT fire again."""
+        from tools.core.pipeline_state import PipelineState, NOTIFYING
+
+        video, fake_tmp = self._make_video_and_cache(tmp_path)
+
+        # Pre-populate durable tracker as if a previous attempt succeeded.
+        fresh_tracker.record_delivery(
+            1, 1,
+            summary_doc_id="doc-1",
+            report_doc_id="doc-2",
+            whatsapp_notification_sent_at="2026-05-19T20:00:00+04:00",
+            private_report_sent_at="2026-05-19T20:00:10+04:00",
+            pinecone_indexed_at="2026-05-19T20:01:00+04:00",
+        )
+
+        # No pipeline state (simulating: reset_failed wiped it before retry).
+        # The pipeline still goes through the resume path because cached
+        # analysis files exist, but with state=None.
+        mock_state = PipelineState(group=1, lecture=1, state=NOTIFYING)
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE) as mock_analyze,
+            patch(_PATCH_INDEX) as mock_index,
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive") as mock_upload_summary,
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive") as mock_upload_report,
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp") as mock_notify_group,
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike") as mock_notify_private,
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        # The critical assertions — none of these should fire on a retry
+        # whose durable tracker already records success:
+        mock_notify_group.assert_not_called()
+        mock_notify_private.assert_not_called()
+        mock_upload_summary.assert_not_called()
+        mock_upload_report.assert_not_called()
+        # analyze_lecture is not called because cached files exist.
+        mock_analyze.assert_not_called()
+        # Pinecone re-indexing is also skipped.
+        mock_index.assert_not_called()
+
+    def test_whatsapp_send_persists_timestamp_to_durable_tracker(
+        self, tmp_path, fresh_tracker,
+    ):
+        """On a successful first run, the WhatsApp send timestamp must
+        land in the durable tracker so a subsequent retry can see it."""
+        from tools.core.pipeline_state import PipelineState, NOTIFYING
+
+        video, fake_tmp = self._make_video_and_cache(tmp_path)
+        mock_state = PipelineState(group=1, lecture=1, state=NOTIFYING)
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE),
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp") as mock_notify_group,
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike"),
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video)
+
+        # First run: WhatsApp fires once.
+        mock_notify_group.assert_called_once()
+
+        # Verify the timestamp was persisted to durable storage.
+        record = fresh_tracker.load_delivery(1, 1)
+        assert record.get("whatsapp_notification_sent_at"), (
+            "WhatsApp send timestamp must be recorded in durable tracker "
+            "so a subsequent retry skips re-sending."
+        )
+        assert record.get("private_report_sent_at"), (
+            "Private report timestamp must also be recorded."
+        )
+
+    def test_silent_mode_does_not_send_whatsapp_or_record(
+        self, tmp_path, fresh_tracker,
+    ):
+        """Admin reprocess (silent=True) must skip WhatsApp entirely and
+        not pollute the tracker with a fake-success timestamp."""
+        from tools.core.pipeline_state import PipelineState, NOTIFYING
+
+        video, fake_tmp = self._make_video_and_cache(tmp_path)
+        mock_state = PipelineState(group=1, lecture=1, state=NOTIFYING)
+
+        with (
+            patch("tools.services.transcribe_lecture.TMP_DIR", fake_tmp),
+            patch("tools.services.transcribe_lecture.load_state", return_value=mock_state),
+            patch(_PATCH_ANALYZE),
+            patch(_PATCH_INDEX, return_value=5),
+            patch(_PATCH_ALERT),
+            patch("tools.services.transcribe_lecture._upload_summary_to_drive", return_value="doc-1"),
+            patch("tools.services.transcribe_lecture._upload_private_report_to_drive", return_value="doc-2"),
+            patch("tools.services.transcribe_lecture._notify_group_whatsapp") as mock_notify_group,
+            patch("tools.services.transcribe_lecture._send_private_report_to_tornike") as mock_notify_private,
+            patch("tools.services.transcribe_lecture._find_recording_in_drive", return_value=None),
+            patch("tools.services.transcribe_lecture.transition", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.mark_complete", return_value=mock_state),
+            patch("tools.services.transcribe_lecture.cleanup_checkpoints", return_value=0),
+        ):
+            tl.transcribe_and_index(1, 1, video, silent=True)
+
+        mock_notify_group.assert_not_called()
+        mock_notify_private.assert_not_called()
+        record = fresh_tracker.load_delivery(1, 1)
+        # Silent mode must NOT stamp a fake WhatsApp timestamp.
+        assert not record.get("whatsapp_notification_sent_at")
+        assert not record.get("private_report_sent_at")

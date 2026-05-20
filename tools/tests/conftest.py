@@ -440,6 +440,10 @@ def _cleanup_stale_state_files():
     which break transcribe_and_index tests that assume a clean slate.
     We delete only pipeline_state_g*_l*.json — other .tmp/ files (checkpoints)
     are left alone so test_pipeline_state_hardened continues to work.
+
+    Also wipes the delivery_tracker.json so cross-retry idempotency state
+    from production / earlier tests cannot bleed into transcribe_and_index
+    test cases (each test gets a clean slate for delivery tracking).
     """
     from pathlib import Path
     import glob
@@ -448,6 +452,15 @@ def _cleanup_stale_state_files():
         for f in glob.glob(str(project_tmp / "pipeline_state_g*_l*.json")):
             try:
                 Path(f).unlink()
+            except OSError:
+                pass
+        # Wipe delivery_tracker.json so previous runs cannot leak idempotency
+        # markers into a fresh test. Tests that need a pre-populated tracker
+        # should call record_delivery() explicitly in their setup.
+        tracker = project_tmp / "delivery_tracker.json"
+        if tracker.exists():
+            try:
+                tracker.unlink()
             except OSError:
                 pass
     yield

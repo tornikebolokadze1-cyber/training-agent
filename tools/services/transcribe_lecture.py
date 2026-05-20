@@ -13,20 +13,31 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from tools.core.config import (
     GROUPS,
+    TBILISI_TZ,
     TMP_DIR,
     get_drive_file_url,
     get_lecture_folder_name,
 )
 
 
+def _now_iso() -> str:
+    """Return current Tbilisi time as an ISO 8601 string."""
+    return datetime.now(tz=TBILISI_TZ).isoformat()
+
+
 def _label(group_number: int) -> str:
     """Return the human-facing cohort name for operator messages."""
     cfg = GROUPS.get(group_number)
     return cfg["name"] if cfg else f"Group {group_number}"
+from tools.core.delivery_tracker import (
+    load_delivery,
+    record_delivery,
+)
 from tools.core.pipeline_state import (
     load_state,
     transition,
@@ -288,10 +299,20 @@ def transcribe_and_index(
     # Load pipeline state if it exists (created by server.py or scheduler.py)
     pipeline = load_state(group_number, lecture_number)
 
+    # Load DURABLE delivery record — survives reset_failed() so a retry
+    # cannot re-send WhatsApp / re-upload docs / re-index Pinecone.
+    delivery = load_delivery(group_number, lecture_number)
+
     logger.info(
         "Starting full pipeline for Group %d, Lecture #%d (%s)",
         group_number, lecture_number, video_path.name,
     )
+    if delivery:
+        logger.info(
+            "Found durable delivery record for G%d L%d: %s",
+            group_number, lecture_number,
+            {k: v for k, v in delivery.items() if k not in ("group", "lecture")},
+        )
 
     # Check for existing transcript (resume support)
     transcript_path = TMP_DIR / f"g{group_number}_l{lecture_number}_transcript.txt"
@@ -406,62 +427,174 @@ def transcribe_and_index(
         if pipeline:
             pipeline = transition(pipeline, UPLOADING_DOCS)
         summary = results.get("summary", "")
-        summary_doc_id: str | None = (pipeline.summary_doc_id or None) if pipeline else None
+        # Reuse already-uploaded doc IDs from EITHER the pipeline state file
+        # OR the durable delivery tracker (the tracker survives reset_failed()).
+        summary_doc_id: str | None = (
+            (pipeline.summary_doc_id if pipeline else None)
+            or delivery.get("summary_doc_id")
+            or None
+        )
         if summary and not summary_doc_id:
             logger.info("Step 2: Uploading summary to Google Drive...")
             summary_doc_id = _upload_summary_to_drive(group_number, lecture_number, summary)
+            if summary_doc_id:
+                record_delivery(group_number, lecture_number, summary_doc_id=summary_doc_id)
         elif summary_doc_id:
-            logger.info("Resume: reusing existing summary doc %s", summary_doc_id)
+            logger.info(
+                "Idempotency: reusing existing summary doc %s (skipping re-upload)",
+                summary_doc_id,
+            )
+            # Re-stamp into pipeline state so the rest of this run sees it.
+            if pipeline and not pipeline.summary_doc_id:
+                pipeline = transition(pipeline, UPLOADING_DOCS, summary_doc_id=summary_doc_id)
 
         # Step 3: Upload private report to Drive
         gap_analysis = results.get("gap_analysis", "")
         deep_analysis = results.get("deep_analysis", "")
-        report_doc_id: str | None = (pipeline.report_doc_id or None) if pipeline else None
+        report_doc_id: str | None = (
+            (pipeline.report_doc_id if pipeline else None)
+            or delivery.get("report_doc_id")
+            or None
+        )
         if (gap_analysis or deep_analysis) and not report_doc_id:
             logger.info("Step 3: Uploading private analysis to Drive...")
             report_doc_id = _upload_private_report_to_drive(
                 group_number, lecture_number, gap_analysis, deep_analysis,
             )
+            if report_doc_id:
+                record_delivery(group_number, lecture_number, report_doc_id=report_doc_id)
         elif report_doc_id:
-            logger.info("Resume: reusing existing report doc %s", report_doc_id)
+            logger.info(
+                "Idempotency: reusing existing report doc %s (skipping re-upload)",
+                report_doc_id,
+            )
+            if pipeline and not pipeline.report_doc_id:
+                pipeline = transition(pipeline, UPLOADING_DOCS, report_doc_id=report_doc_id)
 
         # Steps 4-5: Notifications
         if pipeline:
             pipeline = transition(pipeline, NOTIFYING)
 
-        # Step 4: WhatsApp group notification
+        # Step 4: WhatsApp group notification — STRICT idempotency.
+        # Three guards prevent the same group from receiving the lecture link
+        # twice (the production bug from 2026-05-19):
+        #   (a) pipeline.group_notified — set if this run already sent.
+        #   (b) delivery["whatsapp_notification_sent_at"] — durable across
+        #       reset_failed() / retries, the cross-attempt guard.
+        #   (c) silent mode — admin reprocess that must not spam students.
+        whatsapp_already_sent_at = delivery.get("whatsapp_notification_sent_at") or (
+            (getattr(pipeline, "whatsapp_notification_sent_at", "") or "") if pipeline else ""
+        )
         if silent:
             logger.info("Silent mode: skipping WhatsApp group notification")
             if pipeline:
                 pipeline = transition(pipeline, NOTIFYING, group_notified=True)
+        elif whatsapp_already_sent_at:
+            logger.info(
+                "Idempotency: WhatsApp group notification already sent at %s — "
+                "NOT re-sending (prevents duplicate student messages)",
+                whatsapp_already_sent_at,
+            )
+            if pipeline and not pipeline.group_notified:
+                pipeline = transition(
+                    pipeline, NOTIFYING,
+                    group_notified=True,
+                    whatsapp_notification_sent_at=whatsapp_already_sent_at,
+                )
         elif pipeline and pipeline.group_notified:
-            logger.info("Resume: group already notified, skipping")
+            # State file says we notified but the timestamp is missing — likely
+            # an older run before this field existed.  Trust the boolean and
+            # backfill a timestamp so future retries are protected.
+            logger.info(
+                "Resume: group_notified=True but no timestamp — backfilling and skipping"
+            )
+            now = _now_iso()
+            record_delivery(
+                group_number, lecture_number,
+                whatsapp_notification_sent_at=now,
+            )
+            pipeline = transition(
+                pipeline, NOTIFYING, whatsapp_notification_sent_at=now,
+            )
         else:
             logger.info("Step 4: Notifying WhatsApp group...")
             recording_file_id = _find_recording_in_drive(group_number, lecture_number)
             _notify_group_whatsapp(group_number, lecture_number, recording_file_id, summary_doc_id)
+            now = _now_iso()
+            # Persist BEFORE updating in-memory pipeline so a crash between
+            # the WhatsApp send and the state write still leaves the durable
+            # record in place — the next retry will see whatsapp_notification_sent_at.
+            record_delivery(
+                group_number, lecture_number,
+                whatsapp_notification_sent_at=now,
+            )
             if pipeline:
-                pipeline = transition(pipeline, NOTIFYING, group_notified=True)
+                pipeline = transition(
+                    pipeline, NOTIFYING,
+                    group_notified=True,
+                    whatsapp_notification_sent_at=now,
+                )
 
-        # Step 5: Private report to Tornike
+        # Step 5: Private report to Tornike — same dual-guard pattern.
+        private_already_sent_at = delivery.get("private_report_sent_at") or (
+            (getattr(pipeline, "private_report_sent_at", "") or "") if pipeline else ""
+        )
         if silent:
             logger.info("Silent mode: skipping private report WhatsApp")
             if pipeline:
                 pipeline = transition(pipeline, NOTIFYING, private_notified=True)
+        elif private_already_sent_at:
+            logger.info(
+                "Idempotency: private report already sent at %s — NOT re-sending",
+                private_already_sent_at,
+            )
+            if pipeline and not pipeline.private_notified:
+                pipeline = transition(
+                    pipeline, NOTIFYING,
+                    private_notified=True,
+                    private_report_sent_at=private_already_sent_at,
+                )
         elif pipeline and pipeline.private_notified:
-            logger.info("Resume: private report already sent, skipping")
+            logger.info(
+                "Resume: private_notified=True but no timestamp — backfilling and skipping"
+            )
+            now = _now_iso()
+            record_delivery(
+                group_number, lecture_number,
+                private_report_sent_at=now,
+            )
+            pipeline = transition(
+                pipeline, NOTIFYING, private_report_sent_at=now,
+            )
         else:
             logger.info("Step 5: Sending private report link to Tornike...")
             _send_private_report_to_tornike(group_number, lecture_number, report_doc_id)
+            now = _now_iso()
+            record_delivery(
+                group_number, lecture_number,
+                private_report_sent_at=now,
+            )
             if pipeline:
-                pipeline = transition(pipeline, NOTIFYING, private_notified=True)
+                pipeline = transition(
+                    pipeline, NOTIFYING,
+                    private_notified=True,
+                    private_report_sent_at=now,
+                )
 
-        # Step 6: Pinecone indexing
+        # Step 6: Pinecone indexing — idempotent across retries via durable tracker.
         if pipeline:
             pipeline = transition(pipeline, INDEXING)
         index_counts: dict[str, int] = {}
-        if pipeline and pipeline.pinecone_indexed:
-            logger.info("Resume: Pinecone already indexed, skipping")
+        pinecone_done = (pipeline.pinecone_indexed if pipeline else False) or bool(
+            delivery.get("pinecone_indexed_at")
+        )
+        if pinecone_done:
+            logger.info(
+                "Idempotency: Pinecone already indexed (at %s) — skipping re-index",
+                delivery.get("pinecone_indexed_at", "<pipeline state>"),
+            )
+            if pipeline and not pipeline.pinecone_indexed:
+                pipeline = transition(pipeline, INDEXING, pinecone_indexed=True)
         else:
             logger.info("Step 6: Indexing into Pinecone...")
             for content_type in ("transcript", "summary", "gap_analysis", "deep_analysis"):
@@ -473,6 +606,9 @@ def transcribe_and_index(
                 index_counts[content_type] = count
                 if count:
                     logger.info("Indexed %d vectors for %s", count, content_type)
+            record_delivery(
+                group_number, lecture_number, pinecone_indexed_at=_now_iso(),
+            )
             if pipeline:
                 pipeline = transition(pipeline, INDEXING, pinecone_indexed=True)
 

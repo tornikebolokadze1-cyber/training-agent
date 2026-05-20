@@ -145,6 +145,12 @@ class PipelineState:
     group_notified: bool = False
     private_notified: bool = False
     pinecone_indexed: bool = False
+    # Idempotency timestamps (added 2026-05-20 to stop duplicate WhatsApp
+    # notifications after retries). Cross-attempt durable record lives in
+    # tools/core/delivery_tracker.py — these fields mirror it inside the
+    # in-pipeline state for fast skip-decisions.
+    whatsapp_notification_sent_at: str = ""
+    private_report_sent_at: str = ""
     error: str = ""
     retry_count: int = 0
     cost_estimate_usd: float = 0.0
@@ -264,6 +270,8 @@ def _deserialize(data: dict[str, Any]) -> PipelineState:
         group_notified=bool(data.get("group_notified", False)),
         private_notified=bool(data.get("private_notified", False)),
         pinecone_indexed=bool(data.get("pinecone_indexed", False)),
+        whatsapp_notification_sent_at=str(data.get("whatsapp_notification_sent_at", "")),
+        private_report_sent_at=str(data.get("private_report_sent_at", "")),
         error=str(data.get("error", "")),
         retry_count=int(data.get("retry_count", 0)),
         cost_estimate_usd=float(data.get("cost_estimate_usd", 0.0)),
