@@ -416,17 +416,17 @@ async def lecture_status(
             group_statuses.append(status)
         results[_group_label(group_num)] = group_statuses
 
-    # Try to enrich with Pinecone vector counts (non-fatal)
+    # Try to enrich with Qdrant vector counts (non-fatal)
     try:
-        pinecone_counts = await _get_pinecone_counts()
+        vector_counts = await _get_vector_counts()
         for lectures in results.values():
             for lec_status in lectures:
                 pc_key = (lec_status["group"], lec_status["lecture"])
-                if pc_key in pinecone_counts:
+                if pc_key in vector_counts:
                     lec_status["pinecone_indexed"] = True
-                    lec_status["pinecone_vectors"] = pinecone_counts[pc_key]
+                    lec_status["pinecone_vectors"] = vector_counts[pc_key]
     except Exception as exc:
-        logger.warning("Pinecone enrichment failed (non-fatal): %s", exc)
+        logger.warning("Qdrant enrichment failed (non-fatal): %s", exc)
 
     # Summary counts
     all_lectures: list[dict[str, Any]] = []
@@ -455,18 +455,18 @@ async def lecture_status(
     )
 
 
-async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
-    """Query Pinecone for vector counts per group+lecture.
+async def _get_vector_counts() -> dict[tuple[int, int], int]:
+    """Query Qdrant for vector counts per group+lecture.
 
     Returns dict mapping (group, lecture) -> vector count.
     Non-fatal: returns empty dict on any error.
+
+    Migrated from Pinecone to Qdrant on 2026-05-20.  Uses
+    ``knowledge_indexer.get_lecture_vector_count``, which now wraps
+    ``QdrantClient.count(collection, filter=...)`` under the hood.
     """
     counts: dict[tuple[int, int], int] = {}
 
-    # Use get_lecture_vector_count (ID-prefix scan) instead of
-    # index.query(vector=[0.0]*3072, filter=...) which returns 0 matches
-    # with cosine metric — making the admin dashboard falsely show all
-    # lectures as "missing".
     try:
         from tools.integrations.knowledge_indexer import get_lecture_vector_count
 
@@ -478,9 +478,19 @@ async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
                 if count:
                     counts[(group_num, lec)] = count
     except Exception as exc:
-        logger.warning("Pinecone count query failed: %s", exc)
+        logger.warning("Qdrant count query failed: %s", exc)
 
     return counts
+
+
+async def _get_pinecone_counts() -> dict[tuple[int, int], int]:
+    """Backward-compatible alias for ``_get_vector_counts``.
+
+    Kept so any in-flight code paths (tests, background tasks) that still
+    reference the old name continue to work. New code should call
+    ``_get_vector_counts`` directly.
+    """
+    return await _get_vector_counts()
 
 
 # ---------------------------------------------------------------------------
@@ -683,68 +693,113 @@ def _parse_lecture_key(key: str) -> tuple[int, int]:
         ) from exc
 
 
+def _reconstruct_from_qdrant(
+    client: Any,
+    group: int,
+    lecture: int,
+    content_type: str,
+) -> str:
+    """Fetch all chunks for a lecture+content_type from Qdrant and join them.
+
+    Scrolls points whose payload matches the (group, lecture, content_type)
+    filter, then concatenates the ``text`` field in ``chunk_index`` order
+    to reconstruct the full text.
+
+    Migrated from Pinecone to Qdrant on 2026-05-20.  The Pinecone version
+    relied on ``index.list(prefix=...)`` + ``index.fetch(ids=...)``; the
+    Qdrant equivalent is a single ``client.scroll(collection, filter=...)``
+    paginated loop, which is more efficient and avoids the two-call dance.
+
+    Args:
+        client: A live Qdrant client (as returned by
+            ``knowledge_indexer.get_qdrant_client``).  The historical name
+            ``idx`` is preserved at the alias below.
+        group: Group number (1, 2, 3, ...).
+        lecture: Lecture number (1-15).
+        content_type: One of 'transcript', 'summary', 'gap_analysis',
+            'deep_analysis'.
+
+    Returns:
+        Reconstructed full text, or empty string if no chunks found.
+    """
+    try:
+        from qdrant_client.http import models as qmodels
+    except ImportError:  # pragma: no cover — qdrant-client always ships http models
+        from qdrant_client import models as qmodels  # type: ignore[no-redef]
+
+    from tools.core.config import QDRANT_COLLECTION_NAME
+
+    flt = qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(
+                key="group_number",
+                match=qmodels.MatchValue(value=group),
+            ),
+            qmodels.FieldCondition(
+                key="lecture_number",
+                match=qmodels.MatchValue(value=lecture),
+            ),
+            qmodels.FieldCondition(
+                key="content_type",
+                match=qmodels.MatchValue(value=content_type),
+            ),
+        ]
+    )
+
+    chunks: list[tuple[int, str]] = []
+    offset: Any = None
+    page_size = 256
+
+    try:
+        while True:
+            points, offset = client.scroll(
+                collection_name=QDRANT_COLLECTION_NAME,
+                scroll_filter=flt,
+                limit=page_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for p in points or []:
+                payload = getattr(p, "payload", None) or {}
+                if isinstance(payload, dict):
+                    chunk_index = int(payload.get("chunk_index", 0) or 0)
+                    text = payload.get("text", "") or ""
+                    if text:
+                        chunks.append((chunk_index, text))
+            if offset is None:
+                break
+    except Exception as exc:
+        logger.warning(
+            "_reconstruct_from_qdrant: scroll() failed for g%d l%d %s: %s",
+            group, lecture, content_type, exc,
+        )
+        return ""
+
+    if not chunks:
+        logger.debug(
+            "No vectors found for g%d l%d %s", group, lecture, content_type
+        )
+        return ""
+
+    chunks.sort(key=lambda x: x[0])
+    return "\n".join(t for _, t in chunks if t)
+
+
 def _reconstruct_from_pinecone(
     idx: Any,
     group: int,
     lecture: int,
     content_type: str,
 ) -> str:
-    """Fetch all chunks for a lecture+content_type from Pinecone and join them.
+    """Backward-compatible alias for ``_reconstruct_from_qdrant``.
 
-    Args:
-        idx: A live Pinecone Index object.
-        group: Group number (1 or 2).
-        lecture: Lecture number (1-15).
-        content_type: One of 'transcript', 'summary', 'gap_analysis', 'deep_analysis'.
-
-    Returns:
-        Reconstructed full text, or empty string if no chunks found.
+    Kept so any in-flight code paths (tests, helper scripts) that still
+    reference the old name continue to work. ``idx`` is forwarded as the
+    Qdrant client — callers that already obtain ``get_pinecone_index()``
+    (which now returns a QdrantClient) work without changes.
     """
-    prefix = f"g{group}_l{lecture}_{content_type}_"
-    all_ids: list[str] = []
-    try:
-        for page in idx.list(prefix=prefix, limit=1000):
-            if isinstance(page, dict):
-                all_ids.extend(page.get("vectors", []))
-            elif isinstance(page, list):
-                all_ids.extend(page)
-            else:
-                # Some SDK versions yield individual ID strings
-                all_ids.append(str(page))
-    except Exception as exc:
-        logger.warning(
-            "_reconstruct_from_pinecone: list() failed for %s: %s", prefix, exc
-        )
-        return ""
-
-    if not all_ids:
-        logger.debug("No vectors found for prefix '%s'", prefix)
-        return ""
-
-    try:
-        fetched = idx.fetch(ids=all_ids)
-        raw_vectors = (
-            fetched.get("vectors", {}) if isinstance(fetched, dict)
-            else getattr(fetched, "vectors", {})
-        )
-    except Exception as exc:
-        logger.warning(
-            "_reconstruct_from_pinecone: fetch() failed for %s: %s", prefix, exc
-        )
-        return ""
-
-    chunks: list[tuple[int, str]] = []
-    for _vid, vec in raw_vectors.items():
-        meta = (
-            vec.get("metadata", {}) if isinstance(vec, dict)
-            else getattr(vec, "metadata", {})
-        )
-        chunk_index = meta.get("chunk_index", 0)
-        text = meta.get("text", "")
-        chunks.append((chunk_index, text))
-
-    chunks.sort(key=lambda x: x[0])
-    return "\n".join(t for _, t in chunks if t)
+    return _reconstruct_from_qdrant(idx, group, lecture, content_type)
 
 
 def _read_lecture_context_from_drive(group: int, lecture: int) -> tuple[str, str]:
@@ -1046,9 +1101,9 @@ def _run_backfill_sync(
     try:
         idx = get_pinecone_index()
     except Exception as exc:
-        logger.error("[backfill] Cannot connect to Pinecone: %s", exc)
+        logger.error("[backfill] Cannot connect to Qdrant: %s", exc)
         return {
-            "results": [{"status": "FATAL", "reason": f"Pinecone unavailable: {exc}"}],
+            "results": [{"status": "FATAL", "reason": f"Qdrant unavailable: {exc}"}],
             "ok": 0,
             "skipped": 0,
             "failed": 1,
@@ -1074,14 +1129,14 @@ def _run_backfill_sync(
             skip_count += 1
             continue
 
-        # Try Pinecone first (works for lectures with text metadata)
-        transcript = _reconstruct_from_pinecone(idx, group, lecture, "transcript")
+        # Try Qdrant first (works for lectures with text payload)
+        transcript = _reconstruct_from_qdrant(idx, group, lecture, "transcript")
 
         # If transcript unavailable, fall back to Drive-based context
         use_drive_context = False
         if not transcript or len(transcript) < 500:
             logger.info(
-                "[backfill] %s: transcript unavailable in Pinecone (%d chars), "
+                "[backfill] %s: transcript unavailable in Qdrant (%d chars), "
                 "trying Drive context...",
                 key, len(transcript),
             )
@@ -1098,7 +1153,7 @@ def _run_backfill_sync(
                     key, len(summary_text), len(gap_text), len(transcript),
                 )
             else:
-                reason = "Neither Pinecone transcript nor Drive context available"
+                reason = "Neither Qdrant transcript nor Drive context available"
                 logger.warning("[backfill] %s: %s", key, reason)
                 results.append({"lecture": key, "status": "SKIP", "reason": reason})
                 skip_count += 1
@@ -1138,7 +1193,7 @@ def _run_backfill_sync(
             # Fetch existing gap analysis for the private Drive report.
             # When Drive context was used, the gap text was already read from
             # Drive; extract it from the combined transcript string to avoid a
-            # redundant API call.  For Pinecone-sourced lectures, query Pinecone.
+            # redundant API call.  For Qdrant-sourced lectures, query Qdrant.
             if use_drive_context:
                 # Extract gap portion from the Drive context we built earlier.
                 # Format: "[შეჯამება]\n<summary>\n\n[ხარვეზების ანალიზი]\n<gap>"
@@ -1150,7 +1205,7 @@ def _run_backfill_sync(
                     else ""
                 )
             else:
-                gap_text_existing = _reconstruct_from_pinecone(
+                gap_text_existing = _reconstruct_from_qdrant(
                     idx, group, lecture, "gap_analysis"
                 )
 
@@ -1167,7 +1222,7 @@ def _run_backfill_sync(
                     "[backfill] %s: Drive upload failed (non-fatal): %s", key, drive_exc
                 )
 
-            # Index in Pinecone (force=True to overwrite any partial stale vectors)
+            # Index in Qdrant (force=True to overwrite any partial stale vectors)
             vec_count = index_lecture_content(
                 group_number=group,
                 lecture_number=lecture,
@@ -1212,11 +1267,11 @@ def _run_backfill_sync(
 
         logger.info("[backfill] full-reprocess: %s", key)
 
-        # Reconstruct transcript from Pinecone
-        transcript = _reconstruct_from_pinecone(idx, group, lecture, "transcript")
+        # Reconstruct transcript from Qdrant
+        transcript = _reconstruct_from_qdrant(idx, group, lecture, "transcript")
         if not transcript or len(transcript) < 500:
             reason = (
-                "transcript too short or missing in Pinecone "
+                "transcript too short or missing in Qdrant "
                 f"({len(transcript)} chars)"
             )
             logger.warning("[backfill] %s: %s", key, reason)
