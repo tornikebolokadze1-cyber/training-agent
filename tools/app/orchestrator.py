@@ -98,6 +98,51 @@ def validate_credentials() -> None:
     logger.info("All required credentials validated successfully.")
 
 
+def check_persistent_volume() -> None:
+    """Warn loudly if ``/app/.tmp`` is not a mounted Railway volume.
+
+    Without a persistent volume the pipeline state file is wiped on every
+    Railway redeploy, which is what caused every May lecture to need
+    manual recovery (audit I, 2026-05-21). The fix is dashboard-only —
+    Railway → Service → Settings → Volumes → mount at ``/app/.tmp``.
+
+    Until that is configured, log a CRITICAL warning on every startup so
+    the operator sees the gap in normal log scans. On Windows/local this
+    check is a no-op.
+    """
+    import os
+    from pathlib import Path
+
+    if not IS_RAILWAY:
+        return
+
+    mountinfo = Path("/proc/self/mountinfo")
+    if not mountinfo.exists():
+        return  # not Linux — skip silently
+
+    try:
+        entries = mountinfo.read_text().splitlines()
+    except OSError:
+        return
+
+    tmp_path = "/app/.tmp"
+    is_volume = any(
+        f" {tmp_path} " in line or f" {tmp_path}/" in line.split(" - ", 1)[0]
+        for line in entries
+    )
+    if not is_volume:
+        logger.critical(
+            "PERSISTENT VOLUME MISSING — /app/.tmp is ephemeral on this container. "
+            "Pipeline state, retry tracker, delivery tracker, and cost ledger will "
+            "all be wiped on the next redeploy. Configure a volume mount in the "
+            "Railway dashboard (Service → Settings → Volumes, mount path /app/.tmp, "
+            "size 1 GB). This is the root cause of every May-lecture manual "
+            "recovery — see PIPELINE_AUTOTRIGGER_RCA_2026_05_21.md."
+        )
+    else:
+        logger.info("Persistent volume detected at %s — pipeline state survives redeploys.", tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Dedicated thread pool for pipeline work
 # ---------------------------------------------------------------------------
@@ -1118,6 +1163,8 @@ def start() -> None:
     except OSError as exc:
         logger.critical("%s", exc)
         sys.exit(1)
+
+    check_persistent_volume()
 
     # Initialize SQLite schema synchronously — local I/O, fast and safe.
     # Heavier startup work (Pinecone sync, .tmp backfill) is deferred into
