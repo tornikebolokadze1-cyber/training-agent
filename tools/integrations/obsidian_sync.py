@@ -401,26 +401,25 @@ def _validate_entities(data: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def extract_from_pinecone(
+def extract_from_qdrant(
     group_number: int,
     lecture_number: int,
 ) -> dict[str, str]:
-    """Extract all content types for a lecture from Pinecone.
+    """Extract all content types for a lecture from Qdrant.
 
     Returns:
         Dict mapping content_type -> full_text.
     """
-    from tools.integrations.knowledge_indexer import get_pinecone_index
+    from tools.integrations.qdrant_client import (
+        fetch_by_legacy_ids,
+        list_legacy_ids_with_prefix,
+    )
 
-    idx = get_pinecone_index()
     results: dict[str, str] = {}
 
     for ctype in CONTENT_TYPES:
         prefix = f"g{group_number}_l{lecture_number}_{ctype}_"
-        ids: list[str] = []
-
-        for page in idx.list(prefix=prefix, limit=100):
-            ids.extend(page)
+        ids = list_legacy_ids_with_prefix(prefix)
 
         if not ids:
             logger.debug("No vectors for %s", prefix)
@@ -430,10 +429,10 @@ def extract_from_pinecone(
         all_chunks: list[tuple[int, str]] = []
         for i in range(0, len(ids), 100):
             batch = ids[i : i + 100]
-            fetched = idx.fetch(ids=batch)
-            for v in fetched.vectors.values():
-                chunk_idx = v.metadata.get("chunk_index", 0)
-                text = v.metadata.get("text", "")
+            payloads = fetch_by_legacy_ids(batch)
+            for _, meta in payloads.items():
+                chunk_idx = meta.get("chunk_index", 0)
+                text = meta.get("text", "")
                 all_chunks.append((chunk_idx, text))
 
         all_chunks.sort(key=lambda x: x[0])
@@ -465,6 +464,16 @@ def extract_from_pinecone(
         )
 
     return results
+
+
+# Backward-compatibility alias — old name still imported by other modules
+# and external tooling. The implementation is now Qdrant-backed.
+def extract_from_pinecone(
+    group_number: int,
+    lecture_number: int,
+) -> dict[str, str]:
+    """Deprecated alias for ``extract_from_qdrant``."""
+    return extract_from_qdrant(group_number, lecture_number)
 
 
 # ---------------------------------------------------------------------------
@@ -1329,10 +1338,10 @@ def sync_lecture(
 
     _ensure_vault_dirs()
 
-    # Step 1: Extract from Pinecone
-    content = extract_from_pinecone(group_number, lecture_number)
+    # Step 1: Extract from Qdrant (was Pinecone before 2026-05-20 migration)
+    content = extract_from_qdrant(group_number, lecture_number)
     if not content:
-        logger.warning("No content found in Pinecone for G%d L%d", group_number, lecture_number)
+        logger.warning("No content found in Qdrant for G%d L%d", group_number, lecture_number)
         return {"concepts": 0, "relationships": 0, "files_updated": 0}
 
     # Step 2: Entity extraction
@@ -1490,10 +1499,8 @@ def sync_full(*, force: bool = False) -> dict[str, int]:
     }
     _save_sync_checkpoint(checkpoint)
 
-    # Discover which lectures exist in Pinecone
-    from tools.integrations.knowledge_indexer import get_pinecone_index
-
-    idx = get_pinecone_index()
+    # Discover which lectures exist in Qdrant (was Pinecone before 2026-05-20)
+    from tools.integrations.qdrant_client import list_legacy_ids_with_prefix
 
     # Check all possible lectures across every configured group.
     # Iterates GROUPS dynamically so new cohorts are picked up automatically.
@@ -1501,21 +1508,20 @@ def sync_full(*, force: bool = False) -> dict[str, int]:
     group_nums = sorted(GROUPS.keys()) if GROUPS else [1, 2]
     for g in group_nums:
         for lec in range(1, 16):
-            prefix = f"g{g}_l{lec}_summary_"
-            ids = []
-            for page in idx.list(prefix=prefix, limit=1):
-                ids.extend(page)
-            if ids:
+            summary_ids = list_legacy_ids_with_prefix(
+                f"g{g}_l{lec}_summary_", max_results=1
+            )
+            if summary_ids:
                 existing_lectures.append((g, lec))
             else:
                 # Also check transcript
-                prefix = f"g{g}_l{lec}_transcript_"
-                for page in idx.list(prefix=prefix, limit=1):
-                    ids.extend(page)
-                if ids:
+                transcript_ids = list_legacy_ids_with_prefix(
+                    f"g{g}_l{lec}_transcript_", max_results=1
+                )
+                if transcript_ids:
                     existing_lectures.append((g, lec))
 
-    logger.info("Found %d lectures in Pinecone: %s", len(existing_lectures), existing_lectures)
+    logger.info("Found %d lectures in Qdrant: %s", len(existing_lectures), existing_lectures)
 
     for g, lec in existing_lectures:
         key = _lecture_key(g, lec)

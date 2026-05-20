@@ -29,8 +29,11 @@ from tools.core.config import (
     GREEN_API_INSTANCE_ID,
     GREEN_API_TOKEN,
     GROUPS,
-    PINECONE_API_KEY,
-    PINECONE_INDEX_NAME,
+    PINECONE_API_KEY,  # noqa: F401 — kept for backward compatibility with test fixtures
+    PINECONE_INDEX_NAME,  # noqa: F401
+    QDRANT_API_KEY,
+    QDRANT_COLLECTION_NAME,  # noqa: F401 — re-exported for tests to patch
+    QDRANT_URL,
     TBILISI_TZ,
     TMP_DIR,
     TOTAL_LECTURES,
@@ -417,43 +420,85 @@ def check_whatsapp() -> CheckResult:
         )
 
 
-def check_pinecone() -> CheckResult:
-    """Check Pinecone vector DB connectivity via index stats."""
-    if not PINECONE_API_KEY:
+def check_qdrant() -> CheckResult:
+    """Check Qdrant Cloud vector DB connectivity.
+
+    Pings the cluster by listing collections (cheap, no per-point cost)
+    and reports the point count for the configured collection.
+    """
+    if not QDRANT_URL or not QDRANT_API_KEY:
         return CheckResult(
-            name="pinecone",
+            name="qdrant",
             severity=Severity.WARNING,
-            message="PINECONE_API_KEY not configured.",
+            message="QDRANT_URL / QDRANT_API_KEY not configured.",
         )
 
     try:
-        from pinecone import Pinecone
+        from tools.integrations.qdrant_client import check_collection_health
 
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        index = pc.Index(PINECONE_INDEX_NAME)
-        stats = index.describe_index_stats()
-        total_vectors = stats.get("total_vector_count", 0)
-        clear_api_error("pinecone")
+        report = check_collection_health()
+
+        if not report.reachable:
+            record_api_error("qdrant")
+            duration = get_api_error_duration_minutes("qdrant")
+            severity = (
+                Severity.CRITICAL
+                if duration > API_ERROR_WARNING_MINUTES
+                else Severity.WARNING
+            )
+            return CheckResult(
+                name="qdrant",
+                severity=severity,
+                message=f"Qdrant unreachable: {report.error}",
+                details={"failing_for_minutes": round(duration, 1)},
+            )
+
+        # Reachable but the collection may not exist yet — that's WARNING, not OK.
+        if report.error:
+            return CheckResult(
+                name="qdrant",
+                severity=Severity.WARNING,
+                message=f"Qdrant reachable but: {report.error}",
+                details={"collection": report.collection_name},
+            )
+
+        clear_api_error("qdrant")
         return CheckResult(
-            name="pinecone",
+            name="qdrant",
             severity=Severity.OK,
-            message=f"Pinecone online — {total_vectors} vectors indexed.",
-            details={"total_vectors": total_vectors},
+            message=(
+                f"Qdrant online — collection '{report.collection_name}' "
+                f"has {report.points_count} points."
+            ),
+            details={
+                "total_vectors": report.points_count,
+                "collection": report.collection_name,
+            },
         )
     except Exception as exc:
-        record_api_error("pinecone")
-        duration = get_api_error_duration_minutes("pinecone")
+        record_api_error("qdrant")
+        duration = get_api_error_duration_minutes("qdrant")
         severity = (
             Severity.CRITICAL
             if duration > API_ERROR_WARNING_MINUTES
             else Severity.WARNING
         )
         return CheckResult(
-            name="pinecone",
+            name="qdrant",
             severity=severity,
-            message=f"Pinecone error: {exc}",
+            message=f"Qdrant error: {exc}",
             details={"failing_for_minutes": round(duration, 1)},
         )
+
+
+# Backward-compatibility alias — the old name is still referenced by external
+# callers (scheduler, daily reports) and by historical test patches. The alias
+# returns the same Qdrant-based result but keeps the legacy ``name="pinecone"``
+# in the CheckResult so downstream report formatters that match on ``name``
+# don't suddenly miss the row.
+def check_pinecone() -> CheckResult:
+    """Deprecated alias for ``check_qdrant``. Returns a result with name='qdrant'."""
+    return check_qdrant()
 
 
 def check_disk_space() -> CheckResult:
@@ -720,15 +765,18 @@ def check_pipeline_state_drift() -> CheckResult:
         )
 
 
-def check_pinecone_scores_consistency() -> CheckResult:
-    """Detect drift between the scores DB and Pinecone vector index.
+def check_qdrant_scores_consistency() -> CheckResult:
+    """Detect drift between the scores DB and the Qdrant vector index.
 
     Iterates every (group, lecture) scored in ``data/scores.db`` and
-    verifies that Pinecone contains vectors for it. Any lecture present
-    in the scores DB but missing from Pinecone is a symptom of the
+    verifies that Qdrant contains vectors for it. Any lecture present
+    in the scores DB but missing from Qdrant is a symptom of the
     false-retry bug that previously burned $25-35 of compute.
     """
     try:
+        # knowledge_indexer keeps ``lecture_exists_in_index`` as its public
+        # API after the Qdrant migration — Agent X1's PR is the source of
+        # truth for that wrapper.
         from tools.integrations.knowledge_indexer import lecture_exists_in_index
 
         missing: list[str] = []
@@ -750,26 +798,34 @@ def check_pinecone_scores_consistency() -> CheckResult:
 
         if missing:
             return CheckResult(
-                name="pinecone_scores_consistency",
+                name="qdrant_scores_consistency",
                 severity=Severity.WARNING,
                 message=(
                     f"{len(missing)} lecture(s) in scores DB missing from "
-                    f"Pinecone: {', '.join(missing)}"
+                    f"Qdrant: {', '.join(missing)}"
                 ),
                 details={"missing": missing},
             )
         return CheckResult(
-            name="pinecone_scores_consistency",
+            name="qdrant_scores_consistency",
             severity=Severity.OK,
-            message=f"Pinecone and scores DB consistent ({len(rows)} lectures).",
+            message=f"Qdrant and scores DB consistent ({len(rows)} lectures).",
             details={"checked": len(rows)},
         )
     except Exception as exc:
         return CheckResult(
-            name="pinecone_scores_consistency",
+            name="qdrant_scores_consistency",
             severity=Severity.WARNING,
-            message=f"Cannot check Pinecone/scores consistency: {exc}",
+            message=f"Cannot check Qdrant/scores consistency: {exc}",
         )
+
+
+# Backward-compatibility alias — the old name is still imported by
+# ``tools.tests.test_health_monitor_new_checks`` and by external alert
+# formatters that match on the check name. The alias just forwards.
+def check_pinecone_scores_consistency() -> CheckResult:
+    """Deprecated alias for ``check_qdrant_scores_consistency``."""
+    return check_qdrant_scores_consistency()
 
 
 # ---------------------------------------------------------------------------
@@ -827,7 +883,7 @@ def check_all() -> dict[str, Any]:
     checks = [
         check_disk_space(),
         check_whatsapp(),
-        check_pinecone(),
+        check_qdrant(),
         check_pending_lectures(),
         check_stuck_pipelines(),
     ]
@@ -845,7 +901,7 @@ def check_all() -> dict[str, Any]:
     checks.append(check_google_token())
     checks.append(check_oauth_token_lifetime())
     checks.append(check_pipeline_state_drift())
-    checks.append(check_pinecone_scores_consistency())
+    checks.append(check_qdrant_scores_consistency())
 
     warnings = sum(1 for c in checks if c.severity == Severity.WARNING)
     criticals = sum(1 for c in checks if c.severity == Severity.CRITICAL)

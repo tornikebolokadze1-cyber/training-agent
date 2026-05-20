@@ -286,7 +286,7 @@ def test_resume_from_checkpoint(
     )
 
     # Build a list of (g, lec) the discovery loop will produce.
-    # We directly stub sync_lecture so no real Gemini/Pinecone work happens.
+    # We directly stub sync_lecture so no real Gemini/Qdrant work happens.
     sync_calls: list[tuple[int, int]] = []
 
     def _fake_sync_lecture(g: int, lec: int, *, force: bool = False) -> dict[str, int]:
@@ -295,23 +295,18 @@ def test_resume_from_checkpoint(
 
     monkeypatch.setattr(obsidian_sync, "sync_lecture", _fake_sync_lecture)
 
-    # Stub knowledge_indexer.get_pinecone_index used inside sync_full.
-    import types
-
-    fake_ki = types.ModuleType("tools.integrations.knowledge_indexer")
-    fake_ki.get_pinecone_index = lambda: fake_idx  # type: ignore[attr-defined]
-    monkeypatch.setitem(__import__("sys").modules,
-                        "tools.integrations.knowledge_indexer", fake_ki)
-
-    # Make extract_entities range tiny via patching range inside sync_full's frame
-    # is fragile; instead, rely on fake_idx returning empty for lec >= 4.
-    def _fake_list_bounded(prefix: str, limit: int):
-        # Match l1, l2, l3 only.
+    # After the 2026-05-20 Qdrant migration sync_full discovers lectures by
+    # calling list_legacy_ids_with_prefix instead of get_pinecone_index().list().
+    # Stub that function so only g1_l1, g1_l2, g1_l3 appear to exist.
+    def _fake_list_ids(prefix: str, *, max_results: int | None = None) -> list[str]:
         if any(f"_l{n}_" in prefix for n in (1, 2, 3)) and "_summary_" in prefix:
-            return iter([["fake_id"]])
-        return iter([[]])
+            return ["fake_id"]
+        return []
 
-    fake_idx.list.side_effect = _fake_list_bounded
+    monkeypatch.setattr(
+        "tools.integrations.qdrant_client.list_legacy_ids_with_prefix",
+        _fake_list_ids,
+    )
 
     result = obsidian_sync.sync_full()
 
@@ -339,15 +334,6 @@ def test_force_clears_checkpoint(
         }
     )
 
-    fake_idx = MagicMock()
-
-    def _fake_list(prefix: str, limit: int):
-        if "_l1_summary_" in prefix:
-            return iter([["fake_id"]])
-        return iter([[]])
-
-    fake_idx.list.side_effect = _fake_list
-
     monkeypatch.setattr(obsidian_sync, "GROUPS", {1: {"name": "G1", "whatsapp_chat_id": ""}})
 
     sync_calls: list[tuple[int, int]] = []
@@ -359,12 +345,17 @@ def test_force_clears_checkpoint(
 
     monkeypatch.setattr(obsidian_sync, "sync_lecture", _fake_sync_lecture)
 
-    import sys as _sys
-    import types as _types
+    # After the 2026-05-20 Qdrant migration sync_full discovers lectures via
+    # list_legacy_ids_with_prefix — return one hit for g1_l1 only.
+    def _fake_list_ids(prefix: str, *, max_results: int | None = None) -> list[str]:
+        if "_l1_summary_" in prefix:
+            return ["fake_id"]
+        return []
 
-    fake_ki = _types.ModuleType("tools.integrations.knowledge_indexer")
-    fake_ki.get_pinecone_index = lambda: fake_idx  # type: ignore[attr-defined]
-    monkeypatch.setitem(_sys.modules, "tools.integrations.knowledge_indexer", fake_ki)
+    monkeypatch.setattr(
+        "tools.integrations.qdrant_client.list_legacy_ids_with_prefix",
+        _fake_list_ids,
+    )
 
     obsidian_sync.sync_full(force=True)
     # Even though g1_l1 was in the checkpoint, force=True must re-sync it.

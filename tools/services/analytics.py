@@ -372,10 +372,10 @@ def save_scores_from_analysis(
     )
     # Also extract and persist qualitative insights
     extract_and_save_insights(group_number, lecture_number, deep_analysis_text)
-    # Backup to Pinecone for Railway persistence (background, non-blocking)
+    # Backup to Qdrant for Railway persistence (background, non-blocking)
     import threading
     threading.Thread(
-        target=_safe_backup_to_pinecone, daemon=True, name="pinecone-backup"
+        target=_safe_backup_to_qdrant, daemon=True, name="qdrant-backup"
     ).start()
     return True
 
@@ -1262,24 +1262,25 @@ def backfill_from_tmp() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Pinecone sync — reconstruct scores from persistent vector DB
+# Qdrant sync — reconstruct scores from persistent vector DB
+# (formerly Pinecone, migrated 2026-05-20)
 # ---------------------------------------------------------------------------
 
 _last_sync_time: float = 0.0
 _SYNC_COOLDOWN = 300  # 5 minutes between syncs
 
 
-def sync_from_pinecone(force: bool = False) -> dict[str, int]:
-    """Sync lecture scores from Pinecone deep_analysis vectors.
+def sync_from_qdrant(force: bool = False) -> dict[str, int]:
+    """Sync lecture scores from Qdrant deep_analysis vectors.
 
-    Pinecone is the persistent source of truth (Railway DB is ephemeral).
+    Qdrant is the persistent source of truth (Railway DB is ephemeral).
     This function:
-    1. Lists all g{N}_l{N}_deep_analysis_ prefixes in Pinecone
+    1. Lists all g{N}_l{N}_deep_analysis_ prefixes in Qdrant
     2. Checks which lectures are missing from local DB
-    3. Reconstructs deep_analysis text from vector chunks
+    3. Reconstructs deep_analysis text from vector payloads
     4. Extracts scores and saves to local DB
 
-    Uses a 5-minute cooldown to avoid hammering Pinecone on every request.
+    Uses a 5-minute cooldown to avoid hammering Qdrant on every request.
     Pass force=True to bypass the cooldown.
 
     Returns:
@@ -1295,15 +1296,12 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
     _last_sync_time = now
 
     try:
-        from tools.integrations.knowledge_indexer import get_pinecone_index
+        from tools.integrations.qdrant_client import (
+            fetch_by_legacy_ids,
+            list_legacy_ids_with_prefix,
+        )
     except ImportError:
-        logger.warning("sync_from_pinecone: knowledge_indexer not available")
-        return {"synced": 0, "skipped": 0, "failed": 0}
-
-    try:
-        idx = get_pinecone_index()
-    except Exception as e:
-        logger.warning("sync_from_pinecone: cannot connect to Pinecone: %s", e)
+        logger.warning("sync_from_qdrant: qdrant_client not available")
         return {"synced": 0, "skipped": 0, "failed": 0}
 
     synced = failed = skipped = 0
@@ -1321,28 +1319,25 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                 skipped += 1
                 continue
 
-            # Check if deep_analysis exists in Pinecone
+            # Check if deep_analysis exists in Qdrant
             prefix = f"g{group}_l{lecture}_deep_analysis_"
             try:
-                all_ids: list[str] = []
-                for page in idx.list(prefix=prefix, limit=99):
-                    all_ids.extend(page)
+                all_ids = list_legacy_ids_with_prefix(prefix)
             except Exception as e:
-                logger.warning("sync: Pinecone list error for %s: %s", prefix, e)
+                logger.warning("sync: Qdrant list error for %s: %s", prefix, e)
                 continue
 
             if not all_ids:
                 # Fallback: try score backup vector
-                if _restore_from_score_backup(idx, group, lecture):
+                if _restore_from_score_backup(group, lecture):
                     synced += 1
                 continue
 
             # Fetch chunks and reconstruct text
             try:
-                fetched = idx.fetch(ids=all_ids)
+                payloads = fetch_by_legacy_ids(all_ids)
                 chunks: list[tuple[int, str]] = []
-                for vid, vec in fetched.vectors.items():
-                    meta = vec.metadata
+                for _, meta in payloads.items():
                     chunk_idx = meta.get("chunk_index", 0)
                     text = meta.get("text", "")
                     chunks.append((chunk_idx, text))
@@ -1355,7 +1350,7 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                         "sync: reconstructed text too short (%d chars) for G%dL%d",
                         len(full_text), group, lecture,
                     )
-                    if _restore_from_score_backup(idx, group, lecture):
+                    if _restore_from_score_backup(group, lecture):
                         synced += 1
                     else:
                         failed += 1
@@ -1365,19 +1360,19 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
                 if save_scores_from_analysis(group, lecture, full_text):
                     synced += 1
                     logger.info(
-                        "sync: synced G%dL%d from Pinecone (%d chunks, %d chars)",
+                        "sync: synced G%dL%d from Qdrant (%d chunks, %d chars)",
                         group, lecture, len(chunks), len(full_text),
                     )
                 else:
                     logger.warning("sync: score extraction failed for G%dL%d", group, lecture)
-                    if _restore_from_score_backup(idx, group, lecture):
+                    if _restore_from_score_backup(group, lecture):
                         synced += 1
                     else:
                         failed += 1
 
             except Exception as e:
                 logger.warning("sync: fetch/reconstruct error for G%dL%d: %s", group, lecture, e)
-                if _restore_from_score_backup(idx, group, lecture):
+                if _restore_from_score_backup(group, lecture):
                     synced += 1
                 else:
                     failed += 1
@@ -1431,49 +1426,65 @@ def sync_from_pinecone(force: bool = False) -> dict[str, int]:
             logger.warning("sync: failed to seed G1L1: %s", e)
 
     if synced:
-        logger.info("Pinecone sync complete: synced=%d skipped=%d failed=%d", synced, skipped, failed)
+        logger.info("Qdrant sync complete: synced=%d skipped=%d failed=%d", synced, skipped, failed)
 
     return {"synced": synced, "skipped": skipped, "failed": failed}
 
 
+# Backward-compatibility alias — external callers (admin endpoints,
+# legacy tests) still import the old name.
+def sync_from_pinecone(force: bool = False) -> dict[str, int]:
+    """Deprecated alias for ``sync_from_qdrant``."""
+    return sync_from_qdrant(force=force)
+
+
 # ---------------------------------------------------------------------------
-# Pinecone score backup — persist scores as vectors for Railway recovery
+# Qdrant score backup — persist scores as vectors for Railway recovery
+# (formerly Pinecone, migrated 2026-05-20)
 # ---------------------------------------------------------------------------
 
 _SCORES_BACKUP_PREFIX = "scores_backup_g{group}_l{lecture}"
 
 
-def _safe_backup_to_pinecone() -> None:
-    """Thread-safe wrapper for backup_scores_to_pinecone (fire-and-forget)."""
+def _safe_backup_to_qdrant() -> None:
+    """Thread-safe wrapper for backup_scores_to_qdrant (fire-and-forget)."""
     try:
-        backup_scores_to_pinecone()
+        backup_scores_to_qdrant()
     except Exception as e:
-        logger.warning("Background Pinecone backup failed (non-fatal): %s", e)
+        logger.warning("Background Qdrant backup failed (non-fatal): %s", e)
 
 
-def backup_scores_to_pinecone() -> dict[str, int]:
-    """Backup all local lecture scores + insights to Pinecone as dedicated vectors.
+# Backward-compat alias for the wrapper.
+def _safe_backup_to_pinecone() -> None:
+    """Deprecated alias for ``_safe_backup_to_qdrant``."""
+    _safe_backup_to_qdrant()
 
-    Each lecture gets one vector with scores/insights stored as metadata.
+
+def backup_scores_to_qdrant() -> dict[str, int]:
+    """Backup all local lecture scores + insights to Qdrant as dedicated points.
+
+    Each lecture gets one point with scores/insights stored in the payload.
     This ensures Railway can recover scores even when deep_analysis text
-    was never indexed (e.g. lectures processed before Pinecone integration).
+    was never indexed (e.g. lectures processed before vector-DB integration).
 
     Returns:
         {"backed_up": N, "skipped": M, "failed": K}
     """
     try:
-        from tools.integrations.knowledge_indexer import (
-            embed_text,
-            get_pinecone_index,
+        from tools.integrations.knowledge_indexer import embed_text
+        from tools.integrations.qdrant_client import (
+            ensure_collection_exists,
+            fetch_by_legacy_ids,
+            upsert_points,
         )
     except ImportError:
-        logger.warning("backup_scores: knowledge_indexer not available")
+        logger.warning("backup_scores: qdrant_client / knowledge_indexer not available")
         return {"backed_up": 0, "skipped": 0, "failed": 0}
 
     try:
-        idx = get_pinecone_index()
+        ensure_collection_exists()
     except Exception as e:
-        logger.warning("backup_scores: cannot connect to Pinecone: %s", e)
+        logger.warning("backup_scores: cannot connect to Qdrant: %s", e)
         return {"backed_up": 0, "skipped": 0, "failed": 0}
 
     all_scores = get_all_scores()
@@ -1491,10 +1502,10 @@ def backup_scores_to_pinecone() -> dict[str, int]:
 
         # Check if backup exists and is up-to-date
         try:
-            existing = idx.fetch(ids=[vector_id])
-            vec_data = existing.vectors.get(vector_id)
-            if vec_data:
-                old_composite = vec_data.metadata.get("composite", 0)
+            existing = fetch_by_legacy_ids([vector_id])
+            payload = existing.get(vector_id)
+            if payload:
+                old_composite = payload.get("composite", 0)
                 new_composite = score_row.get("composite", 0)
                 if abs(old_composite - new_composite) < 0.01:
                     skipped += 1
@@ -1503,8 +1514,8 @@ def backup_scores_to_pinecone() -> dict[str, int]:
         except Exception:
             pass  # proceed to upsert
 
-        # Build metadata with scores
-        metadata: dict = {
+        # Build payload with scores
+        payload: dict = {
             "type": "scores_backup",
             "group_number": g,
             "lecture_number": lec,
@@ -1520,25 +1531,25 @@ def backup_scores_to_pinecone() -> dict[str, int]:
         # Add insights if available
         ins = all_insights.get((g, lec))
         if ins:
-            metadata["strengths_count"] = ins.get("strengths_count", 0)
-            metadata["weaknesses_count"] = ins.get("weaknesses_count", 0)
-            metadata["gaps_count"] = ins.get("gaps_count", 0)
-            metadata["top_strength"] = (ins.get("top_strength") or "")[:450]
-            metadata["top_weakness"] = (ins.get("top_weakness") or "")[:450]
-            metadata["key_recommendation"] = (ins.get("key_recommendation") or "")[:450]
+            payload["strengths_count"] = ins.get("strengths_count", 0)
+            payload["weaknesses_count"] = ins.get("weaknesses_count", 0)
+            payload["gaps_count"] = ins.get("gaps_count", 0)
+            payload["top_strength"] = (ins.get("top_strength") or "")[:450]
+            payload["top_weakness"] = (ins.get("top_weakness") or "")[:450]
+            payload["key_recommendation"] = (ins.get("key_recommendation") or "")[:450]
 
         try:
             # Embed a summary text to create the required vector
             summary = (
                 f"Lecture scores backup Group {g} Lecture {lec}: "
-                f"composite={metadata['composite']}"
+                f"composite={payload['composite']}"
             )
             vector = embed_text(summary)
-            idx.upsert(vectors=[(vector_id, vector, metadata)])
+            upsert_points([(vector_id, vector, payload)])
             backed_up += 1
             logger.info(
                 "backup_scores: backed up G%dL%d (composite=%.1f)",
-                g, lec, metadata["composite"],
+                g, lec, payload["composite"],
             )
         except Exception as e:
             logger.warning("backup_scores: failed for G%dL%d: %s", g, lec, e)
@@ -1551,21 +1562,29 @@ def backup_scores_to_pinecone() -> dict[str, int]:
     return {"backed_up": backed_up, "skipped": skipped, "failed": failed}
 
 
-def _restore_from_score_backup(
-    idx: object, group: int, lecture: int,
-) -> bool:
-    """Try to restore a lecture's scores from Pinecone backup vector.
+# Backward-compatibility alias — old name still imported by other modules.
+def backup_scores_to_pinecone() -> dict[str, int]:
+    """Deprecated alias for ``backup_scores_to_qdrant``."""
+    return backup_scores_to_qdrant()
+
+
+def _restore_from_score_backup(group: int, lecture: int) -> bool:
+    """Try to restore a lecture's scores from the Qdrant backup payload.
 
     Returns True if scores were restored, False otherwise.
     """
+    try:
+        from tools.integrations.qdrant_client import fetch_by_legacy_ids
+    except ImportError:
+        return False
+
     vector_id = _SCORES_BACKUP_PREFIX.format(group=group, lecture=lecture)
     try:
-        fetched = idx.fetch(ids=[vector_id])
-        vec_data = fetched.vectors.get(vector_id)
-        if not vec_data:
+        fetched = fetch_by_legacy_ids([vector_id])
+        meta = fetched.get(vector_id)
+        if not meta:
             return False
 
-        meta = vec_data.metadata
         if meta.get("type") != "scores_backup":
             return False
 
@@ -1582,7 +1601,7 @@ def _restore_from_score_backup(
             technical_accuracy=float(meta.get("technical_accuracy", 0)),
             market_relevance=float(meta.get("market_relevance", 0)),
             overall_score=overall,
-            raw_score_text=f"Restored from Pinecone score backup (G{group}L{lecture})",
+            raw_score_text=f"Restored from Qdrant score backup (G{group}L{lecture})",
         )
 
         # Restore insights if present in metadata
