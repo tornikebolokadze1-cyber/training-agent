@@ -610,7 +610,7 @@ def check_stuck_pipelines() -> CheckResult:
                 elapsed_hours = (now - started).total_seconds() / 3600
                 if elapsed_hours > PIPELINE_STUCK_WARNING_HOURS:
                     stuck.append(
-                        f"G{pipeline.group} L{pipeline.lecture} "
+                        f"{_group_label(pipeline.group)} ლექცია #{pipeline.lecture} "
                         f"in '{pipeline.state}' for {elapsed_hours:.1f}h"
                     )
             except (ValueError, TypeError):
@@ -723,7 +723,7 @@ def check_pipeline_state_drift() -> CheckResult:
                 ts = ts.replace(tzinfo=TBILISI_TZ)
             age_hours = (now - ts).total_seconds() / 3600
             label = (
-                f"G{pipeline.group} L{pipeline.lecture} "
+                f"{_group_label(pipeline.group)} ლექცია #{pipeline.lecture} "
                 f"({pipeline.state}) stale for {age_hours:.1f}h"
             )
             if age_hours > 12:
@@ -792,9 +792,9 @@ def check_qdrant_scores_consistency() -> CheckResult:
         for group_num, lecture_num in rows:
             try:
                 if not lecture_exists_in_index(int(group_num), int(lecture_num)):
-                    missing.append(f"G{group_num} L{lecture_num}")
+                    missing.append(f"{_group_label(int(group_num))} ლექცია #{lecture_num}")
             except Exception as exc:  # noqa: BLE001 — per-lecture resilience
-                missing.append(f"G{group_num} L{lecture_num} (check failed: {exc})")
+                missing.append(f"{_group_label(int(group_num))} ლექცია #{lecture_num} (check failed: {exc})")
 
         if missing:
             return CheckResult(

@@ -165,7 +165,9 @@ def test_check_qdrant_scores_consistency_ok_and_drift():
     ):
         result = check_qdrant_scores_consistency()
         assert result.severity == Severity.WARNING
-        assert "G1 L2" in result.message
+        # Cohort-label format (fix C, 2026-05-21): "მარტის ჯგუფი #1 ლექცია #2"
+        assert "ლექცია #2" in result.message
+        assert "მარტის ჯგუფი #1" in result.message
 
 
 def test_check_pinecone_scores_consistency_alias_still_works():
