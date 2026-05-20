@@ -209,7 +209,7 @@ class TestEmbedText:
         ]
         ki._embed_client_cache = mock_client
 
-        with patch("tools.integrations.knowledge_indexer.time.sleep"):
+        with patch("tools.core.retry.time.sleep"):
             result = ki.embed_text("retry text")
 
         assert len(result) == 3072
@@ -754,7 +754,7 @@ class TestBatchUpsert:
         mock_client.upsert.side_effect = [Exception("transient"), None]
         vectors = [{"id": "g1_l1_summary_0", "values": [0.1], "metadata": {}}]
 
-        with patch("tools.integrations.knowledge_indexer.time.sleep"):
+        with patch("tools.core.retry.time.sleep"):
             total = ki._batch_upsert(mock_client, vectors)
 
         assert total == 1
