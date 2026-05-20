@@ -484,6 +484,106 @@ class TestLectureStatus:
 
 
 # ===========================================================================
+# Qdrant helpers: _get_vector_counts + _reconstruct_from_qdrant
+# (migrated from _get_pinecone_counts + _reconstruct_from_pinecone on 2026-05-20)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+class TestQdrantAsyncHelpers:
+    """Async helpers: _get_vector_counts + legacy alias."""
+
+    async def test_get_vector_counts_uses_qdrant_count(self):
+        """_get_vector_counts queries get_lecture_vector_count for every cohort+lecture."""
+        from tools.app import admin_routes
+
+        # Return a known count for (1, 3) only — everything else is 0.
+        def _fake_count(group: int, lecture: int) -> int:
+            return 42 if (group, lecture) == (1, 3) else 0
+
+        with patch(
+            "tools.integrations.knowledge_indexer.get_lecture_vector_count",
+            side_effect=_fake_count,
+        ):
+            counts = await admin_routes._get_vector_counts()
+
+        assert counts == {(1, 3): 42}
+
+    async def test_get_pinecone_counts_is_alias(self):
+        """The legacy name still works and delegates to _get_vector_counts."""
+        from tools.app import admin_routes
+
+        with patch(
+            "tools.integrations.knowledge_indexer.get_lecture_vector_count",
+            return_value=0,
+        ):
+            counts = await admin_routes._get_pinecone_counts()
+
+        assert counts == {}
+
+
+class TestQdrantSyncHelpers:
+    """Sync helpers: _reconstruct_from_qdrant + legacy alias."""
+
+    def test_reconstruct_from_qdrant_orders_by_chunk_index(self):
+        """_reconstruct_from_qdrant pages client.scroll and joins payloads by chunk_index."""
+        from tools.app import admin_routes
+
+        # Build fake Qdrant Records with chunk_index payloads in shuffled order.
+        class _FakePoint:
+            def __init__(self, idx: int, text: str) -> None:
+                self.payload = {
+                    "chunk_index": idx,
+                    "text": text,
+                    "group_number": 1,
+                    "lecture_number": 1,
+                    "content_type": "transcript",
+                }
+
+        fake_client = MagicMock()
+        # First page returns 2 points, second page returns 1, third page empty.
+        fake_client.scroll.side_effect = [
+            ([_FakePoint(2, "third"), _FakePoint(0, "first")], "next-offset"),
+            ([_FakePoint(1, "second")], None),
+        ]
+
+        text = admin_routes._reconstruct_from_qdrant(
+            fake_client, 1, 1, "transcript",
+        )
+
+        assert text == "first\nsecond\nthird"
+        # Two pages consumed (offset stops loop on None).
+        assert fake_client.scroll.call_count == 2
+
+    def test_reconstruct_from_pinecone_is_alias(self):
+        """The legacy name still works and forwards to _reconstruct_from_qdrant."""
+        from tools.app import admin_routes
+
+        fake_client = MagicMock()
+        fake_client.scroll.return_value = ([], None)
+
+        text = admin_routes._reconstruct_from_pinecone(
+            fake_client, 1, 1, "transcript",
+        )
+
+        assert text == ""
+        fake_client.scroll.assert_called_once()
+
+    def test_reconstruct_returns_empty_on_scroll_failure(self):
+        """A scroll() exception is swallowed and an empty string is returned."""
+        from tools.app import admin_routes
+
+        fake_client = MagicMock()
+        fake_client.scroll.side_effect = RuntimeError("qdrant unreachable")
+
+        text = admin_routes._reconstruct_from_qdrant(
+            fake_client, 1, 1, "transcript",
+        )
+
+        assert text == ""
+
+
+# ===========================================================================
 # POST /admin/force-refresh-token
 # ===========================================================================
 
