@@ -45,7 +45,6 @@ import logging
 import os
 import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from tools.core.config import TBILISI_TZ, TMP_DIR
