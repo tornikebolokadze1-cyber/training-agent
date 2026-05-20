@@ -1859,7 +1859,7 @@ async def recent_outgoing(
         redacted.append({
             "chat_id_masked": masked,
             "type_message": msg.get("typeMessage"),
-            "preview": text[:80],
+            "preview": text[:500],
             "timestamp": ts,
             "id_message": msg.get("idMessage"),
         })
