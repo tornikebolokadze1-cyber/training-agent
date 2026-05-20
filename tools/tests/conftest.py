@@ -155,15 +155,13 @@ _googleapiclient.errors = _googleapiclient_errors
 _googleapiclient.http = _googleapiclient_http
 
 # ===================================================================
-# pinecone
+# pinecone — kept for any lingering imports during the Qdrant migration
 # ===================================================================
 _pinecone = _stub_module("pinecone")
 
 def _make_pinecone_client(*args, **kwargs):
     """Return a mock Pinecone client with JSON-serializable dict returns."""
     client = MagicMock()
-    # Index().describe_index_stats() must return a real dict, not MagicMock,
-    # so it can be serialized in admin/system-report responses.
     index = MagicMock()
     index.describe_index_stats.return_value = {
         "total_vector_count": 0,
@@ -178,6 +176,84 @@ def _make_pinecone_client(*args, **kwargs):
 
 _pinecone.Pinecone = _make_pinecone_client
 _pinecone.ServerlessSpec = MagicMock
+
+# ===================================================================
+# qdrant-client (replaces Pinecone, 2026-05-20)
+#
+# We mirror the official qdrant-client surface used by knowledge_indexer:
+#   QdrantClient, http.models.{VectorParams, Distance, Filter,
+#   FieldCondition, MatchValue, FilterSelector, PointStruct}
+# Each model is a thin object that accepts the kwargs used in production
+# code so isinstance() checks and attribute access work in tests.
+# ===================================================================
+_qdrant = _stub_module("qdrant_client")
+
+
+class _QdrantCountResult:
+    def __init__(self, count: int = 0) -> None:
+        self.count = count
+
+
+class _QdrantCollectionInfo:
+    def __init__(self, points_count: int = 0) -> None:
+        self.points_count = points_count
+
+
+class _QdrantCollectionsList:
+    def __init__(self) -> None:
+        self.collections = []
+
+
+def _make_qdrant_client(*args, **kwargs):
+    """Return a mock QdrantClient with sensible default responses."""
+    client = MagicMock()
+    client.get_collections.return_value = _QdrantCollectionsList()
+    client.get_collection.return_value = _QdrantCollectionInfo(points_count=0)
+    client.count.return_value = _QdrantCountResult(count=0)
+    client.upsert.return_value = MagicMock(status="completed")
+    client.delete.return_value = MagicMock(status="completed")
+    client.create_collection.return_value = True
+    client.query_points.return_value = MagicMock(points=[])
+    return client
+
+
+_qdrant.QdrantClient = _make_qdrant_client
+
+# qdrant_client.http and qdrant_client.http.models
+_qdrant_http = _stub_module("qdrant_client.http")
+_qdrant_http_models = _stub_module("qdrant_client.http.models")
+
+
+class _SimpleModel:
+    """Generic stand-in: stores kwargs as attributes so production code
+    can introspect ``payload.score`` / ``.points`` / etc."""
+
+    def __init__(self, *args, **kwargs):
+        # positional → store as 'value' / 'vector' / 'id' depending on order
+        for i, a in enumerate(args):
+            setattr(self, f"_arg{i}", a)
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class _Distance:
+    COSINE = "Cosine"
+    EUCLID = "Euclid"
+    DOT = "Dot"
+
+
+_qdrant_http_models.VectorParams = _SimpleModel
+_qdrant_http_models.Distance = _Distance
+_qdrant_http_models.Filter = _SimpleModel
+_qdrant_http_models.FieldCondition = _SimpleModel
+_qdrant_http_models.MatchValue = _SimpleModel
+_qdrant_http_models.FilterSelector = _SimpleModel
+_qdrant_http_models.PointStruct = _SimpleModel
+_qdrant_http_models.ScoredPoint = _SimpleModel
+_qdrant_http_models.QueryResponse = _SimpleModel
+_qdrant_http.models = _qdrant_http_models
+_qdrant.http = _qdrant_http
+_qdrant.models = _qdrant_http_models
 
 # ===================================================================
 # anthropic — full exception hierarchy so isinstance() works
@@ -372,7 +448,7 @@ def _reset_module_caches() -> None:  # type: ignore[misc]
         ("tools.integrations.gdrive_manager", [
             "_token_path_cache", "_drive_service_cache", "_docs_service_cache",
         ]),
-        ("tools.integrations.knowledge_indexer", ["_pinecone_index_cache"]),
+        ("tools.integrations.knowledge_indexer", ["_pinecone_index_cache", "_qdrant_client_cache"]),
         ("tools.integrations.zoom_manager", ["_token_cache"]),
     ]:
         mod = sys.modules.get(mod_name)

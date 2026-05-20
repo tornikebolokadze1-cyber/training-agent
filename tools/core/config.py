@@ -422,9 +422,18 @@ WHATSAPP_GROUP2_ID = _env("WHATSAPP_GROUP2_ID")
 # Anthropic API (Claude Opus 4.6 — assistant reasoning engine)
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 
-# Pinecone (vector DB for course knowledge)
-PINECONE_API_KEY = _env("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = "training-course"
+# Qdrant (vector DB for course knowledge) — replaces Pinecone, migrated 2026-05-20
+# after Pinecone hit its monthly 1M read limit and broke the assistant.
+# Collection name is intentionally the same as the old Pinecone index so the
+# admin dashboard, logs, and metrics keep referring to it by a familiar handle.
+QDRANT_URL = _env("QDRANT_URL")
+QDRANT_API_KEY = _env("QDRANT_API_KEY")
+QDRANT_COLLECTION_NAME = _env("QDRANT_COLLECTION_NAME", "training-course")
+
+# Backward-compatibility shims — kept so any lingering Pinecone-named code or
+# logs do not crash during the transition. Set to None when not configured.
+PINECONE_API_KEY = _env("PINECONE_API_KEY") or None
+PINECONE_INDEX_NAME = QDRANT_COLLECTION_NAME
 
 OPERATOR_EMAIL = _env("OPERATOR_EMAIL")
 

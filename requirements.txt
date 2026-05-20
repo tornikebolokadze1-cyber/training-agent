@@ -30,7 +30,12 @@ apscheduler==3.11.2
 # Anthropic (Claude Sonnet 4.6 — assistant reasoning; was Opus, see ADR 007)
 anthropic==0.84.0
 
-# Pinecone (vector DB for course knowledge RAG)
+# Qdrant (vector DB for course knowledge RAG — replaces Pinecone, 2026-05-20)
+# Migration trigger: Pinecone hit its 1M monthly read limit and broke the
+# assistant. Qdrant Cloud has no monthly read cap on the equivalent tier.
+qdrant-client==1.12.1
+
+# Pinecone (deprecated, kept temporarily until all callers migrate to Qdrant)
 pinecone==8.1.0
 
 # Mem0 (personal memory for WhatsApp assistant)
