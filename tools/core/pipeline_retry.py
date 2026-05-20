@@ -471,8 +471,8 @@ class RetryOrchestrator:
 
             error_history = "\n".join(record.errors[-5:])
             alert_operator(
-                f"PERMANENT FAILURE: Group {record.group}, "
-                f"Lecture #{record.lecture}\n"
+                f"PERMANENT FAILURE: {_label(record.group)}, "
+                f"ლექცია #{record.lecture}\n"
                 f"After {record.attempt} attempts, all retries exhausted.\n\n"
                 f"Last errors:\n{error_history}\n\n"
                 f"Manual intervention required: "
@@ -497,7 +497,7 @@ class RetryOrchestrator:
 
             alert_operator(
                 f"🔐 TOKEN REVOKED — Google OAuth refresh_token is invalid.\n\n"
-                f"Pipeline HALTED for Group {record.group}, Lecture #{record.lecture}.\n"
+                f"Pipeline HALTED for {_label(record.group)}, ლექცია #{record.lecture}.\n"
                 f"Retries are PAUSED (not retrying — would just fail again).\n\n"
                 f"Fix in 3 steps:\n"
                 f"1. Run: python -m tools.core.token_manager --reauth\n"

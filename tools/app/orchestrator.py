@@ -33,6 +33,8 @@ from tools.core.config import (
     N8N_CALLBACK_URL,
     PINECONE_API_KEY,
     PROJECT_ROOT,
+    QDRANT_API_KEY,
+    QDRANT_URL,
     SERVER_HOST,
     SERVER_PORT,
     WEBHOOK_SECRET,
@@ -57,7 +59,9 @@ _CREDENTIALS: list[tuple[str, str, bool]] = [
     ("GREEN_API_TOKEN", GREEN_API_TOKEN, True),
     ("WEBHOOK_SECRET", WEBHOOK_SECRET, True),
     ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY, True),
-    ("PINECONE_API_KEY", PINECONE_API_KEY, True),
+    ("QDRANT_URL", QDRANT_URL, True),
+    ("QDRANT_API_KEY", QDRANT_API_KEY, True),
+    ("PINECONE_API_KEY", PINECONE_API_KEY, False),  # deprecated 2026-05-20 (Qdrant migration)
     ("N8N_CALLBACK_URL", N8N_CALLBACK_URL, False),  # optional but warn
     ("GOOGLE_CREDENTIALS_PATH", GOOGLE_CREDENTIALS_PATH, False),
 ]
