@@ -1553,14 +1553,21 @@ def start_scheduler() -> AsyncIOScheduler:
         except Exception as exc:  # noqa: BLE001
             logger.error("[periodic-zoom-recovery] error: %s", exc, exc_info=True)
 
+    # Tightened from 30 min → 5 min on 2026-05-21 after the May-cohort
+    # manual-recovery streak. The earlier 30 min worst-case window meant a
+    # missed live webhook could delay the pipeline by up to half an hour;
+    # 5 min keeps the worst case under one summary-doc generation cycle.
+    # _check_unprocessed_recordings is idempotent (state-file gated and
+    # dedup-tracker gated) so running 6× more often costs almost nothing
+    # — the inner work is skipped when nothing is new.
     scheduler.add_job(
         _periodic_zoom_recovery,
-        trigger=CronTrigger(minute="*/30", timezone=TBILISI_TZ),
+        trigger=CronTrigger(minute="*/5", timezone=TBILISI_TZ),
         id="periodic_zoom_recovery",
-        name="Zoom recordings sweep (every 30 min)",
+        name="Zoom recordings sweep (every 5 min)",
         coalesce=True,
         max_instances=1,
-        misfire_grace_time=600,
+        misfire_grace_time=300,
         replace_existing=True,
     )
 
