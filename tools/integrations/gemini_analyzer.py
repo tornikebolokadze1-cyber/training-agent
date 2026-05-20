@@ -442,6 +442,15 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
 
     Returns a tuple of (uploaded file object, whether free tier was used).
     Falls back to free tier on paid-key quota errors.
+
+    Non-ASCII filenames are staged into a temporary ASCII-only path before
+    upload. google-genai (httpx under the hood) puts the filename in an
+    HTTP header and httpx ASCII-encodes header values per RFC 7230, so a
+    Georgian filename like ``ლექცია #3 — ვიდეო ჩანაწერი.chunk0.ogg``
+    crashes with ``UnicodeEncodeError: 'ascii' codec can't encode
+    characters in position 0-5``. Staging keeps the on-disk file intact
+    for downstream cleanup while giving the SDK an upload-time name it
+    can safely put on the wire.
     """
     file_path = Path(file_path)
     if not file_path.exists():
@@ -471,11 +480,38 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
     }
     mime_type = mime_map.get(suffix, "video/mp4")
 
+    # Stage non-ASCII paths to an ASCII alias before handing to google-genai.
+    # str.isascii() is the cheapest way to check; only stage when we have to.
+    upload_source: Path = file_path
+    _staged_alias: Path | None = None
+    if not file_path.name.isascii():
+        import hashlib
+
+        # Deterministic, collision-resistant ASCII name derived from the
+        # original path so concurrent uploads of different chunks don't
+        # clobber each other. 12 hex chars is enough; we don't need to
+        # reverse-decode the original name from the alias.
+        digest = hashlib.sha256(str(file_path).encode("utf-8")).hexdigest()[:12]
+        alias = file_path.with_name(f"upload_{digest}{file_path.suffix}")
+        # Try a hard link first (free on the same FS) and fall back to
+        # copy if hard-linking is rejected (e.g. cross-device).
+        try:
+            os.link(file_path, alias)
+        except OSError:
+            import shutil
+            shutil.copy2(file_path, alias)
+        _staged_alias = alias
+        upload_source = alias
+        logger.info(
+            "Staged non-ASCII upload name → %s (avoids httpx ASCII header crash)",
+            alias.name,
+        )
+
     try:
         from google.genai import types as genai_types
 
         uploaded_file = client.files.upload(
-            file=str(file_path),
+            file=str(upload_source),
             config=genai_types.UploadFileConfig(mime_type=mime_type),
         )
     except Exception as e:
@@ -483,8 +519,16 @@ def upload_video(file_path: str | Path, use_free: bool = False) -> tuple[object,
             logger.warning(
                 "Paid tier quota hit during upload: %s — switching to free tier", e
             )
+            if _staged_alias is not None:
+                _staged_alias.unlink(missing_ok=True)
             return upload_video(file_path, use_free=True)
         raise
+    finally:
+        if _staged_alias is not None:
+            try:
+                _staged_alias.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug("Failed to clean up upload alias %s: %s", _staged_alias, exc)
 
     logger.info("Upload complete. File name: %s", uploaded_file.name)
 
