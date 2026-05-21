@@ -1,3 +1,4 @@
+<!-- sync-hash: 7b375f84bf01128efb4f7d52af3e3820c39b886f5a9d1b1c1f0c3b7a813ccb7c -->
 ---
 tags: [კონცეფცია, AI]
 aliases: [Open Source Models, ღია კოდის მოდელები]
@@ -16,7 +17,7 @@ category: concept
 
 ## ლექციებში
 
-- [[ლექცია 2]] (ჯგუფი 1)
+- [[ლექცია 2]] (მარტის ჯგუფი #1)
 
 ---
 

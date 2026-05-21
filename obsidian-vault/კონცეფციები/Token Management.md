@@ -1,3 +1,4 @@
+<!-- sync-hash: 481fd75e80433febe6913bec508c9cb139412cadc5ab3d2a72cd0a41285272a2 -->
 ---
 tags: [კონცეფცია, AI]
 aliases: [ტოკენების მართვა]
@@ -16,10 +17,14 @@ AI API-ს გამოყენებისას ტოკენების (
 
 ## ლექციებში
 
-- [[ლექცია 2]] (ჯგუფი 2)
+- [[ლექცია 2]] (მარტის ჯგუფი #2)
+- [[ლექცია 2]] (მაისის ჯგუფი #1)
 
 ---
 
 ## დაკავშირებული
 
 - [[Context Engineering]]
+- [[Context Window]]
+- [[Claude Skills]]
+- [[MCP (Model Context Protocol)]]

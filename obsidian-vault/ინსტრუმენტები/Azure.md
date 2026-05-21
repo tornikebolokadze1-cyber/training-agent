@@ -1,3 +1,4 @@
+<!-- sync-hash: d92c1baba23c173ece262f0ee8292d4e45dead075e12e7db95e0f28de7ef5cfa -->
 ---
 tags: [ინსტრუმენტი, AI]
 aliases: [Microsoft Azure]
@@ -16,7 +17,7 @@ Microsoft-ის cloud პლატფორმა, რომელზეც შ
 
 ## ლექციებში
 
-- [[ლექცია 6]] (ჯგუფი 2)
+- [[ლექცია 6]] (მარტის ჯგუფი #2)
 
 ---
 

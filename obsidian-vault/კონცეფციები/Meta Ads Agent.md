@@ -1,3 +1,4 @@
+<!-- sync-hash: fc605ca6ec29c998a6de88ccf67babaab76eb8d8c00fe009ec21973aab639b68 -->
 ---
 tags: [კონცეფცია, AI]
 aliases: [Meta Ads-ის AI აგენტი]
@@ -16,7 +17,7 @@ category: concept
 
 ## ლექციებში
 
-- [[ლექცია 6]] (ჯგუფი 2)
+- [[ლექცია 6]] (მარტის ჯგუფი #2)
 
 ---
 
